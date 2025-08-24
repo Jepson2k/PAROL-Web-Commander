@@ -833,92 +833,6 @@ def build_header() -> None:
                 theme_toggle.on_value_change(lambda e: _on_theme_change())
                 ui.button("?", on_click=lambda: ui.notify("Help: PAROL6 NiceGUI Commander", color="primary")).props("round unelevated")
 
-def build_left_jog_panel() -> None:
-    global jog_mode_radio, joint_jog_section, cart_jog_section, jog_speed_text, frame_text, cart_speed_text
-    # Left panel: Jogging + Modes
-    with ui.card().classes("w-[48vw] min-h-[500px]"):
-        with ui.row().classes("items-center gap-4"):
-            # Convert to tabs instead of toggle
-            with ui.tabs() as jog_mode_tabs:
-                ui.tab("Joint jog")
-                ui.tab("Cartesian jog")
-                jog_mode_tabs.value = "Joint jog"  # Set initial active tab
-            frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props("dense")
-            frame_radio.on_value_change(lambda e: set_frame(frame_radio.value))
-        # Joint jog section
-        joint_jog_section = ui.column().classes("gap-2")
-        with joint_jog_section:
-            joint_names = ['J1', 'J2', 'J3', 'J4', 'J5', 'J6']
-
-            def make_joint_row(idx: int, name: str):
-                with ui.row().classes("items-center gap-2"):
-                    ui.label(name).classes("w-8")
-                    left = ui.image("/static/icons/button_arrow_1.webp").style("width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;")
-                    bar = ui.linear_progress(value=0.5).props("rounded").classes("w-[25rem]")
-                    right = ui.image("/static/icons/button_arrow_1.webp").style("width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;")
-                    joint_progress_bars.append(bar)
-                    left.on('mousedown', lambda e, i=idx: set_joint_pressed(i, 'neg', True))
-                    left.on('mouseup',   lambda e, i=idx: set_joint_pressed(i, 'neg', False))
-                    left.on('mouseleave',lambda e, i=idx: set_joint_pressed(i, 'neg', False))
-                    right.on('mousedown', lambda e, i=idx: set_joint_pressed(i, 'pos', True))
-                    right.on('mouseup',   lambda e, i=idx: set_joint_pressed(i, 'pos', False))
-                    right.on('mouseleave',lambda e, i=idx: set_joint_pressed(i, 'pos', False))
-
-            joint_progress_bars.clear()
-            for i, n in enumerate(joint_names):
-                make_joint_row(i, n)
-
-        # Cartesian jog section
-        cart_jog_section = ui.column().classes("gap-2")
-        with cart_jog_section:
-            def axis_image(src: str, axis: str, rotate_deg: int = 0):
-                img = ui.image(src).style(f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);")
-                img.on('mousedown', lambda e, a=axis: set_axis_pressed(a, True))
-                img.on('mouseup',   lambda e, a=axis: set_axis_pressed(a, False))
-                img.on('mouseleave',lambda e, a=axis: set_axis_pressed(a, False))
-
-            # Translation pad (XY arrow-pad + Z column)
-            with ui.row().classes("items-start gap-8"):
-                with ui.element('div').style('display:grid; grid-template-columns:72px 72px 50px; gap:8px;'):
-                    ui.element('div').style('width:72px;height:72px')
-                    axis_image("/static/icons/cart_x_up.webp", "X+")
-                    ui.element('div').style('width:72px;height:72px')
-                    axis_image("/static/icons/cart_y_left.webp", "Y-")
-                    ui.element('div').style('width:72px;height:72px')
-                    axis_image("/static/icons/cart_y_right.webp", "Y+")
-                    ui.element('div').style('width:72px;height:72px')
-                    axis_image("/static/icons/cart_x_down.webp", "X-")
-                    ui.element('div').style('width:72px;height:72px')
-                with ui.column().classes("gap-16"):
-                    axis_image("/static/icons/cart_z_up.webp", "Z+")
-                    axis_image("/static/icons/cart_z_down.webp", "Z-")
-
-            # Rotation pad (Rx, Ry, Rz columns with +/-)
-                with ui.column().classes("gap-16"):
-                    axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
-                    axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
-                with ui.element('div').style('display:grid; grid-template-columns:60px 60px 60px; gap:8px;'):
-                    ui.element('div')
-                    axis_image("/static/icons/RX_PLUS.webp", "RX+")
-                    ui.element('div')
-                    axis_image("/static/icons/RY_PLUS.webp", "RY+")
-                    ui.element('div')
-                    axis_image("/static/icons/RY_MINUS.webp", "RY-")
-                    ui.element('div')
-                    axis_image("/static/icons/RX_MINUS.webp", "RX-")
-                
-
-        def update_jog_visibility() -> None:
-            if jog_mode_tabs.value == "Joint jog":
-                joint_jog_section.visible = True
-                cart_jog_section.visible = False
-            else:
-                joint_jog_section.visible = False
-                cart_jog_section.visible = True
-
-        jog_mode_tabs.on_value_change(lambda e: update_jog_visibility())
-        update_jog_visibility()
-
 def open_file_picker() -> None:
     dlg = ui.dialog()
     with dlg, ui.card():
@@ -940,121 +854,26 @@ def open_file_picker() -> None:
             ui.button("Cancel", on_click=dlg.close)
     dlg.open()
 
-def build_program_editor() -> None:
-    global program_filename_input, program_textarea
-    # Center panel: Program editor
-    with ui.card().classes("w-[48vw] min-h-[500px] flex flex-col"):
-        with ui.row():
-            with ui.column().classes("w-[34vw]"):
-                # Program label, filename input, and Open button on same line
-                with ui.row().classes("items-center gap-2 w-full"):
-                    ui.label("Program:").classes("text-md font-medium")
-                    program_filename_input = ui.input(label="Filename", value="execute_script.txt").classes("flex-grow")
-                    ui.button("Open", on_click=open_file_picker).props("unelevated")
-                # Simplified CodeMirror editor without autocomplete
-                program_textarea = ui.codemirror(
-                    value="",
-                    line_wrapping=True,
-                ).classes("w-full grow").style("height: 300px")
-                with ui.row().classes("gap-2"):
-                    ui.button("Start", on_click=lambda: asyncio.create_task(execute_program())).props("unelevated color=positive")
-                    ui.button("Stop", on_click=lambda: asyncio.create_task(stop_program())).props("unelevated color=negative")
-                    ui.button("Save", on_click=lambda: asyncio.create_task(save_program())).props("unelevated")
-                    def save_as():
-                        async def do_save_as():
-                            name = save_as_input.value.strip() or "program.txt"
-                            await save_program(as_name=name)
-                            save_as_dialog.close()
-                        save_as_dialog = ui.dialog()
-                        with save_as_dialog, ui.card():
-                            ui.label("Save As")
-                            save_as_input = ui.input(label="New filename", value=program_filename_input.value).classes("w-80")
-                            with ui.row().classes("gap-2"):
-                                ui.button("Cancel", on_click=save_as_dialog.close)
-                                ui.button("Save", on_click=lambda: asyncio.create_task(do_save_as())).props("color=positive")
-                        save_as_dialog.open()
-                    ui.button("Save as", on_click=save_as).props("unelevated")
-            with ui.column().classes("w-[10vw]"):
-                build_command_palette_table()
-
-
-def build_bottom_row() -> None:
-    global incremental_jog_checkbox, joint_step_input, response_log
-    # Bottom section split horizontally
-    with ui.row():
-        # Bottom-left: readouts & config
-        with ui.card().classes("w-[48vw]"):
-            # Tools, Joints, Controls in three vertical columns
-            with ui.row().classes("gap-8 items-start"):
-                with ui.column().classes("gap-1 w-[8vw]"):
-                    ui.label("Tools positions").classes("text-sm")
-                    for key in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
-                        with ui.row().classes("items-center gap-2"):
-                            ui.label(f"{key}:").classes("text-xs text-[var(--ctk-muted)] w-6")
-                            tool_labels[key] = ui.label("-").classes("text-4xl")
-                with ui.column().classes("gap-1 w-[8vw]"):
-                    ui.label("Joint positions").classes("text-sm")
-                    joint_labels.clear()
-                    for i in range(6):
-                        with ui.row().classes("items-center gap-2"):
-                            ui.label(f"θ{i+1}:").classes("text-xs text-[var(--ctk-muted)] w-6")
-                            joint_labels.append(ui.label("-").classes("text-4xl"))
-                with ui.column().classes("gap-2"):
-                    ui.label("Controls").classes("text-sm")
-                    # Sliders
-                    ui.label("Jog velocity %").classes("text-xs text-[var(--ctk-muted)]")
-                    jog_speed_slider = ui.slider(min=1, max=100, value=jog_speed_value, step=1)
-                    jog_speed_slider.on_value_change(lambda e: set_jog_speed(jog_speed_slider.value))
-                    ui.label("Jog accel %").classes("text-xs text-[var(--ctk-muted)]")
-                    jog_accel_slider = ui.slider(min=1, max=100, value=jog_accel_value, step=1)
-                    jog_accel_slider.on_value_change(lambda e: set_jog_accel(jog_accel_slider.value))
-                    # Incremental and step
-                    with ui.row().classes("items-center gap-4 w-full"):
-                        incremental_jog_checkbox = ui.checkbox("Incremental jog", value=False)
-                        joint_step_input = ui.number(label="Step size (deg/mm)", value=joint_step_deg, min=0.1, max=100.0, step=0.1).classes("w-30")
-                            # IO summary (live-updated)
-                        global io_summary_label
-                        io_summary_label = ui.label(f"IO: {io_label}").classes("text-sm")
-                    # Buttons
-                    with ui.row().classes("gap-2"):
-                        ui.button("Enable", on_click=lambda: asyncio.create_task(send_enable())).props("color=positive")
-                        ui.button("Disable", on_click=lambda: asyncio.create_task(send_disable())).props("color=negative")
-                        ui.button("Home", on_click=lambda: asyncio.create_task(send_home())).props("color=primary")
-        # Bottom-right: response log
-        with ui.card().classes("w-[48vw]"):
-            ui.label("Response Log").classes("text-md font-medium")
-            response_log = ui.log(max_lines=500).classes("w-full").style("height: 220px")
-            ui.button("Show received frame", on_click=lambda: asyncio.create_task(show_received_frame())).props("outline")
-
-def build_command_palette_table() -> None:
-    prefill_toggle = ui.toggle(
-        options=["Current position/Pose", "Custom position/Pose"],
-        value="Current position/Pose",
-    ).props("dense")
-
+def build_command_palette_table(prefill_toggle) -> None:
     # Simplified structure with unique keys for row_key
     rows = [
-        {"key": "JointMove", "title": "JointMove()"},
-        {"key": "JointVelSet", "title": "JointVelSet()"},
-        {"key": "PoseMove", "title": "PoseMove()"},
-        {"key": "HOME", "title": "HOME"},
-        {"key": "STOP", "title": "STOP"},
-        {"key": "ENABLE", "title": "ENABLE"},
-        {"key": "DISABLE", "title": "DISABLE"},
-        {"key": "CLEAR_ERROR", "title": "CLEAR_ERROR"},
-        {"key": "DelayCustom", "title": "Delay()"},
-        {"key": "End", "title": "# END"},
-        {"key": "Loop", "title": "# LOOP"},
-        {"key": "LoopEnd", "title": "# END LOOP"},
-        {"key": "PneuOpen1", "title": "PNEUMATIC open 1"},
-        {"key": "PneuClose1", "title": "PNEUMATIC close 1"},
-        {"key": "PneuOpen2", "title": "PNEUMATIC open 2"},
-        {"key": "PneuClose2", "title": "PNEUMATIC close 2"},
-        {"key": "GripCalibrate", "title": "ELECTRIC CALIBRATE"},
-        {"key": "GripMove", "title": "ELECTRIC MOVE"},
-        {"key": "GetAngles", "title": "# GET_ANGLES"},
-        {"key": "GetPose", "title": "# GET_POSE"},
-        {"key": "GetIO", "title": "# GET_IO"},
+        {"key": "MoveJoint", "title": "MoveJoint()"},
+        {"key": "MovePose", "title": "MovePose()"},
+        {"key": "SpeedJoint", "title": "SpeedJoint()"},
+        {"key": "MoveCart", "title": "MoveCart()"},
+        {"key": "MoveCartRelTRF", "title": "MoveCartRelTRF()"},
+        {"key": "SpeedCart", "title": "SpeedCart()"},
+        {"key": "Home", "title": "Home()"},
+        {"key": "Delay", "title": "Delay()"},
+        {"key": "End", "title": "End()"},
+        {"key": "Loop", "title": "Loop()"},
+        {"key": "Begin", "title": "Begin()"},
+        {"key": "Input", "title": "Input()"},
+        {"key": "Output", "title": "Output()"},
+        {"key": "Gripper", "title": "Gripper()"},
+        {"key": "Gripper_cal", "title": "Gripper_cal()"},
+        {"key": "Get_data", "title": "Get_data()"},
+        {"key": "Timeouts", "title": "Timeouts()"},
     ]
     
     columns = [
@@ -1062,12 +881,12 @@ def build_command_palette_table() -> None:
     ]
 
     # Scrollable container for the table
-    with ui.element('div').classes("h-80 overflow-y-auto"):
+    with ui.element('div').classes("overflow-y-auto w-full").style("height: 400px"):
         table = ui.table(
             columns=columns, 
             rows=rows, 
             row_key='key',  # Use unique key column
-        ).classes("w-full").props("flat dense separator=horizontal")
+        ).props("flat dense separator=horizontal")
 
     def make_snippet(key: str) -> str:
         current = (prefill_toggle.value or "").startswith("Current")
@@ -1299,13 +1118,15 @@ _drag_src: Optional[str] = None  # "left" or "right"
 left_col_container = None  # type: ignore
 right_col_container = None  # type: ignore
 
-def render_readouts_content() -> None:
+def render_readouts_content(pid: str, src_col: str) -> None:
     """Inner content for the readouts + controls panel (no outer card)."""
+    # place drag handle at top-right as unobtrusive overlay
+    drag_handle(pid, src_col).style("position:absolute; right:16px; top:16px; opacity:0.8;")
     global incremental_jog_checkbox, joint_step_input, io_summary_label
     # Tools, Joints, Controls in three vertical columns
     with ui.row().classes("gap-8 items-start"):
         with ui.column().classes("gap-1 w-[8vw]"):
-            ui.label("Tools positions").classes("text-sm")
+            ui.label("Tool positions").classes("text-sm")
             for key in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
                 with ui.row().classes("items-center gap-2"):
                     ui.label(f"{key}:").classes("text-xs text-[var(--ctk-muted)] w-6")
@@ -1339,29 +1160,30 @@ def render_readouts_content() -> None:
                 ui.button("Disable", on_click=lambda: asyncio.create_task(send_disable())).props("color=negative")
                 ui.button("Home", on_click=lambda: asyncio.create_task(send_home())).props("color=primary")
 
-def render_log_content() -> None:
+def render_log_content(pid: str, src_col: str) -> None:
     """Inner content for the Response Log panel (no outer card)."""
     global response_log
-    ui.label("Response Log").classes("text-md font-medium")
-    response_log = ui.log(max_lines=500).classes("w-full").style("height: 220px")
+    with ui.row().classes("items-center justify-between w-full"):
+        ui.label("Response Log").classes("text-md font-medium")
+        drag_handle(pid, src_col)
+    response_log = ui.log(max_lines=500).classes("w-full").style("height: 190px")
     # replay buffered log lines so moves don't lose history
-    try:
-        for line in log_buffer:
-            response_log.push(line)
-    except Exception:
-        pass
+    for line in log_buffer:
+        response_log.push(line)
     ui.button("Show received frame", on_click=lambda: asyncio.create_task(show_received_frame())).props("outline")
 
-def render_jog_content() -> None:
+def render_jog_content(pid: str, src_col: str) -> None:
     """Inner content for the Jog panel (no outer card)."""
     global jog_mode_radio, joint_jog_section, cart_jog_section, jog_speed_text, frame_text, cart_speed_text
-    with ui.row().classes("items-center gap-4"):
-        with ui.tabs() as jog_mode_tabs:
-            ui.tab("Joint jog")
-            ui.tab("Cartesian jog")
-            jog_mode_tabs.value = "Joint jog"
-        frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props("dense")
-        frame_radio.on_value_change(lambda e: set_frame(frame_radio.value))
+    with ui.row().classes("w-full items-center justify-between"):
+        with ui.row().classes("items-center gap-4"):
+            with ui.tabs() as jog_mode_tabs:
+                ui.tab("Joint jog")
+                ui.tab("Cartesian jog")
+                jog_mode_tabs.value = "Joint jog"
+            frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props("dense")
+            frame_radio.on_value_change(lambda e: set_frame(frame_radio.value))
+        drag_handle(pid, src_col)
     joint_jog_section = ui.column().classes("gap-2")
     with joint_jog_section:
         joint_names = ['J1', 'J2', 'J3', 'J4', 'J5', 'J6']
@@ -1431,19 +1253,19 @@ def render_jog_content() -> None:
     jog_mode_tabs.on_value_change(lambda e: update_jog_visibility())
     update_jog_visibility()
 
-def render_editor_content() -> None:
+def render_editor_content(pid: str, src_col: str) -> None:
     """Inner content for the Program Editor panel (no outer card)."""
     global program_filename_input, program_textarea
     with ui.row():
-        with ui.column().classes("w-3/4"):
-            with ui.row().classes("items-center gap-2 w-full"):
+        with ui.column().classes("w-[35vw]"):
+            with ui.row().classes("items-center gap-2"):
                 ui.label("Program:").classes("text-md font-medium")
-                program_filename_input = ui.input(label="Filename", value="execute_script.txt").classes("flex-grow")
+                program_filename_input = ui.input(label="Filename", value="execute_script.txt").classes("text-sm font-small").style("width: 450px")
                 ui.button("Open", on_click=open_file_picker).props("unelevated")
             program_textarea = ui.codemirror(
                 value="",
                 line_wrapping=True,
-            ).classes("w-full").style("height: 300px")
+            ).classes("w-full").style("height: 340px")
             with ui.row().classes("gap-2"):
                 ui.button("Start", on_click=lambda: asyncio.create_task(execute_program())).props("unelevated color=positive")
                 ui.button("Stop", on_click=lambda: asyncio.create_task(stop_program())).props("unelevated color=negative")
@@ -1462,20 +1284,26 @@ def render_editor_content() -> None:
                             ui.button("Save", on_click=lambda: asyncio.create_task(do_save_as())).props("color=positive")
                     save_as_dialog.open()
                 ui.button("Save as", on_click=save_as).props("unelevated")
-        with ui.column().classes("w-1/4"):
-            build_command_palette_table()
+        with ui.column().classes("w-[10vw]"):
+            with ui.row().classes("items-center w-full justify-between gap-0"):
+                prefill_toggle = ui.switch("Current Pose", value=True)
+                drag_handle(pid, src_col)
+            build_command_palette_table(prefill_toggle)
+
+def drag_handle(pid: str, src_col: str, extra_classes: str = ""):
+    """Create a draggable handle with a gray button look, inline or overlaid."""
+    wrapper = ui.element('div').classes(f"drag-handle-btn cursor-grab inline-flex items-center justify-center {extra_classes}").props("draggable")
+    wrapper.on('dragstart', lambda e, p=pid, s=src_col: on_dragstart(p, s))
+    wrapper.on('dragend', lambda e: on_dragend())
+    with wrapper:
+        ui.icon("drag_indicator").classes("text-white opacity-90").style("font-size: 18px;")
+    return wrapper
 
 def draggable_card(title: str, pid: str, src_col: str, render_body_fn, card_classes: str = "") -> None:
-    """Create a card with a header drag handle and provided body renderer."""
-    card = ui.card().classes(f"w-full {card_classes}")
+    """Create a card whose drag handle is integrated into its header/body, not a separate row."""
+    card = ui.card().classes(f"w-full relative {card_classes}")
     with card:
-        with ui.row().classes("items-center justify-between px-2 py-1 bg-[var(--ctk-surface-top)] rounded-t"):
-            handle = ui.icon("drag_indicator").classes("cursor-grab").props("draggable")
-            handle.on('dragstart', lambda e, p=pid, s=src_col: on_dragstart(p, s))
-            handle.on('dragend', lambda e: on_dragend())
-            ui.label(title).classes("text-sm font-medium")
-        with ui.column().classes("gap-0 p-0 m-0"):
-            render_body_fn()
+        render_body_fn(pid, src_col)
 
 def on_dragstart(pid: str, src_col: str) -> None:
     global _drag_id, _drag_src
@@ -1544,6 +1372,32 @@ def render_move_columns() -> None:
     render_one_column(right_col_container, 'right')
 
 def compose_ui() -> None:
+    # lightweight CSS for the drag handle "grey button" look
+    ui.add_css("""
+.drag-handle-btn {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px;
+  padding: 4px;
+  transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+body.body--light .drag-handle-btn {
+  background: rgba(0,0,0,0.06);
+  border-color: rgba(0,0,0,0.12);
+}
+.drag-handle-btn:hover {
+  background: rgba(255,255,255,0.16);
+  border-color: rgba(255,255,255,0.24);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+body.body--light .drag-handle-btn:hover {
+  background: rgba(0,0,0,0.12);
+  border-color: rgba(0,0,0,0.20);
+}
+.drag-handle-btn:active {
+  cursor: grabbing;
+}
+""")
     build_header()
     global move_page, io_page, settings_page, calibrate_page, gripper_page
 
