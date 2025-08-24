@@ -4,8 +4,9 @@ import asyncio
 import os
 import re
 import sys
+import json
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, TypedDict
 
 from nicegui import ui
 from nicegui import app as ng_app
@@ -104,6 +105,7 @@ estop_indicator = "-"
 # estop_indicator = ui.label("E-STOP: unknown").classes("text-sm")
 
 # Response log
+log_buffer: List[str] = []
 response_log: ui.log
 # Grid label references for readouts
 tool_labels = {}  # keys: "X","Y","Z","Rx","Ry","Rz" -> ui.label
@@ -1269,19 +1271,290 @@ def build_footer() -> None:
             ui.button("Clear error", on_click=lambda: asyncio.create_task(send_clear_error())).props("color=warning")
             ui.button("Stop Motion", on_click=lambda: asyncio.create_task(send_stop_motion())).props("color=negative")
 
+# ------------------- Drag-and-drop layout (Move page) -------------------
+
+class MoveLayout(TypedDict):
+    left: list[str]
+    right: list[str]
+
+LAYOUT_PATH = (REPO_ROOT / "app" / "layout.json")
+DEFAULT_LAYOUT: MoveLayout = {"left": ["jog", "readouts"], "right": ["editor", "log"]}
+
+def load_layout() -> MoveLayout:
+    try:
+        return json.loads(LAYOUT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return DEFAULT_LAYOUT.copy()
+
+def save_layout(layout: MoveLayout) -> None:
+    try:
+        LAYOUT_PATH.write_text(json.dumps(layout, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.error(f"Failed to save layout: {e}")
+
+current_layout: MoveLayout = load_layout()
+_drag_id: Optional[str] = None
+_drag_src: Optional[str] = None  # "left" or "right"
+
+left_col_container = None  # type: ignore
+right_col_container = None  # type: ignore
+
+def render_readouts_content() -> None:
+    """Inner content for the readouts + controls panel (no outer card)."""
+    global incremental_jog_checkbox, joint_step_input, io_summary_label
+    # Tools, Joints, Controls in three vertical columns
+    with ui.row().classes("gap-8 items-start"):
+        with ui.column().classes("gap-1 w-[8vw]"):
+            ui.label("Tools positions").classes("text-sm")
+            for key in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
+                with ui.row().classes("items-center gap-2"):
+                    ui.label(f"{key}:").classes("text-xs text-[var(--ctk-muted)] w-6")
+                    tool_labels[key] = ui.label("-").classes("text-4xl")
+        with ui.column().classes("gap-1 w-[8vw]"):
+            ui.label("Joint positions").classes("text-sm")
+            joint_labels.clear()
+            for i in range(6):
+                with ui.row().classes("items-center gap-2"):
+                    ui.label(f"θ{i+1}:").classes("text-xs text-[var(--ctk-muted)] w-6")
+                    joint_labels.append(ui.label("-").classes("text-4xl"))
+        with ui.column().classes("gap-2"):
+            ui.label("Controls").classes("text-sm")
+            # Sliders
+            ui.label("Jog velocity %").classes("text-xs text-[var(--ctk-muted)]")
+            jog_speed_slider = ui.slider(min=1, max=100, value=jog_speed_value, step=1)
+            jog_speed_slider.on_value_change(lambda e: set_jog_speed(jog_speed_slider.value))
+            ui.label("Jog accel %").classes("text-xs text-[var(--ctk-muted)]")
+            jog_accel_slider = ui.slider(min=1, max=100, value=jog_accel_value, step=1)
+            jog_accel_slider.on_value_change(lambda e: set_jog_accel(jog_accel_slider.value))
+            # Incremental and step
+            with ui.row().classes("items-center gap-4 w-full"):
+                incremental_jog_checkbox = ui.checkbox("Incremental jog", value=False)
+                joint_step_input = ui.number(label="Step size (deg/mm)", value=joint_step_deg, min=0.1, max=100.0, step=0.1).classes("w-30")
+                # IO summary (live-updated)
+                global io_summary_label
+                io_summary_label = ui.label(f"IO: {io_label}").classes("text-sm")
+            # Buttons
+            with ui.row().classes("gap-2"):
+                ui.button("Enable", on_click=lambda: asyncio.create_task(send_enable())).props("color=positive")
+                ui.button("Disable", on_click=lambda: asyncio.create_task(send_disable())).props("color=negative")
+                ui.button("Home", on_click=lambda: asyncio.create_task(send_home())).props("color=primary")
+
+def render_log_content() -> None:
+    """Inner content for the Response Log panel (no outer card)."""
+    global response_log
+    ui.label("Response Log").classes("text-md font-medium")
+    response_log = ui.log(max_lines=500).classes("w-full").style("height: 220px")
+    # replay buffered log lines so moves don't lose history
+    try:
+        for line in log_buffer:
+            response_log.push(line)
+    except Exception:
+        pass
+    ui.button("Show received frame", on_click=lambda: asyncio.create_task(show_received_frame())).props("outline")
+
+def render_jog_content() -> None:
+    """Inner content for the Jog panel (no outer card)."""
+    global jog_mode_radio, joint_jog_section, cart_jog_section, jog_speed_text, frame_text, cart_speed_text
+    with ui.row().classes("items-center gap-4"):
+        with ui.tabs() as jog_mode_tabs:
+            ui.tab("Joint jog")
+            ui.tab("Cartesian jog")
+            jog_mode_tabs.value = "Joint jog"
+        frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props("dense")
+        frame_radio.on_value_change(lambda e: set_frame(frame_radio.value))
+    joint_jog_section = ui.column().classes("gap-2")
+    with joint_jog_section:
+        joint_names = ['J1', 'J2', 'J3', 'J4', 'J5', 'J6']
+
+        def make_joint_row(idx: int, name: str):
+            with ui.row().classes("items-center gap-2"):
+                ui.label(name).classes("w-8")
+                left = ui.image("/static/icons/button_arrow_1.webp").style("width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;")
+                bar = ui.linear_progress(value=0.5).props("rounded").classes("w-[25rem]")
+                right = ui.image("/static/icons/button_arrow_1.webp").style("width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;")
+                joint_progress_bars.append(bar)
+                left.on('mousedown', lambda e, i=idx: set_joint_pressed(i, 'neg', True))
+                left.on('mouseup',   lambda e, i=idx: set_joint_pressed(i, 'neg', False))
+                left.on('mouseleave',lambda e, i=idx: set_joint_pressed(i, 'neg', False))
+                right.on('mousedown', lambda e, i=idx: set_joint_pressed(i, 'pos', True))
+                right.on('mouseup',   lambda e, i=idx: set_joint_pressed(i, 'pos', False))
+                right.on('mouseleave',lambda e, i=idx: set_joint_pressed(i, 'pos', False))
+
+        joint_progress_bars.clear()
+        for i, n in enumerate(joint_names):
+            make_joint_row(i, n)
+
+    cart_jog_section = ui.column().classes("gap-2")
+    with cart_jog_section:
+        def axis_image(src: str, axis: str, rotate_deg: int = 0):
+            img = ui.image(src).style(f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);")
+            img.on('mousedown', lambda e, a=axis: set_axis_pressed(a, True))
+            img.on('mouseup',   lambda e, a=axis: set_axis_pressed(a, False))
+            img.on('mouseleave',lambda e, a=axis: set_axis_pressed(a, False))
+
+        with ui.row().classes("items-start gap-8"):
+            with ui.element('div').style('display:grid; grid-template-columns:72px 72px 50px; gap:8px;'):
+                ui.element('div').style('width:72px;height:72px')
+                axis_image("/static/icons/cart_x_up.webp", "X+")
+                ui.element('div').style('width:72px;height:72px')
+                axis_image("/static/icons/cart_y_left.webp", "Y-")
+                ui.element('div').style('width:72px;height:72px')
+                axis_image("/static/icons/cart_y_right.webp", "Y+")
+                ui.element('div').style('width:72px;height:72px')
+                axis_image("/static/icons/cart_x_down.webp", "X-")
+                ui.element('div').style('width:72px;height:72px')
+            with ui.column().classes("gap-16"):
+                axis_image("/static/icons/cart_z_up.webp", "Z+")
+                axis_image("/static/icons/cart_z_down.webp", "Z-")
+
+            with ui.column().classes("gap-16"):
+                axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
+                axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
+            with ui.element('div').style('display:grid; grid-template-columns:60px 60px 60px; gap:8px;'):
+                ui.element('div')
+                axis_image("/static/icons/RX_PLUS.webp", "RX+")
+                ui.element('div')
+                axis_image("/static/icons/RY_PLUS.webp", "RY+")
+                ui.element('div')
+                axis_image("/static/icons/RY_MINUS.webp", "RY-")
+                ui.element('div')
+                axis_image("/static/icons/RX_MINUS.webp", "RX-")
+
+    def update_jog_visibility() -> None:
+        if jog_mode_tabs.value == "Joint jog":
+            joint_jog_section.visible = True
+            cart_jog_section.visible = False
+        else:
+            joint_jog_section.visible = False
+            cart_jog_section.visible = True
+
+    jog_mode_tabs.on_value_change(lambda e: update_jog_visibility())
+    update_jog_visibility()
+
+def render_editor_content() -> None:
+    """Inner content for the Program Editor panel (no outer card)."""
+    global program_filename_input, program_textarea
+    with ui.row():
+        with ui.column().classes("w-3/4"):
+            with ui.row().classes("items-center gap-2 w-full"):
+                ui.label("Program:").classes("text-md font-medium")
+                program_filename_input = ui.input(label="Filename", value="execute_script.txt").classes("flex-grow")
+                ui.button("Open", on_click=open_file_picker).props("unelevated")
+            program_textarea = ui.codemirror(
+                value="",
+                line_wrapping=True,
+            ).classes("w-full").style("height: 300px")
+            with ui.row().classes("gap-2"):
+                ui.button("Start", on_click=lambda: asyncio.create_task(execute_program())).props("unelevated color=positive")
+                ui.button("Stop", on_click=lambda: asyncio.create_task(stop_program())).props("unelevated color=negative")
+                ui.button("Save", on_click=lambda: asyncio.create_task(save_program())).props("unelevated")
+                def save_as():
+                    async def do_save_as():
+                        name = save_as_input.value.strip() or "program.txt"
+                        await save_program(as_name=name)
+                        save_as_dialog.close()
+                    save_as_dialog = ui.dialog()
+                    with save_as_dialog, ui.card():
+                        ui.label("Save As")
+                        save_as_input = ui.input(label="New filename", value=program_filename_input.value).classes("w-80")
+                        with ui.row().classes("gap-2"):
+                            ui.button("Cancel", on_click=save_as_dialog.close)
+                            ui.button("Save", on_click=lambda: asyncio.create_task(do_save_as())).props("color=positive")
+                    save_as_dialog.open()
+                ui.button("Save as", on_click=save_as).props("unelevated")
+        with ui.column().classes("w-1/4"):
+            build_command_palette_table()
+
+def draggable_card(title: str, pid: str, src_col: str, render_body_fn, card_classes: str = "") -> None:
+    """Create a card with a header drag handle and provided body renderer."""
+    card = ui.card().classes(f"w-full {card_classes}")
+    with card:
+        with ui.row().classes("items-center justify-between px-2 py-1 bg-[var(--ctk-surface-top)] rounded-t"):
+            handle = ui.icon("drag_indicator").classes("cursor-grab").props("draggable")
+            handle.on('dragstart', lambda e, p=pid, s=src_col: on_dragstart(p, s))
+            handle.on('dragend', lambda e: on_dragend())
+            ui.label(title).classes("text-sm font-medium")
+        with ui.column().classes("gap-0 p-0 m-0"):
+            render_body_fn()
+
+def on_dragstart(pid: str, src_col: str) -> None:
+    global _drag_id, _drag_src
+    _drag_id = pid
+    _drag_src = src_col
+
+def on_dragend() -> None:
+    global _drag_id, _drag_src
+    _drag_id = None
+    _drag_src = None
+
+def on_drop_to(dst_col: str, index: int) -> None:
+    global current_layout, _drag_id, _drag_src
+    if not _drag_id or not _drag_src:
+        return
+    # remove from source
+    current_layout[_drag_src].remove(_drag_id)  # type: ignore[index]
+    # clamp and insert
+    index = max(0, min(index, len(current_layout[dst_col])))  # type: ignore[index]
+    current_layout[dst_col].insert(index, _drag_id)  # type: ignore[index]
+    save_layout(current_layout)
+    render_move_columns()
+    _drag_id = None
+    _drag_src = None
+
+def render_drop_spacer(parent, col_name: str, index: int):
+    spacer = ui.element('div').classes('drop-spacer')
+    spacer.on('dragover.prevent', lambda e, s=spacer: s.classes(add='active'))
+    spacer.on('dragleave',       lambda e, s=spacer: s.classes(remove='active'))
+    spacer.on('drop',            lambda e, c=col_name, i=index, s=spacer: (s.classes(remove='active'), on_drop_to(c, i)))
+    with parent:
+        spacer
+
+def render_panel_contents(pid: str, src_col: str) -> None:
+    # Use a draggable header handle and place content-only bodies inside.
+    if pid == 'jog':
+        draggable_card("Jog", pid, src_col, render_jog_content, "min-h-[500px]")
+    elif pid == 'editor':
+        draggable_card("Program editor", pid, src_col, render_editor_content, "min-h-[500px]")
+    elif pid == 'readouts':
+        draggable_card("Readouts & Controls", pid, src_col, render_readouts_content)
+    elif pid == 'log':
+        draggable_card("Response Log", pid, src_col, render_log_content)
+
+def render_panel_wrapper(parent, pid: str, src_col: str):
+    # Render the draggable card (dragging limited to header handle).
+    with parent:
+        render_panel_contents(pid, src_col)
+
+def render_one_column(container, col_name: str):
+    # column-level highlight
+    container.on('dragover.prevent', lambda e, c=container: c.classes(add='highlight'))
+    container.on('dragleave',        lambda e, c=container: c.classes(remove='highlight'))
+    container.on('drop',             lambda e, n=col_name, c=container: (c.classes(remove='highlight'), on_drop_to(n, len(current_layout[n]))))
+    # interleave spacers and panels
+    items = current_layout[col_name]
+    render_drop_spacer(container, col_name, 0)
+    for i, pid in enumerate(items):
+        render_panel_wrapper(container, pid, col_name)
+        render_drop_spacer(container, col_name, i + 1)
+
+def render_move_columns() -> None:
+    left_col_container.clear()
+    right_col_container.clear()
+    render_one_column(left_col_container, 'left')
+    render_one_column(right_col_container, 'right')
+
 def compose_ui() -> None:
     build_header()
     global move_page, io_page, settings_page, calibrate_page, gripper_page
 
-    # Move page (existing layout)
+    # Move page (DnD layout)
     move_page = ui.column().classes("w-full")
     with move_page:
-        with ui.row():
-            with ui.column():
-                with ui.row():
-                    build_left_jog_panel()
-                    build_program_editor()
-                build_bottom_row()
+        with ui.row().classes("gap-4 items-start"):
+            global left_col_container, right_col_container
+            left_col_container  = ui.column().classes("droppable-col w-[48vw] gap-4 min-h-[100px]")
+            right_col_container = ui.column().classes("droppable-col w-[48vw] gap-4 min-h-[100px]")
+        render_move_columns()
 
     # I/O page (scaffold)
     io_page = ui.column().classes("w-full")

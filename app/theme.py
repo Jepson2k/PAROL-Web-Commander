@@ -100,6 +100,12 @@ def _inject_component_overrides() -> None:
 
 /* Misc */
 .q-separator { background: var(--ctk-muted); }
+
+/* Drag-and-drop visuals */
+.drop-spacer { height: 4px; margin: 6px 0; border: 2px dashed transparent; border-radius: 6px; opacity: 0.6; transition: border-color .08s, background .08s; }
+.drop-spacer.active { border-color: var(--q-accent); background: rgba(34, 211, 238, 0.18); }
+.droppable-col.highlight { box-shadow: inset 0 0 0 2px var(--q-accent); background: rgba(34, 211, 238, 0.08); }
+.draggable-card { cursor: move; user-select: none; }
 """
     )
 
