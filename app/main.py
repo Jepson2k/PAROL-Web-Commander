@@ -76,6 +76,9 @@ CONTROLLER_PATH = (REPO_ROOT / "PAROL6-python-API" / "headless_commander.py").as
 # Register static files for optimized icons and other assets
 ng_app.add_static_files('/static', (REPO_ROOT / 'app' / 'static').as_posix())
 
+# Official PAROL6 documentation URL
+PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
+
 # Expose PAROL6-python-API for joint limits import
 sys.path.append((REPO_ROOT / "PAROL6-python-API").as_posix())
 try:
@@ -363,6 +366,58 @@ async def show_received_frame() -> None:
     except Exception as e:
         log_err(f"GET_STATUS raw failed: {e}")
 
+async def go_to_limit() -> None:
+    """Move the selected joint to its limit position."""
+    try:
+        if not joint_selector or not limit_selector:
+            ui.notify("Joint or direction selector not initialized", color="negative")
+            return
+            
+        if len(latest_angles) < 6:
+            ui.notify("No robot position data available", color="warning")
+            return
+            
+        # Parse selected joint (e.g., "Joint 1" -> 0)
+        joint_text = joint_selector.value
+        if not joint_text or not joint_text.startswith("Joint "):
+            ui.notify("Please select a joint", color="warning")
+            return
+        joint_index = int(joint_text.split()[-1]) - 1  # Convert to 0-based index
+        
+        # Get joint limits
+        if joint_index < 0 or joint_index >= len(JOINT_LIMITS_DEG):
+            ui.notify(f"Invalid joint index: {joint_index + 1}", color="negative")
+            return
+        
+        min_limit, max_limit = JOINT_LIMITS_DEG[joint_index]
+        current_angle = latest_angles[joint_index]
+        
+        # Determine target based on direction selection
+        direction = limit_selector.value
+        if direction == "Minimum limit":
+            target_angle = min_limit
+        elif direction == "Maximum limit":
+            target_angle = max_limit
+        else:
+            ui.notify("Please select a direction", color="warning")
+            return
+        
+        # Use slow speed (25% as a reasonable default for limit moves)
+        speed = 25
+        
+        # Create target angles array (copy current, change only selected joint)
+        target_angles = list(latest_angles)
+        target_angles[joint_index] = target_angle
+        
+        # Send move command
+        resp = client.move_joints(target_angles, duration=None, speed_percentage=speed)
+        ui.notify(f"Moving Joint {joint_index + 1} to {direction.lower()} ({target_angle:.1f}°)", color="primary")
+        log_info(f"GO_TO_LIMIT: Joint {joint_index + 1} from {current_angle:.1f}° to {target_angle:.1f}° @ {speed}%")
+        
+    except Exception as e:
+        ui.notify(f"Go to limit failed: {e}", color="negative")
+        log_err(f"GO_TO_LIMIT failed: {e}")
+
 # --------------- Status polling ---------------
 
 async def update_status_async() -> None:
@@ -465,6 +520,18 @@ async def update_status_async() -> None:
         # slow down polling while offline to keep UI responsive
         if status_timer and getattr(status_timer, "interval", None) != 1.0:
             status_timer.interval = 1.0
+    
+    # Update go to limit button state based on connection status
+    if go_to_limit_button and joint_selector and limit_selector:
+        has_joint = joint_selector.value is not None
+        has_direction = limit_selector.value is not None
+        has_connection = len(latest_angles) >= 6
+        
+        if has_joint and has_direction and has_connection:
+            go_to_limit_button.props("unelevated")
+        else:
+            go_to_limit_button.props("unelevated disable")
+    
     status_busy = False
 
 # Joint limit utils
@@ -1066,25 +1133,16 @@ def build_header() -> None:
             with ui.tabs() as nav_tabs:
                 ui.tab("Move")
                 ui.tab("I/O")
-                ui.tab("Settings")
                 ui.tab("Calibrate")
                 ui.tab("Gripper")
+                ui.tab("Settings")
                 nav_tabs.value = "Move"  # Set initial active tab
                 nav_tabs.on_value_change(lambda e: set_active_page(nav_tabs.value))
             # Center: firmware label
-            ui.label(f"Source controller fw version: {fw_version}").classes("text-sm text-center")
+            ui.label(f"FW version: {fw_version}").classes("text-sm text-center")
             # Right: theme toggle and help
             with ui.row().classes("items-center gap-2"):
-                theme_toggle = ui.toggle(options=["System", "Light", "Dark"], value="System").props("dense")
-                def _on_theme_change():
-                    val = (theme_toggle.value or "System").lower()
-                    mode = "system" if val.startswith("s") else ("light" if val.startswith("l") else "dark")
-                    ctk_set_theme(mode)
-                    ui.run_javascript(f"localStorage.setItem('ctk_theme_mode', '{mode}')")
-                    # Update code editor theme
-                    program_textarea.theme = "default" if mode == "light" else "oneDark"
-                theme_toggle.on_value_change(lambda e: _on_theme_change())
-                ui.button("?", on_click=lambda: ui.notify("Help: PAROL6 NiceGUI Commander", color="primary")).props("round unelevated")
+                ui.button("?", on_click=lambda: ui.run_javascript(f"window.open('{PAROL6_OFFICIAL_DOC_URL}', '_blank')")).props("round unelevated")
 
 def open_file_picker() -> None:
     dlg = ui.dialog()
@@ -1264,18 +1322,41 @@ def build_settings_panel() -> None:
                 ctk_set_theme(mode)
                 ui.run_javascript(f"localStorage.setItem('ctk_theme_mode', '{mode}')")
             mode_toggle.on_value_change(lambda e: _on_mode())
-            ui.label("Tip: Use browser zoom for UI scaling.").classes("text-sm text-[var(--ctk-muted)]")
 
 def build_calibrate_panel() -> None:
+    global joint_selector, limit_selector, go_to_limit_button
+    
     with ui.card().classes("w-full"):
         ui.label("Calibrate").classes("text-md font-medium")
         with ui.row().classes("items-center gap-2"):
-            ui.button("Enable motor", on_click=lambda: asyncio.create_task(send_enable())).props("unelevated color=positive")
-            ui.button("Disable motor", on_click=lambda: asyncio.create_task(send_disable())).props("unelevated color=negative")
-            ui.button("Go to limit").props("unelevated disable")
+            ui.button("Enable", on_click=lambda: asyncio.create_task(send_enable())).props("unelevated color=positive")
+            ui.button("Disable", on_click=lambda: asyncio.create_task(send_disable())).props("unelevated color=negative")
+            go_to_limit_button = ui.button("Go to limit", on_click=lambda: asyncio.create_task(go_to_limit())).props("unelevated disable")
         with ui.row().classes("items-center gap-2"):
-            ui.select(options=[f"Joint {i}" for i in range(1, 7)], label="Joint").props("dense")
-        ui.label("Note: 'Go to limit' requires server support and is not available yet.").classes("text-xs text-[var(--ctk-muted)]")
+            joint_selector = ui.select(
+                options=[f"Joint {i}" for i in range(1, 7)], 
+                label="Joint", 
+                value="Joint 1"
+            ).props("dense")
+            limit_selector = ui.select(
+                options=["Minimum limit", "Maximum limit"],
+                label="Direction",
+                value="Maximum limit"
+            ).props("dense")
+        
+        # Update button state when selections change
+        def update_go_to_limit_button():
+            has_joint = joint_selector.value is not None
+            has_direction = limit_selector.value is not None
+            has_connection = len(latest_angles) >= 6
+            
+            if has_joint and has_direction and has_connection:
+                go_to_limit_button.props("unelevated")
+            else:
+                go_to_limit_button.props("unelevated disable")
+        
+        joint_selector.on_value_change(lambda: update_go_to_limit_button())
+        limit_selector.on_value_change(lambda: update_go_to_limit_button())
 
 def build_gripper_panel() -> None:
     global grip_id_label, grip_cal_status_label, grip_err_status_label
@@ -1346,7 +1427,6 @@ def build_footer() -> None:
     # Footer: Simulator/Real, Connect/Disconnect, Clear error, E-stop
     with ui.footer().classes("justify-between items-center px-3 py-1"):
         with ui.row().classes("items-center gap-4"):
-            mode_radio = ui.toggle(options=["Simulator", "Real robot"], value="Real robot").props("dense")
             global estop_label
             estop_label = ui.label("E-STOP: unknown").classes("text-sm")
         with ui.row().classes("items-center gap-2"):
@@ -1359,7 +1439,7 @@ def build_footer() -> None:
             ui.button("Connect", on_click=lambda: asyncio.create_task(start_controller(com_input.value))).props("color=positive")
             ui.button("Disconnect", on_click=lambda: asyncio.create_task(stop_controller())).props("color=negative")
             ui.button("Clear error", on_click=lambda: asyncio.create_task(send_clear_error())).props("color=warning")
-            ui.button("Stop Motion", on_click=lambda: asyncio.create_task(send_stop_motion())).props("color=negative")
+            ui.button("Stop", on_click=lambda: asyncio.create_task(send_stop_motion())).props("color=negative")
 
 # ------------------- Drag-and-drop layout (Move page) -------------------
 
@@ -1394,29 +1474,29 @@ def render_readouts_content(pid: str, src_col: str) -> None:
     # place drag handle at top-right as unobtrusive overlay
     drag_handle(pid, src_col).style("position:absolute; right:16px; top:16px; opacity:0.8;")
     global incremental_jog_checkbox, joint_step_input, io_summary_label
-    # Tools, Joints, Controls in three vertical columns
-    with ui.row().classes("gap-8 items-start"):
-        with ui.column().classes("gap-1 w-[8vw]"):
+    # Tools, Joints, Controls in responsive columns
+    with ui.element('div').classes("readouts-row"):
+        with ui.column().classes("readouts-col"):
             ui.label("Tool positions").classes("text-sm")
             for key in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
                 with ui.row().classes("items-center gap-2"):
                     ui.label(f"{key}:").classes("text-xs text-[var(--ctk-muted)] w-6")
                     tool_labels[key] = ui.label("-").classes("text-4xl")
-        with ui.column().classes("gap-1 w-[8vw]"):
+        with ui.column().classes("readouts-col"):
             ui.label("Joint positions").classes("text-sm")
             joint_labels.clear()
             for i in range(6):
                 with ui.row().classes("items-center gap-2"):
                     ui.label(f"θ{i+1}:").classes("text-xs text-[var(--ctk-muted)] w-6")
                     joint_labels.append(ui.label("-").classes("text-4xl"))
-        with ui.column().classes("gap-2"):
+        with ui.column().classes("readouts-controls"):
             ui.label("Controls").classes("text-sm")
             # Sliders
             ui.label("Jog velocity %").classes("text-xs text-[var(--ctk-muted)]")
-            jog_speed_slider = ui.slider(min=1, max=100, value=jog_speed_value, step=1)
+            jog_speed_slider = ui.slider(min=1, max=100, value=jog_speed_value, step=1).classes("w-full").style("width: 100%")
             jog_speed_slider.on_value_change(lambda e: set_jog_speed(jog_speed_slider.value))
             ui.label("Jog accel %").classes("text-xs text-[var(--ctk-muted)]")
-            jog_accel_slider = ui.slider(min=1, max=100, value=jog_accel_value, step=1)
+            jog_accel_slider = ui.slider(min=1, max=100, value=jog_accel_value, step=1).classes("w-full").style("width: 100%")
             jog_accel_slider.on_value_change(lambda e: set_jog_accel(jog_accel_slider.value))
             # Incremental and step
             with ui.row().classes("items-center gap-4 w-full"):
@@ -1426,7 +1506,7 @@ def render_readouts_content(pid: str, src_col: str) -> None:
                 global io_summary_label
                 io_summary_label = ui.label(f"IO: {io_label}").classes("text-sm")
             # Buttons
-            with ui.row().classes("gap-2"):
+            with ui.row().classes("gap-2 w-full"):
                 ui.button("Enable", on_click=lambda: asyncio.create_task(send_enable())).props("color=positive")
                 ui.button("Disable", on_click=lambda: asyncio.create_task(send_disable())).props("color=negative")
                 ui.button("Home", on_click=lambda: asyncio.create_task(send_home())).props("color=primary")
@@ -1460,10 +1540,10 @@ def render_jog_content(pid: str, src_col: str) -> None:
         joint_names = ['J1', 'J2', 'J3', 'J4', 'J5', 'J6']
 
         def make_joint_row(idx: int, name: str):
-            with ui.row().classes("items-center gap-2"):
+            with ui.element('div').classes("joint-progress-container"):
                 ui.label(name).classes("w-8")
                 left = ui.image("/static/icons/button_arrow_1.webp").style("width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;")
-                bar = ui.linear_progress(value=0.5).props("rounded").classes("w-[25rem]")
+                bar = ui.linear_progress(value=0.5).props("rounded").classes("joint-progress-bar")
                 right = ui.image("/static/icons/button_arrow_1.webp").style("width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;")
                 joint_progress_bars.append(bar)
                 left.on('mousedown', lambda e, i=idx: set_joint_pressed(i, 'neg', True))
@@ -1486,7 +1566,7 @@ def render_jog_content(pid: str, src_col: str) -> None:
             img.on('mouseleave',lambda e, a=axis: set_axis_pressed(a, False))
 
         with ui.row().classes("items-start gap-8"):
-            with ui.element('div').style('display:grid; grid-template-columns:72px 72px 50px; gap:8px;'):
+            with ui.element('div').classes("cart-jog-grid-3"):
                 ui.element('div').style('width:72px;height:72px')
                 axis_image("/static/icons/cart_x_up.webp", "X+")
                 ui.element('div').style('width:72px;height:72px')
@@ -1503,7 +1583,7 @@ def render_jog_content(pid: str, src_col: str) -> None:
             with ui.column().classes("gap-16"):
                 axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
                 axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
-            with ui.element('div').style('display:grid; grid-template-columns:60px 60px 60px; gap:8px;'):
+            with ui.element('div').classes("cart-jog-grid-6"):
                 ui.element('div')
                 axis_image("/static/icons/RX_PLUS.webp", "RX+")
                 ui.element('div')
@@ -1527,8 +1607,8 @@ def render_jog_content(pid: str, src_col: str) -> None:
 def render_editor_content(pid: str, src_col: str) -> None:
     """Inner content for the Program Editor panel (no outer card)."""
     global program_filename_input, program_textarea
-    with ui.row():
-        with ui.column().classes("w-[35vw]"):
+    with ui.element('div').classes("editor-layout"):
+        with ui.column().classes("editor-main"):
             with ui.row().classes("items-center gap-2"):
                 ui.label("Program:").classes("text-md font-medium")
                 program_filename_input = ui.input(label="Filename", value="execute_script.txt").classes("text-sm font-small").style("width: 450px")
@@ -1562,7 +1642,7 @@ def render_editor_content(pid: str, src_col: str) -> None:
                             ui.button("Save", on_click=lambda: asyncio.create_task(do_save_as())).props("color=positive")
                     save_as_dialog.open()
                 ui.button("Save as", on_click=save_as).props("unelevated")
-        with ui.column().classes("w-[10vw]"):
+        with ui.column().classes("editor-palette"):
             with ui.row().classes("items-center w-full justify-between gap-0"):
                 prefill_toggle = ui.switch("Current Pose", value=True)
                 drag_handle(pid, src_col)
@@ -1650,8 +1730,8 @@ def render_move_columns() -> None:
     render_one_column(right_col_container, 'right')
 
 def compose_ui() -> None:
-    # lightweight CSS for the drag handle "grey button" look
     ui.add_css("""
+/* Drag handle styles */
 .drag-handle-btn {
   background: rgba(255,255,255,0.08);
   border: 1px solid rgba(255,255,255,0.14);
@@ -1675,6 +1755,193 @@ body.body--light .drag-handle-btn:hover {
 .drag-handle-btn:active {
   cursor: grabbing;
 }
+
+/* Main layout responsive grid */
+.move-layout-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  width: 100%;
+}
+
+/* Mobile breakpoint - stack to single column */
+@media (max-width: 1060px) {
+  .move-layout-container {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+}
+
+/* Joint jog responsive progress bars */
+.joint-progress-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 100%;
+}
+
+.joint-progress-bar {
+  flex: 1;
+  min-width: 480px;
+  max-width: 1000px;
+}
+
+/* Responsive adjustments for joint progress bars */
+@media (max-width: 768px) and (min-width: 481px) {
+  .joint-progress-bar {
+    min-width: 400px;
+    max-width: 800px;
+  }
+}
+
+@media (max-width: 480px) {
+  .joint-progress-bar {
+    min-width: 360px;
+  }
+}
+
+/* Cartesian jog responsive grid */
+.cart-jog-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(60px, 72px));
+  gap: 8px;
+  justify-content: center;
+}
+
+.cart-jog-grid-6 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(50px, 60px));
+  gap: 8px;
+  justify-content: center;
+}
+
+/* Readouts panel responsive columns */
+.readouts-row {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.readouts-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 120px;
+  flex: 0 0 auto;
+}
+
+.readouts-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 200px;
+}
+
+/* Program editor responsive layout */
+.editor-layout {
+  display: flex;
+  gap: 1rem;
+  width: 100%;
+}
+
+.editor-main {
+  flex: 1;
+  min-width: 300px;
+  max-width: none;
+}
+
+.editor-palette {
+  flex: 0 0 auto;
+  width: clamp(150px, 20vw, 220px);
+}
+
+/* Compact button styling for better space usage */
+.q-btn {
+  padding: 6px 12px !important;
+  min-height: 32px !important;
+  font-size: 0.875rem !important;
+}
+
+.q-btn.q-btn--round {
+  padding: 8px !important;
+  min-height: 36px !important;
+  min-width: 36px !important;
+}
+
+/* Mobile adjustments */
+@media (max-width: 600px) {
+  .readouts-row {
+    flex-direction: column;
+    gap: 1rem;
+  }
+  
+  .readouts-col, .readouts-controls {
+    width: 100%;
+    min-width: unset;
+  }
+  
+  .editor-layout {
+    flex-direction: column;
+  }
+  
+  .editor-main, .editor-palette {
+    width: 100%;
+    max-width: none;
+  }
+  
+  .joint-progress-bar {
+    min-width: 100px;
+    max-width: none;
+  }
+}
+
+/* Tablet adjustments */
+@media (max-width: 1200px) and (min-width: 769px) {
+  .readouts-row {
+    gap: 1rem;
+  }
+  
+  .editor-palette {
+    width: clamp(180px, 20vw, 250px);
+  }
+}
+
+/* Command palette table responsive styling */
+.q-table {
+  width: 100%;
+  max-width: 100%;
+}
+
+.q-table .q-table__container {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.q-table .q-td, .q-table .q-th {
+  word-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+  max-width: 150px;
+}
+
+/* Ensure table fits in narrow palette */
+@media (max-width: 1200px) {
+  .q-table .q-td, .q-table .q-th {
+    max-width: 120px;
+    font-size: 0.85rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .q-table .q-td, .q-table .q-th {
+    max-width: none;
+    font-size: 0.9rem;
+  }
+}
 """)
     build_header()
     global move_page, io_page, settings_page, calibrate_page, gripper_page
@@ -1682,10 +1949,11 @@ body.body--light .drag-handle-btn:hover {
     # Move page (DnD layout)
     move_page = ui.column().classes("w-full")
     with move_page:
-        with ui.row().classes("gap-4 items-start"):
+        # Use CSS Grid for responsive 2-column to 1-column layout
+        with ui.element('div').classes("move-layout-container"):
             global left_col_container, right_col_container
-            left_col_container  = ui.column().classes("droppable-col w-[48vw] gap-4 min-h-[100px]")
-            right_col_container = ui.column().classes("droppable-col w-[48vw] gap-4 min-h-[100px]")
+            left_col_container  = ui.column().classes("droppable-col gap-4 min-h-[100px]")
+            right_col_container = ui.column().classes("droppable-col gap-4 min-h-[100px]")
         render_move_columns()
 
     # I/O page (scaffold)
