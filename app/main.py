@@ -1609,9 +1609,9 @@ def render_editor_content(pid: str, src_col: str) -> None:
     global program_filename_input, program_textarea
     with ui.element('div').classes("editor-layout"):
         with ui.column().classes("editor-main"):
-            with ui.row().classes("items-center gap-2"):
+            with ui.row().classes("items-center gap-2 w-full"):
                 ui.label("Program:").classes("text-md font-medium")
-                program_filename_input = ui.input(label="Filename", value="").classes("text-sm font-small")
+                program_filename_input = ui.input(label="Filename", value="").classes("text-sm font-small flex-1")
                 ui.button("Open", on_click=open_file_picker).props("unelevated")
             program_textarea = ui.codemirror(
                 value="",
@@ -1643,7 +1643,7 @@ def render_editor_content(pid: str, src_col: str) -> None:
                     save_as_dialog.open()
                 ui.button("Save as", on_click=save_as).props("unelevated")
         with ui.column().classes("editor-palette"):
-            with ui.row().classes("items-center w-full justify-between gap-0"):
+            with ui.row().classes("editor-palette-header"):
                 prefill_toggle = ui.switch("Current Pose", value=True)
                 drag_handle(pid, src_col)
             build_command_palette_table(prefill_toggle)
@@ -1855,7 +1855,30 @@ body.body--light .drag-handle-btn:hover {
 
 .editor-palette {
   flex: 0 0 auto;
-  width: clamp(150px, 10vw, 220px);
+  width: 10vw;
+  min-width: 175px;
+}
+
+/* Editor palette header - prevent drag handle wrapping */
+.editor-palette-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  flex-wrap: nowrap !important;
+  gap: 0.5rem !important;
+  width: 100% !important;
+  min-height: 2.5rem;
+}
+
+.editor-palette-header .q-toggle {
+  flex-shrink: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.editor-palette-header .drag-handle-btn {
+  flex-shrink: 0;
+  min-width: 28px;
 }
 
 /* Compact input field styling */
@@ -1869,6 +1892,30 @@ body.body--light .drag-handle-btn:hover {
 
 .q-field__label {
     top: 12px !important;            
+}
+
+/* Small screen adjustments for editor palette header */
+@media (max-width: 768px) {
+  .editor-palette {
+    width: 16vw;
+    min-width: 180px;
+  }
+  
+  .editor-palette-header .drag-handle-btn {
+    min-width: 24px;
+    padding: 2px;
+  }
+}
+
+@media (max-width: 640px) {
+  .editor-palette {
+    width: 18vw;
+    min-width: 160px;
+  }
+  
+  .editor-palette-header .q-toggle__label {
+    font-size: 0.85rem;
+  }
 }
 
 /* Mobile adjustments */
@@ -1890,10 +1937,11 @@ body.body--light .drag-handle-btn:hover {
   .editor-main, .editor-palette {
     width: 100%;
     max-width: none;
+    min-width: unset;
   }
   
   .joint-progress-bar {
-    min-width: 100px;
+    min-width: 150px;
     max-width: none;
   }
 }
@@ -1905,7 +1953,7 @@ body.body--light .drag-handle-btn:hover {
   }
   
   .editor-palette {
-    width: clamp(180px, 10vw, 250px);
+    width: 16vw;
   }
 }
 
@@ -1924,22 +1972,6 @@ body.body--light .drag-handle-btn:hover {
   word-wrap: break-word;
   word-break: break-word;
   white-space: normal;
-  max-width: 150px;
-}
-
-/* Ensure table fits in narrow palette */
-@media (max-width: 1200px) {
-  .q-table .q-td, .q-table .q-th {
-    max-width: 120px;
-    font-size: 0.85rem;
-  }
-}
-
-@media (max-width: 768px) {
-  .q-table .q-td, .q-table .q-th {
-    max-width: none;
-    font-size: 0.9rem;
-  }
 }
 """)
     build_header()
