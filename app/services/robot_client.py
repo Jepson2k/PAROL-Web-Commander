@@ -145,7 +145,7 @@ class RobotClient:
         try:
             # Split top-level sections after "STATUS|"
             sections = resp.split("|")[1:]
-            result = {"pose": None, "angles": None, "io": None, "gripper": None}
+            result: dict[str, object] = {"pose": None, "angles": None, "io": None, "gripper": None}
             for sec in sections:
                 if sec.startswith("POSE="):
                     vals = [float(x) for x in sec[len("POSE="):].split(",") if x]
@@ -170,40 +170,100 @@ class RobotClient:
 
     # --------------- Extended controls / motion ---------------
 
-    def move_joints(self, joint_angles: List[float], duration: Optional[float] = None, speed_percentage: Optional[int] = None) -> str:
+    def move_joints(
+        self,
+        joint_angles: List[float],
+        duration: Optional[float] = None,
+        speed_percentage: Optional[int] = None,
+        accel_percentage: Optional[int] = None,
+        profile: Optional[str] = None,      # 'TRAP' or 'POLY'
+        tracking: Optional[str] = None,     # 'SPEED' or 'POSITION'
+    ) -> str:
         """
-        Send a MOVEJOINT command.
+        Send a MOVEJOINT command with optional planning hints.
         Args:
             joint_angles: six angles in degrees
             duration: total time in seconds, or None
             speed_percentage: 1..100, or None (mutually exclusive with duration)
+            accel_percentage: 1..100 (used for trapezoidal planning), optional
+            profile: 'TRAP' or 'POLY' (poly = jtraj). Default is implementation-defined.
+            tracking: 'SPEED' to stream velocities, otherwise position tracking.
         """
         angles_str = "|".join(str(a) for a in joint_angles)
         dur_str = "NONE" if duration is None else str(duration)
         spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
-        return self._send(f"MOVEJOINT|{angles_str}|{dur_str}|{spd_str}")
+        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
+        prof_str = (profile or "NONE").upper()
+        track_str = (tracking or "NONE").upper()
+        return self._send(f"MOVEJOINT|{angles_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}")
 
-    def move_pose(self, pose: List[float], duration: Optional[float] = None, speed_percentage: Optional[int] = None) -> str:
+    def move_pose(
+        self,
+        pose: List[float],
+        duration: Optional[float] = None,
+        speed_percentage: Optional[int] = None,
+        accel_percentage: Optional[int] = None,
+        profile: Optional[str] = None,      # 'TRAP' or 'POLY'
+        tracking: Optional[str] = None,     # 'SPEED' or 'POSITION'
+    ) -> str:
         """
-        Send a MOVEPOSE command.
+        Send a MOVEPOSE command with optional planning hints.
         Args:
             pose: [x, y, z, rx, ry, rz] (mm/deg)
             duration/speed_percentage: mutually exclusive
+            accel_percentage/profile/tracking: optional advanced parameters
         """
         pose_str = "|".join(str(v) for v in pose)
         dur_str = "NONE" if duration is None else str(duration)
         spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
-        return self._send(f"MOVEPOSE|{pose_str}|{dur_str}|{spd_str}")
+        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
+        prof_str = (profile or "NONE").upper()
+        track_str = (tracking or "NONE").upper()
+        return self._send(f"MOVEPOSE|{pose_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}")
 
-    def move_cartesian(self, pose: List[float], duration: Optional[float] = None, speed_percentage: Optional[float] = None) -> str:
+    def move_cartesian(
+        self,
+        pose: List[float],
+        duration: Optional[float] = None,
+        speed_percentage: Optional[float] = None,
+        accel_percentage: Optional[int] = None,
+        profile: Optional[str] = None,      # 'TRAP' or 'POLY' (used by controller if supported)
+        tracking: Optional[str] = None,     # 'SPEED' or 'POSITION'
+    ) -> str:
         """
         Send a MOVECART (straight-line) command.
         Provide either duration or speed_percentage (1..100).
+        Optional: accel_percentage, trajectory profile, and tracking mode.
         """
         pose_str = "|".join(str(v) for v in pose)
         dur_str = "NONE" if duration is None else str(duration)
         spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
-        return self._send(f"MOVECART|{pose_str}|{dur_str}|{spd_str}")
+        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
+        prof_str = (profile or "NONE").upper()
+        track_str = (tracking or "NONE").upper()
+        return self._send(f"MOVECART|{pose_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}")
+
+    def move_cartesian_rel_trf(
+        self,
+        deltas: List[float],                     # [dx, dy, dz, rx, ry, rz] in mm/deg relative to TRF
+        duration: Optional[float] = None,
+        speed_percentage: Optional[float] = None,
+        accel_percentage: Optional[int] = None,
+        profile: Optional[str] = None,
+        tracking: Optional[str] = None,
+    ) -> str:
+        """
+        Send a MOVECARTRELTRF (relative straight-line in TRF) command.
+        Provide either duration or speed_percentage (1..100).
+        Optional: accel_percentage, trajectory profile, and tracking mode.
+        """
+        delta_str = "|".join(str(v) for v in deltas)
+        dur_str = "NONE" if duration is None else str(duration)
+        spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
+        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
+        prof_str = (profile or "NONE").upper()
+        track_str = (tracking or "NONE").upper()
+        return self._send(f"MOVECARTRELTRF|{delta_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}")
 
     def jog_joint(self, joint_index: int, speed_percentage: int, duration: Optional[float] = None, distance_deg: Optional[float] = None) -> str:
         """

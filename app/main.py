@@ -6,7 +6,7 @@ import re
 import sys
 import json
 from pathlib import Path
-from typing import Optional, List, TypedDict
+from typing import Optional, List, Tuple, TypedDict
 
 from nicegui import ui
 from nicegui import app as ng_app
@@ -485,6 +485,128 @@ def _get_opt(tokens: List[str], key: str) -> Optional[float]:
 def _parse_csv_floats(s: str) -> Optional[List[float]]:
     return [float(x.strip()) for x in s.split(",") if x.strip() != ""]
 
+def _parse_motion_args(argstr: str) -> Tuple[List[float], dict, List[str]]:
+    """
+    Strictly parse motion function arguments like:
+      "j1,j2,j3,j4,j5,j6, v=50, a=30, t=2.5, trap, speed"
+    Returns (values:list[float], opts:dict, errors:list[str])
+      - values: exactly 6 numeric values (list of floats)
+      - opts keys: v (float|None), a (float|None), t (float|None),
+                   profile ('trap'|'poly'|None), tracking ('SPEED'|None)
+      - errors: list of validation error strings (non-empty => invalid)
+    Rules (to mirror legacy Tkinter behavior):
+      - Require exactly 6 leading numeric values.
+      - Options may only appear AFTER the 6 numerics.
+      - Allowed options:
+          v=NN (0..100), a=NN (0..100), t=NN (>0), 'trap'|'poly', 'speed'
+      - Unknown tokens, duplicate options, or malformed numerics => error.
+      - If both t and v/a given, accept but duration (t) takes precedence at runtime.
+    """
+    tokens_raw = [t.strip() for t in (argstr or "").split(",") if t.strip() != ""]
+    values: List[float] = []
+    errors: List[str] = []
+    opts = {"v": None, "a": None, "t": None, "profile": None, "tracking": None}
+
+    # 1) Collect exactly 6 leading numeric values
+    idx = 0
+    while idx < len(tokens_raw) and len(values) < 6:
+        tkn = tokens_raw[idx]
+        try:
+            num = float(tkn)
+            values.append(num)
+        except Exception:
+            errors.append(f"Expected numeric value #{len(values)+1} but got '{tkn}'")
+            # Stop early; enforce strict numeric sequence
+            break
+        idx += 1
+
+    if not errors and len(values) != 6:
+        errors.append(f"Expected 6 numeric values, got {len(values)}")
+
+    # 2) Parse options after the 6 numerics
+    seen = set()
+    while not errors and idx < len(tokens_raw):
+        tkn = tokens_raw[idx]
+        low = tkn.lower()
+
+        if low.startswith("v="):
+            if "v" in seen:
+                errors.append("Duplicate 'v' option")
+                break
+            seen.add("v")
+            rhs = tkn.split("=", 1)[1].strip()
+            try:
+                v = float(rhs)
+            except Exception:
+                errors.append(f"Malformed v value '{rhs}'")
+                break
+            if not (0 <= v <= 100):
+                errors.append(f"v out of range (0..100): {v}")
+                break
+            opts["v"] = v
+            idx += 1
+            continue
+
+        if low.startswith("a="):
+            if "a" in seen:
+                errors.append("Duplicate 'a' option")
+                break
+            seen.add("a")
+            rhs = tkn.split("=", 1)[1].strip()
+            try:
+                a = float(rhs)
+            except Exception:
+                errors.append(f"Malformed a value '{rhs}'")
+                break
+            if not (0 <= a <= 100):
+                errors.append(f"a out of range (0..100): {a}")
+                break
+            opts["a"] = a
+            idx += 1
+            continue
+
+        if low.startswith("t="):
+            if "t" in seen:
+                errors.append("Duplicate 't' option")
+                break
+            seen.add("t")
+            rhs = tkn.split("=", 1)[1].strip()
+            try:
+                tval = float(rhs)
+            except Exception:
+                errors.append(f"Malformed t value '{rhs}'")
+                break
+            if not (tval > 0):
+                errors.append(f"t must be > 0: {tval}")
+                break
+            opts["t"] = tval
+            idx += 1
+            continue
+
+        if low in ("trap", "poly"):
+            if "profile" in seen:
+                errors.append("Duplicate profile token")
+                break
+            seen.add("profile")
+            opts["profile"] = low
+            idx += 1
+            continue
+
+        if low == "speed":
+            if "tracking" in seen:
+                errors.append("Duplicate tracking token")
+                break
+            seen.add("tracking")
+            opts["tracking"] = "SPEED"
+            idx += 1
+            continue
+
+        # Unknown or misplaced token
+        errors.append(f"Unknown token '{tkn}' (options must be after 6 values)")
+        break
+
+    return values, opts, errors
+
 async def load_program(filename: Optional[str] = None) -> None:
     try:
         name = filename or program_filename_input.value or "execute_script.txt"
@@ -521,6 +643,14 @@ _re_move_cart_legacy = re.compile(r"^\s*MoveCart\(\s*([^\)]*)\)\s*$", re.IGNOREC
 _re_move_cart_rel_trf = re.compile(r"^\s*MoveCartRelTRF\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
 _re_speed_joint = re.compile(r"^\s*SpeedJoint\(\s*([0-9]*)\s*\)\s*$", re.IGNORECASE)
 _re_speed_cart = re.compile(r"^\s*SpeedCart\(\s*([0-9]*)\s*\)\s*$", re.IGNORECASE)
+# Legacy function-style helpers
+_re_home_fn = re.compile(r"^\s*Home\(\s*\)\s*$", re.IGNORECASE)
+_re_begin_fn = re.compile(r"^\s*Begin\(\s*\)\s*$", re.IGNORECASE)
+_re_end_fn = re.compile(r"^\s*End\(\s*\)\s*$", re.IGNORECASE)
+_re_loop_fn = re.compile(r"^\s*Loop\(\s*\)\s*$", re.IGNORECASE)
+_re_output_fn = re.compile(r"^\s*Output\(\s*(\d+)\s*,\s*(HIGH|LOW)\s*\)\s*$", re.IGNORECASE)
+_re_gripper_fn = re.compile(r"^\s*Gripper\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*$", re.IGNORECASE)
+_re_gripper_cal_fn = re.compile(r"^\s*Gripper_cal\(\s*\)\s*$", re.IGNORECASE)
 
 async def _run_program() -> None:
     global program_speed_percentage
@@ -534,6 +664,62 @@ async def _run_program() -> None:
 
         line = raw.strip()
         if not line or line.startswith(("#", "//", ";")):
+            continue
+
+        # Function-style legacy commands
+        m = _re_home_fn.match(line)
+        if m:
+            try:
+                client.home()
+                log_info("Home()")
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                log_err(f"Home() failed: {e}")
+            continue
+        m = _re_begin_fn.match(line)
+        if m:
+            log_info("Begin()")
+            continue
+        m = _re_end_fn.match(line)
+        if m:
+            log_info("End()")
+            # Stop at End() for now
+            break
+        m = _re_loop_fn.match(line)
+        if m:
+            log_info("Loop()")
+            # Note: full loop semantics are not implemented; accept as no-op
+            continue
+        m = _re_output_fn.match(line)
+        if m:
+            try:
+                port = int(m.group(1))
+                state = m.group(2).upper()
+                action = "open" if state == "HIGH" else "close"
+                client.control_pneumatic_gripper(action, port)
+                log_info(f"Output({port},{state}) -> {action}")
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                log_err(f"Output() failed: {e}")
+            continue
+        m = _re_gripper_fn.match(line)
+        if m:
+            try:
+                pos = int(m.group(1)); spd = int(m.group(2)); cur = int(m.group(3))
+                client.control_electric_gripper("move", position=pos, speed=spd, current=cur)
+                log_info(f"Gripper({pos},{spd},{cur})")
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                log_err(f"Gripper() failed: {e}")
+            continue
+        m = _re_gripper_cal_fn.match(line)
+        if m:
+            try:
+                client.control_electric_gripper("calibrate")
+                log_info("Gripper_cal()")
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                log_err(f"Gripper_cal() failed: {e}")
             continue
 
         # Handle alias forms
@@ -590,59 +776,126 @@ async def _run_program() -> None:
         # Legacy CTk commands (MoveJoint/MovePose/MoveCart/MoveCartRelTRF/SpeedJoint/SpeedCart)
         m = _re_move_joint_legacy.match(line)
         if m:
-            vals = _parse_csv_floats(m.group(1) or "")
-            if vals and len(vals) >= 6:
-                angles = [float(x) for x in vals[:6]]
-                client.move_joints(angles, duration=None, speed_percentage=program_speed_percentage)
-                log_info(f"MoveJoint({', '.join(f'{a:.1f}' for a in angles)}) @spd={program_speed_percentage if program_speed_percentage else 'default'}")
-                await asyncio.sleep(0.5)
-                continue
-            # If no values provided, ignore gracefully
-            ui.notify("MoveJoint: need 6 angles", color="negative")
-            log_err("MoveJoint: need 6 angles")
-            return
+            args = m.group(1) or ""
+            values, opts, errors = _parse_motion_args(args)
+            if errors:
+                msg = f"MoveJoint error: {', '.join(errors)}"
+                ui.notify(msg, color="negative")
+                log_err(msg)
+                return
+            if len(values) != 6:
+                ui.notify("MoveJoint: need exactly 6 joint angles", color="negative")
+                log_err("MoveJoint: need exactly 6 joint angles")
+                return
+            angles = [float(x) for x in values]
+            dur = float(opts["t"]) if opts["t"] is not None else None
+            spd = int(opts["v"]) if opts["v"] is not None else (program_speed_percentage if program_speed_percentage is not None and dur is None else None)
+            accel = int(opts["a"]) if opts["a"] is not None else None
+            profile = opts["profile"].upper() if opts["profile"] else None
+            tracking = opts["tracking"]
+            client.move_joints(
+                angles,
+                duration=dur,
+                speed_percentage=None if dur is not None else spd,
+                accel_percentage=accel,
+                profile=profile,
+                tracking=tracking,
+            )
+            log_info(f"MoveJoint({', '.join(f'{a:.1f}' for a in angles)}) dur={dur} spd={spd} a={accel} prof={profile} track={tracking}")
+            await asyncio.sleep(dur if dur else 0.5)
+            continue
 
         m = _re_move_pose_legacy.match(line)
         if m:
-            vals = _parse_csv_floats(m.group(1) or "")
-            if vals and len(vals) >= 6:
-                pose = [float(x) for x in vals[:6]]
-                client.move_pose(pose, duration=None, speed_percentage=program_speed_percentage)
-                log_info(f"MovePose({', '.join(f'{v:.1f}' for v in pose)}) @spd={program_speed_percentage if program_speed_percentage else 'default'}")
-                await asyncio.sleep(0.5)
-                continue
-            ui.notify("MovePose: need 6 pose values", color="negative")
-            log_err("MovePose: need 6 pose values")
-            return
+            args = m.group(1) or ""
+            values, opts, errors = _parse_motion_args(args)
+            if errors:
+                msg = f"MovePose error: {', '.join(errors)}"
+                ui.notify(msg, color="negative")
+                log_err(msg)
+                return
+            if len(values) != 6:
+                ui.notify("MovePose: need exactly 6 pose values", color="negative")
+                log_err("MovePose: need exactly 6 pose values")
+                return
+            pose = [float(x) for x in values]
+            dur = float(opts["t"]) if opts["t"] is not None else None
+            spd = int(opts["v"]) if opts["v"] is not None else (program_speed_percentage if program_speed_percentage is not None and dur is None else None)
+            accel = int(opts["a"]) if opts["a"] is not None else None
+            profile = opts["profile"].upper() if opts["profile"] else None
+            tracking = opts["tracking"]
+            client.move_pose(
+                pose,
+                duration=dur,
+                speed_percentage=None if dur is not None else spd,
+                accel_percentage=accel,
+                profile=profile,
+                tracking=tracking,
+            )
+            log_info(f"MovePose({', '.join(f'{v:.1f}' for v in pose)}) dur={dur} spd={spd} a={accel} prof={profile} track={tracking}")
+            await asyncio.sleep(dur if dur else 0.5)
+            continue
 
         m = _re_move_cart_legacy.match(line)
         if m:
-            vals = _parse_csv_floats(m.group(1) or "")
-            if vals and len(vals) >= 6:
-                pose = [float(x) for x in vals[:6]]
-                client.move_cartesian(pose, duration=None, speed_percentage=program_speed_percentage)
-                log_info(f"MoveCart({', '.join(f'{v:.1f}' for v in pose)}) @spd={program_speed_percentage if program_speed_percentage else 'default'}")
-                await asyncio.sleep(0.5)
-                continue
-            ui.notify("MoveCart: need 6 pose values", color="negative")
-            log_err("MoveCart: need 6 pose values")
-            return
+            args = m.group(1) or ""
+            values, opts, errors = _parse_motion_args(args)
+            if errors:
+                msg = f"MoveCart error: {', '.join(errors)}"
+                ui.notify(msg, color="negative")
+                log_err(msg)
+                return
+            if len(values) != 6:
+                ui.notify("MoveCart: need exactly 6 pose values", color="negative")
+                log_err("MoveCart: need exactly 6 pose values")
+                return
+            pose = [float(x) for x in values]
+            dur = float(opts["t"]) if opts["t"] is not None else None
+            spd = int(opts["v"]) if opts["v"] is not None else (program_speed_percentage if program_speed_percentage is not None and dur is None else None)
+            accel = int(opts["a"]) if opts["a"] is not None else None
+            profile = opts["profile"].upper() if opts["profile"] else None
+            tracking = opts["tracking"]
+            client.move_cartesian(
+                pose,
+                duration=dur,
+                speed_percentage=None if dur is not None else spd,
+                accel_percentage=accel,
+                profile=profile,
+                tracking=tracking,
+            )
+            log_info(f"MoveCart({', '.join(f'{v:.1f}' for v in pose)}) dur={dur} spd={spd} a={accel} prof={profile} track={tracking}")
+            await asyncio.sleep(dur if dur else 0.5)
+            continue
 
         m = _re_move_cart_rel_trf.match(line)
         if m:
-            vals = _parse_csv_floats(m.group(1) or "")
-            if vals and len(vals) >= 6:
-                # Treat relative TRF move as a cartesian move for now (TODO: apply offsets)
-                pose = [float(x) for x in vals[:6]]
-                client.move_cartesian(pose, duration=None, speed_percentage=program_speed_percentage)
-                log_info(f"MoveCartRelTRF({', '.join(f'{v:.1f}' for v in pose)}) @spd={program_speed_percentage if program_speed_percentage else 'default'}")
-                await asyncio.sleep(0.5)
-                continue
-            # Legacy often inserts zeros, allow it silently
-            pose = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            client.move_cartesian(pose, duration=None, speed_percentage=program_speed_percentage)
-            log_info("MoveCartRelTRF(0,0,0,0,0,0)")
-            await asyncio.sleep(0.2)
+            args = m.group(1) or ""
+            values, opts, errors = _parse_motion_args(args)
+            if errors:
+                msg = f"MoveCartRelTRF error: {', '.join(errors)}"
+                ui.notify(msg, color="negative")
+                log_err(msg)
+                return
+            if len(values) != 6:
+                ui.notify("MoveCartRelTRF: need exactly 6 deltas", color="negative")
+                log_err("MoveCartRelTRF: need exactly 6 deltas")
+                return
+            deltas = [float(x) for x in values]
+            dur = float(opts["t"]) if opts["t"] is not None else None
+            spd = int(opts["v"]) if opts["v"] is not None else (program_speed_percentage if program_speed_percentage is not None and dur is None else None)
+            accel = int(opts["a"]) if opts["a"] is not None else None
+            profile = opts["profile"].upper() if opts["profile"] else None
+            tracking = opts["tracking"]
+            client.move_cartesian_rel_trf(
+                deltas,
+                duration=dur,
+                speed_percentage=None if dur is not None else spd,
+                accel_percentage=accel,
+                profile=profile,
+                tracking=tracking,
+            )
+            log_info(f"MoveCartRelTRF({', '.join(f'{v:.1f}' for v in deltas)}) dur={dur} spd={spd} a={accel} prof={profile} track={tracking}")
+            await asyncio.sleep(dur if dur else 0.5)
             continue
 
         m = _re_speed_joint.match(line)
@@ -889,34 +1142,52 @@ def build_command_palette_table(prefill_toggle) -> None:
         ).props("flat dense separator=horizontal")
 
     def make_snippet(key: str) -> str:
-        current = (prefill_toggle.value or "").startswith("Current")
-        
-        if key == "JointMove":
+        current = bool(prefill_toggle.value)
+
+        if key == "MoveJoint":
             if current and latest_angles and len(latest_angles) >= 6:
-                return "JointMove(" + ", ".join(f"{a:.1f}" for a in latest_angles[:6]) + ")"
-            return "JointMove(0, 0, 0, 0, 0, 0)"
-        elif key == "JointVelSet":
-            return "JointVelSet(50)"
-        elif key == "PoseMove":
+                return "MoveJoint(" + ", ".join(f"{a:.1f}" for a in latest_angles[:6]) + ")"
+            return "MoveJoint(0, 0, 0, 0, 0, 0)"
+        elif key == "SpeedJoint":
+            return "SpeedJoint(50)"
+        elif key == "MovePose":
             if current and latest_pose and len(latest_pose) >= 12:
                 x, y, z = latest_pose[3], latest_pose[7], latest_pose[11]
-                return f"PoseMove({x:.1f}, {y:.1f}, {z:.1f}, 0, 0, 0)"
-            return "PoseMove(0, 0, 0, 0, 0, 0)"
-        elif key == "DelayCustom":
-            return "Delay(1.0)"
-        elif key in ["GetAngles", "GetPose", "GetIO"]:
-            # For get data commands, insert current values if available
-            if key == "GetAngles" and current and latest_angles and len(latest_angles) >= 6:
-                return "# Current angles: " + ", ".join(f"{a:.1f}" for a in latest_angles[:6])
-            elif key == "GetPose" and current and latest_pose and len(latest_pose) >= 12:
+                return f"MovePose({x:.1f}, {y:.1f}, {z:.1f}, 0, 0, 0)"
+            return "MovePose(0, 0, 0, 0, 0, 0)"
+        elif key == "MoveCart":
+            if current and latest_pose and len(latest_pose) >= 12:
                 x, y, z = latest_pose[3], latest_pose[7], latest_pose[11]
-                return f"# Current pose: X={x:.1f}, Y={y:.1f}, Z={z:.1f}"
-            elif key == "GetIO" and current and latest_io and len(latest_io) >= 5:
-                in1, in2, out1, out2, estop = latest_io[:5]
-                return f"# Current IO: IN1={in1}, IN2={in2}, OUT1={out1}, OUT2={out2}, ESTOP={estop}"
-            return f"# {key.replace('Get', 'GET_')}"
+                return f"MoveCart({x:.1f}, {y:.1f}, {z:.1f}, 0, 0, 0)"
+            return "MoveCart(0, 0, 0, 0, 0, 0)"
+        elif key == "MoveCartRelTRF":
+            return "MoveCartRelTRF(0, 0, 0, 0, 0, 0)"
+        elif key == "SpeedCart":
+            return "SpeedCart(50)"
+        elif key == "Home":
+            return "Home()"
+        elif key == "Delay":
+            return "Delay(1.0)"
+        elif key == "End":
+            return "End()"
+        elif key == "Loop":
+            return "Loop()"
+        elif key == "Begin":
+            return "Begin()"
+        elif key == "Input":
+            return "Input()"
+        elif key == "Output":
+            return "Output(1,HIGH)"
+        elif key == "Gripper":
+            return "Gripper(10,50,180)"
+        elif key == "Gripper_cal":
+            return "Gripper_cal()"
+        elif key == "Get_data":
+            return "Get_data()"
+        elif key == "Timeouts":
+            return "Timeouts()"
         else:
-            # Find the title from rows
+            # Fallback to row title
             for row in rows:
                 if row.get("key") == key:
                     return row.get("title", key)
@@ -1266,6 +1537,13 @@ def render_editor_content(pid: str, src_col: str) -> None:
                 value="",
                 line_wrapping=True,
             ).classes("w-full").style("height: 340px")
+            # Initialize CodeMirror theme based on CTk theme/system
+            try:
+                mode = ctk_get_theme()
+                effective = "light" if mode == "light" else "dark"
+                program_textarea.theme = "default" if effective == "light" else "oneDark"
+            except Exception:
+                program_textarea.theme = "oneDark"
             with ui.row().classes("gap-2"):
                 ui.button("Start", on_click=lambda: asyncio.create_task(execute_program())).props("unelevated color=positive")
                 ui.button("Stop", on_click=lambda: asyncio.create_task(stop_program())).props("unelevated color=negative")
