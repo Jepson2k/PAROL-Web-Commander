@@ -676,7 +676,7 @@ def _parse_motion_args(argstr: str) -> Tuple[List[float], dict, List[str]]:
 
 async def load_program(filename: Optional[str] = None) -> None:
     try:
-        name = filename or program_filename_input.value or "execute_script.txt"
+        name = filename or program_filename_input.value or ""
         text = (PROGRAM_DIR / name).read_text(encoding="utf-8")
         program_textarea.value = text
         ui.notify(f"Loaded {name}", color="primary")
@@ -687,7 +687,7 @@ async def load_program(filename: Optional[str] = None) -> None:
 
 async def save_program(as_name: Optional[str] = None) -> None:
     try:
-        name = as_name or program_filename_input.value or "execute_script.txt"
+        name = as_name or program_filename_input.value or ""
         (PROGRAM_DIR / name).write_text(program_textarea.value or "", encoding="utf-8")
         ui.notify(f"Saved {name}", color="positive")
         log_info(f"Saved program {name}")
@@ -1500,8 +1500,8 @@ def render_readouts_content(pid: str, src_col: str) -> None:
             jog_accel_slider.on_value_change(lambda e: set_jog_accel(jog_accel_slider.value))
             # Incremental and step
             with ui.row().classes("items-center gap-4 w-full"):
-                incremental_jog_checkbox = ui.checkbox("Incremental jog", value=False)
-                joint_step_input = ui.number(label="Step size (deg/mm)", value=joint_step_deg, min=0.1, max=100.0, step=0.1).classes("w-30")
+                incremental_jog_checkbox = ui.switch("Incremental jog", value=False)
+                joint_step_input = ui.number(label="Step size (deg/mm)", value=joint_step_deg, min=0.1, max=100.0, step=0.1).style("width: 120px")
                 # IO summary (live-updated)
                 global io_summary_label
                 io_summary_label = ui.label(f"IO: {io_label}").classes("text-sm")
@@ -1611,12 +1611,12 @@ def render_editor_content(pid: str, src_col: str) -> None:
         with ui.column().classes("editor-main"):
             with ui.row().classes("items-center gap-2"):
                 ui.label("Program:").classes("text-md font-medium")
-                program_filename_input = ui.input(label="Filename", value="execute_script.txt").classes("text-sm font-small").style("width: 450px")
+                program_filename_input = ui.input(label="Filename", value="").classes("text-sm font-small")
                 ui.button("Open", on_click=open_file_picker).props("unelevated")
             program_textarea = ui.codemirror(
                 value="",
                 line_wrapping=True,
-            ).classes("w-full").style("height: 340px")
+            ).classes("w-full").style("height: 360px")
             # Initialize CodeMirror theme based on CTk theme/system
             try:
                 mode = ctk_get_theme()
@@ -1836,9 +1836,8 @@ body.body--light .drag-handle-btn:hover {
 .readouts-controls {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.9rem;
   flex: 1;
-  min-width: 200px;
 }
 
 /* Program editor responsive layout */
@@ -1856,20 +1855,20 @@ body.body--light .drag-handle-btn:hover {
 
 .editor-palette {
   flex: 0 0 auto;
-  width: clamp(150px, 20vw, 220px);
+  width: clamp(150px, 10vw, 220px);
 }
 
-/* Compact button styling for better space usage */
-.q-btn {
-  padding: 6px 12px !important;
-  min-height: 32px !important;
-  font-size: 0.875rem !important;
+/* Compact input field styling */
+.q-field .q-field__control {
+  max-height: 3em !important;
 }
 
-.q-btn.q-btn--round {
-  padding: 8px !important;
-  min-height: 36px !important;
-  min-width: 36px !important;
+.q-field .q-field__native {
+   padding: 0 !important;
+}
+
+.q-field__label {
+    top: 12px !important;            
 }
 
 /* Mobile adjustments */
@@ -1906,7 +1905,7 @@ body.body--light .drag-handle-btn:hover {
   }
   
   .editor-palette {
-    width: clamp(180px, 20vw, 250px);
+    width: clamp(180px, 10vw, 250px);
   }
 }
 

@@ -85,12 +85,14 @@ def _inject_component_overrides() -> None:
 .q-card, .q-field, .q-toolbar, .q-item { background: var(--ctk-surface); color: var(--ctk-text); }
 
 /* Buttons */
-.q-btn:not(.q-btn--round) { border-radius: 6px; }
+.q-btn:not(.q-btn--round) { border-radius: 6px; padding-top: 3px !important; padding-left: 6px !important; padding-bottom: 3px !important; padding-right: 6px !important; min-height: 32px !important; min-width: 32px !important; }
 .q-btn.bg-primary:hover { background: var(--ctk-primary-hover) !important; }
 .q-btn--flat, .q-btn--outline { color: var(--ctk-text); }
+.q-slider__thumb { width: 30px !important; height: 30px !important; }
+.q-slider__track { height: 8px !important; }
 
 /* Inputs */
-.q-input .q-field__native, .q-textarea .q-field__native { color: var(--ctk-text); }
+.q-input .q-field__native, .q-textarea .q-field__native { color: var(--ctk-text); padding-top: 12px !important; padding-bottom: 4px !important; }
 .q-field__control { border-radius: 6px; }
 
 /* Segmented toggle */
