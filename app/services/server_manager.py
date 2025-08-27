@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -7,15 +10,17 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
+from app.constants import CONTROLLER_PATH
 
 
 @dataclass
 class ServerOptions:
     """Options for launching the headless controller."""
-    com_port: Optional[str] = None
+
+    com_port: str | None = None
     no_autohome: bool = True  # Set PAROL6_NOAUTOHOME=1 by default
-    extra_env: Optional[dict] = None
+    extra_env: dict | None = None
 
 
 class ServerManager:
@@ -31,10 +36,10 @@ class ServerManager:
         self.controller_path = Path(controller_path).resolve()
         if not self.controller_path.exists():
             raise FileNotFoundError(f"Controller script not found: {self.controller_path}")
-        self._proc: Optional[subprocess.Popen] = None
+        self._proc: subprocess.Popen | None = None
 
     @property
-    def pid(self) -> Optional[int]:
+    def pid(self) -> int | None:
         return self._proc.pid if self._proc and self._proc.poll() is None else None
 
     def is_running(self) -> bool:
@@ -51,9 +56,11 @@ class ServerManager:
             hint.write_text(com_port.strip() + "\n", encoding="utf-8")
         except Exception as e:
             # Non-fatal: controller can still prompt or auto-detect depending on OS
-            print(f"[ServerManager] Warning: failed to write {hint}: {e}")
+            logging.warning("ServerManager: failed to write %s: %s", hint, e)
 
-    def start_controller(self, com_port: Optional[str] = None, opts: Optional[ServerOptions] = None) -> None:
+    async def start_controller(
+        self, com_port: str | None = None, opts: ServerOptions | None = None
+    ) -> None:
         """Start the controller if not already running."""
         if self.is_running():
             return
@@ -88,12 +95,12 @@ class ServerManager:
                 stderr=None,
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to start controller: {e}")
+            raise RuntimeError(f"Failed to start controller: {e}") from e
 
         # Give it a brief moment to initialize
-        time.sleep(0.2)
+        await asyncio.sleep(0.2)
 
-    def stop_controller(self, timeout: float = 5.0) -> None:
+    async def stop_controller(self, timeout: float = 5.0) -> None:
         """Stop the controller process if running."""
         if not self.is_running():
             self._proc = None
@@ -114,12 +121,14 @@ class ServerManager:
         # Wait for graceful exit
         t0 = time.time()
         while proc.poll() is None and (time.time() - t0) < timeout:
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
         if proc.poll() is None:
-            try:
+            with contextlib.suppress(Exception):
                 proc.kill()
-            except Exception:
-                pass
 
         self._proc = None
+
+
+# Module-level singleton instance
+server_manager = ServerManager(controller_path=CONTROLLER_PATH)

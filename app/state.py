@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 
 @dataclass
 class JointAngles:
-    values: List[float] = field(default_factory=lambda: [0.0] * 6)
+    values: list[float] = field(default_factory=lambda: [0.0] * 6)
 
 
 @dataclass
@@ -40,8 +39,39 @@ class GripperStatus:
 
 @dataclass
 class StatusSnapshot:
-    pose: Optional[RobotPose] = None
-    joint_angles: Optional[JointAngles] = None
-    io: Optional[RobotIO] = None
-    gripper: Optional[GripperStatus] = None
+    pose: RobotPose | None = None
+    joint_angles: JointAngles | None = None
+    io: RobotIO | None = None
+    gripper: GripperStatus | None = None
     timestamp: float = 0.0
+
+
+# Extended shared state singletons for cross-module access
+@dataclass
+class RobotState:
+    angles: list[float] = field(default_factory=list)  # len=6 in degrees
+    pose: list[float] = field(default_factory=list)  # len=16 homogeneous transform flattened
+    io: list[int] = field(default_factory=list)  # [in1,in2,out1,out2,estop]
+    gripper: list[int] = field(default_factory=list)  # [id,pos,spd,cur,status,obj]
+    connected: bool = False
+    last_update_ts: float = 0.0
+
+
+@dataclass
+class ControllerState:
+    running: bool = False
+    pid: int | None = None
+    com_port: str | None = None
+
+
+@dataclass
+class ProgramState:
+    running: bool = False
+    cancel_event_present: bool = False
+    last_speed_pct: int | None = None
+
+
+# Module-level singletons
+robot_state = RobotState()
+controller_state = ControllerState()
+program_state = ProgramState()
