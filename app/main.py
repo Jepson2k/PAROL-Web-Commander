@@ -8,7 +8,14 @@ from nicegui import ui
 
 from app.common.logging_config import attach_ui_log, configure_logging
 from app.common.theme import apply_theme, get_theme, inject_layout_css
-from app.constants import DEFAULT_COM_PORT, JOINT_LIMITS_DEG, PAROL6_OFFICIAL_DOC_URL, REPO_ROOT, UI_PORT
+from app.constants import (
+    DEFAULT_COM_PORT,
+    JOINT_LIMITS_DEG,
+    LOG_LEVEL,
+    PAROL6_OFFICIAL_DOC_URL,
+    REPO_ROOT,
+    UI_PORT,
+)
 from app.pages.calibrate import CalibratePage
 from app.pages.gripper import GripperPage
 from app.pages.io import IoPage
@@ -19,7 +26,7 @@ from app.services.server_manager import server_manager
 from app.state import robot_state
 
 # Configure logging early so any startup issues are visible
-configure_logging(logging.DEBUG)
+configure_logging(LOG_LEVEL)
 
 # Register static files for optimized icons and other assets
 ng_app.add_static_files("/static", (REPO_ROOT / "app" / "static").as_posix())
@@ -322,6 +329,7 @@ def build_footer() -> None:
 @ui.page("/")
 def compose_ui() -> None:
     apply_theme(get_theme())
+    ui.query('.nicegui-content').classes('p-0')
     inject_layout_css()
 
     # Build header and tabs with panels

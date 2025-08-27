@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import re
 from typing import TypedDict
@@ -50,9 +49,8 @@ class MovePage:
         self.program_speed_percentage: int | None = None  # set by JointVelSet alias
 
         # Drag-and-drop layout
-        self.LAYOUT_PATH = REPO_ROOT / "app" / "layout.json"
         self.DEFAULT_LAYOUT: MoveLayout = {"left": ["jog", "readouts"], "right": ["editor", "log"]}
-        self.current_layout = self._load_layout()
+        self.current_layout = self.DEFAULT_LAYOUT.copy()
         self._drag_id: str | None = None
         self._drag_src: str | None = None
 
@@ -495,58 +493,64 @@ class MovePage:
         if self.program_cancel_event:
             self.program_cancel_event.set()
         if self.program_task:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.program_task, timeout=0.1)
+            await asyncio.wait_for(self.program_task, timeout=0.1)
 
     # ---- Layout management ----
 
+    def _valid_layout(self, data) -> bool:
+        return (
+            isinstance(data, dict)
+            and isinstance(data.get("left"), list)
+            and isinstance(data.get("right"), list)
+        )
+
     def _load_layout(self) -> MoveLayout:
-        try:
-            loaded_data = json.loads(self.LAYOUT_PATH.read_text(encoding="utf-8"))
-            # Ensure the loaded data conforms to MoveLayout structure
-            if (
-                isinstance(loaded_data, dict)
-                and "left" in loaded_data
-                and "right" in loaded_data
-                and isinstance(loaded_data["left"], list)
-                and isinstance(loaded_data["right"], list)
-            ):
-                # Type cast to MoveLayout since we've validated the structure
-                return loaded_data  # type: ignore[return-value]
-            else:
-                return self.DEFAULT_LAYOUT.copy()
-        except Exception:
-            return self.DEFAULT_LAYOUT.copy()
+        data = ng_app.storage.user.get("move_layout")
+        if self._valid_layout(data):
+            return data  # type: ignore[return-value]
+        layout = self.DEFAULT_LAYOUT.copy()
+        ng_app.storage.user["move_layout"] = layout
+        return layout
 
     def _save_layout(self, layout: MoveLayout) -> None:
         try:
-            self.LAYOUT_PATH.write_text(json.dumps(layout, indent=2), encoding="utf-8")
+            ng_app.storage.user["move_layout"] = layout
         except Exception as e:
-            logging.error("Failed to save layout: %s", e)
+            logging.error("Failed to persist layout to user storage: %s", e)
 
     def on_dragstart(self, pid: str, src_col: str) -> None:
         self._drag_id = pid
         self._drag_src = src_col
 
     def on_dragend(self) -> None:
-        self._drag_id = None
-        self._drag_src = None
+        # Avoid clearing here to prevent race with drop; on_drop_to resets state
+        return
 
     def on_drop_to(self, dst_col: str, index: int) -> None:
         if not self._drag_id or not self._drag_src:
             return
-        # remove from source
-        if self._drag_src == "left":
-            self.current_layout["left"].remove(self._drag_id)
-        else:
-            self.current_layout["right"].remove(self._drag_id)
-        # clamp and insert
-        if dst_col == "left":
-            index = max(0, min(index, len(self.current_layout["left"])))
-            self.current_layout["left"].insert(index, self._drag_id)
-        else:
-            index = max(0, min(index, len(self.current_layout["right"])))
-            self.current_layout["right"].insert(index, self._drag_id)
+
+        # Determine source and destination lists
+        src_list = self.current_layout["left"] if self._drag_src == "left" else self.current_layout["right"]
+        dst_list = self.current_layout["left"] if dst_col == "left" else self.current_layout["right"]
+
+        # Compute original source index (if present)
+        try:
+            src_index = src_list.index(self._drag_id)
+        except ValueError:
+            src_index = None
+
+        # Adjust target index when moving within the same column and dropping after original
+        if self._drag_src == dst_col and src_index is not None and index > src_index:
+            index -= 1
+
+        # Remove from source and insert into destination at clamped index
+        with contextlib.suppress(Exception):
+            src_list.remove(self._drag_id)
+
+        index = max(0, min(index, len(dst_list)))
+        dst_list.insert(index, self._drag_id)
+
         self._save_layout(self.current_layout)
         self.render_move_columns()
         self._drag_id = None
@@ -964,28 +968,25 @@ class MovePage:
             self.render_panel_contents(pid, src_col)
 
     def render_drop_spacer(self, parent, col_name: str, index: int):
-        spacer = ui.element("div").classes("drop-spacer")
-        spacer.on("dragover.prevent", lambda e, s=spacer: s.classes(add="active"))
-        spacer.on("dragleave", lambda e, s=spacer: s.classes(remove="active"))
-
-        def handle_drop(e, c=col_name, i=index, s=spacer):
-            s.classes(remove="active")
-            self.on_drop_to(c, i)
-
-        spacer.on("drop", handle_drop)
+        # Create the spacer inside the parent so it occupies space and can push siblings down
         with parent:
-            pass
+            spacer = ui.element("div").classes("drop-spacer m-0 p-0 b-0").style("width: 100%;")
+            spacer.on("dragenter", lambda e, s=spacer: s.classes(add="active"))
+            spacer.on("dragover.prevent", lambda e, s=spacer: s.classes(add="active"))
+            spacer.on("dragleave", lambda e, s=spacer: s.classes(remove="active"))
+
+            def handle_drop(e, c=col_name, i=index, s=spacer, cont=parent):
+                cont.classes(remove="highlight")
+                s.classes(remove="active")
+                self.on_drop_to(c, i)
+
+            spacer.on("drop.prevent", handle_drop)
 
     def render_one_column(self, container, col_name: str):
         # column-level highlight
         container.on("dragover.prevent", lambda e, c=container: c.classes(add="highlight"))
         container.on("dragleave", lambda e, c=container: c.classes(remove="highlight"))
 
-        def handle_container_drop(e, n=col_name, c=container):
-            c.classes(remove="highlight")
-            self.on_drop_to(n, len(self.current_layout["left" if n == "left" else "right"]))
-
-        container.on("drop", handle_container_drop)
         # interleave spacers and panels
         items = self.current_layout["left"] if col_name == "left" else self.current_layout["right"]
         self.render_drop_spacer(container, col_name, 0)
@@ -1003,8 +1004,13 @@ class MovePage:
 
     def build(self) -> None:
         """Build the Move page with drag-and-drop layout."""
+        # Load per-user layout once in page context
+        try:
+            self.current_layout = self._load_layout()
+        except Exception:
+            self.current_layout = self.DEFAULT_LAYOUT.copy()
         # Use CSS Grid for responsive 2-column to 1-column layout
         with ui.element("div").classes("move-layout-container"):
-            self.left_col_container = ui.column().classes("droppable-col gap-4 min-h-[100px]")
-            self.right_col_container = ui.column().classes("droppable-col gap-4 min-h-[100px]")
+            self.left_col_container = ui.column().classes("gap-2 min-h-[100px]")
+            self.right_col_container = ui.column().classes("gap-2 min-h-[100px]")
         self.render_move_columns()
