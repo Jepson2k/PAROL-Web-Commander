@@ -62,10 +62,8 @@ async def start_controller(com_port: str | None) -> None:
         if status_timer:
             status_timer.active = True
         consecutive_failures = 0
-        ui.notify("Controller started", color="positive")
         logging.info("Controller started")
     except Exception as e:
-        ui.notify(f"Failed to start controller: {e}", color="negative")
         logging.error("Start controller failed: %s", e)
 
 
@@ -77,10 +75,8 @@ async def stop_controller() -> None:
         if status_timer:
             status_timer.active = False
         consecutive_failures = 0
-        ui.notify("Controller stopped", color="positive")
         logging.info("Controller stopped")
     except Exception as e:
-        ui.notify(f"Failed to stop controller: {e}", color="negative")
         logging.error("Stop controller failed: %s", e)
 
 
@@ -307,18 +303,22 @@ def build_footer() -> None:
             global estop_label
             estop_label = ui.label("E-STOP: unknown").classes("text-sm")
         with ui.row().classes("items-center gap-2"):
+            stored_port = ng_app.storage.user.get("com_port", DEFAULT_COM_PORT or "")
             com_input = ui.input(
                 label="COM Port (COM5 / /dev/ttyACM0 / /dev/tty.usbmodem0)",
-                value=DEFAULT_COM_PORT or "",
+                value=stored_port,
             ).classes("w-80")
-            ui.button("Set Port", on_click=lambda: asyncio.create_task(set_port(com_input.value)))
-            ui.separator().props("vertical")
-            ui.button(
-                "Connect", on_click=lambda: asyncio.create_task(start_controller(com_input.value))
-            ).props("color=positive")
-            ui.button("Disconnect", on_click=lambda: asyncio.create_task(stop_controller())).props(
-                "color=negative"
+
+            # Persist port on edits
+            com_input.on_value_change(
+                lambda e: ng_app.storage.user.__setitem__("com_port", com_input.value or "")
             )
+
+            async def handle_set_port():
+                ng_app.storage.user["com_port"] = com_input.value or ""
+                await set_port(com_input.value or "")
+
+            ui.button("Set Port", on_click=handle_set_port)
             ui.button(
                 "Clear error", on_click=lambda: asyncio.create_task(send_clear_error())
             ).props("color=warning")
@@ -347,6 +347,13 @@ def compose_ui() -> None:
         attach_ui_log(move_page_instance.response_log)
 
     build_footer()
+
+    # Auto-connect using stored COM port
+    try:
+        port = ng_app.storage.user.get("com_port", DEFAULT_COM_PORT or "")
+    except Exception:
+        port = DEFAULT_COM_PORT or ""
+    asyncio.create_task(start_controller(port))
 
 status_timer = ui.timer(
     interval=0.03, callback=update_status_async, active=False

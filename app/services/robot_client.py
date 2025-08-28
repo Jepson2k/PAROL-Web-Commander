@@ -176,78 +176,56 @@ class RobotClient:
         duration: float | None = None,
         speed_percentage: int | None = None,
         accel_percentage: int | None = None,
-        profile: str | None = None,  # 'TRAP' or 'POLY'
-        tracking: str | None = None,  # 'SPEED' or 'POSITION'
+        profile: str | None = None,  # kept for API compatibility; not sent
+        tracking: str | None = None,  # kept for API compatibility; not sent
     ) -> str:
         """
-        Send a MOVEJOINT command with optional planning hints.
-        Args:
-            joint_angles: six angles in degrees
-            duration: total time in seconds, or None
-            speed_percentage: 1..100, or None (mutually exclusive with duration)
-            accel_percentage: 1..100 (used for trapezoidal planning), optional
-            profile: 'TRAP' or 'POLY' (poly = jtraj). Default is implementation-defined.
-            tracking: 'SPEED' to stream velocities, otherwise position tracking.
+        Send minimal MOVEJOINT wire format expected by the server:
+          MOVEJOINT|j1|j2|j3|j4|j5|j6|DUR|SPD
+        Use "NONE" for omitted duration/speed.
         """
         angles_str = "|".join(str(a) for a in joint_angles)
         dur_str = "NONE" if duration is None else str(duration)
         spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
-        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
-        prof_str = (profile or "NONE").upper()
-        track_str = (tracking or "NONE").upper()
-        return await self._send(
-            f"MOVEJOINT|{angles_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}"
-        )
+        return await self._send(f"MOVEJOINT|{angles_str}|{dur_str}|{spd_str}")
 
     async def move_pose(
         self,
         pose: list[float],
         duration: float | None = None,
         speed_percentage: int | None = None,
-        accel_percentage: int | None = None,
-        profile: str | None = None,  # 'TRAP' or 'POLY'
-        tracking: str | None = None,  # 'SPEED' or 'POSITION'
+        accel_percentage: int | None = None,  # kept; not sent
+        profile: str | None = None,           # kept; not sent
+        tracking: str | None = None,          # kept; not sent
     ) -> str:
         """
-        Send a MOVEPOSE command with optional planning hints.
-        Args:
-            pose: [x, y, z, rx, ry, rz] (mm/deg)
-            duration/speed_percentage: mutually exclusive
-            accel_percentage/profile/tracking: optional advanced parameters
+        Send minimal MOVEPOSE wire format expected by the server:
+          MOVEPOSE|x|y|z|rx|ry|rz|DUR|SPD
+        Use "NONE" for omitted duration/speed.
         """
         pose_str = "|".join(str(v) for v in pose)
         dur_str = "NONE" if duration is None else str(duration)
         spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
-        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
-        prof_str = (profile or "NONE").upper()
-        track_str = (tracking or "NONE").upper()
-        return await self._send(
-            f"MOVEPOSE|{pose_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}"
-        )
+        return await self._send(f"MOVEPOSE|{pose_str}|{dur_str}|{spd_str}")
 
     async def move_cartesian(
         self,
         pose: list[float],
         duration: float | None = None,
         speed_percentage: float | None = None,
-        accel_percentage: int | None = None,
-        profile: str | None = None,  # 'TRAP' or 'POLY' (used by controller if supported)
-        tracking: str | None = None,  # 'SPEED' or 'POSITION'
+        accel_percentage: int | None = None,  # kept; not sent
+        profile: str | None = None,           # kept; not sent
+        tracking: str | None = None,          # kept; not sent
     ) -> str:
         """
-        Send a MOVECART (straight-line) command.
-        Provide either duration or speed_percentage (1..100).
-        Optional: accel_percentage, trajectory profile, and tracking mode.
+        Send minimal MOVECART wire format expected by the server:
+          MOVECART|x|y|z|rx|ry|rz|DUR|SPD
+        Use "NONE" for omitted duration/speed.
         """
         pose_str = "|".join(str(v) for v in pose)
         dur_str = "NONE" if duration is None else str(duration)
         spd_str = "NONE" if speed_percentage is None else str(speed_percentage)
-        acc_str = "NONE" if accel_percentage is None else str(int(accel_percentage))
-        prof_str = (profile or "NONE").upper()
-        track_str = (tracking or "NONE").upper()
-        return await self._send(
-            f"MOVECART|{pose_str}|{dur_str}|{spd_str}|{acc_str}|{prof_str}|{track_str}"
-        )
+        return await self._send(f"MOVECART|{pose_str}|{dur_str}|{spd_str}")
 
     async def move_cartesian_rel_trf(
         self,
