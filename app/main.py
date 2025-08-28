@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+import threading
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -47,6 +49,38 @@ io_page_instance = IoPage()
 settings_page_instance = SettingsPage()
 calibrate_page_instance = CalibratePage()
 gripper_page_instance = GripperPage()
+
+# --------------- ACK listener (UDP 5002) ---------------
+
+_ack_thread_started = False
+def start_ack_listener() -> None:
+    """Start a background thread that logs ACK frames from the controller on UDP 5002."""
+    global _ack_thread_started
+    if _ack_thread_started:
+        return
+    _ack_thread_started = True
+
+    def _run():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", 5002))
+            sock.settimeout(0.5)
+            logging.info("ACK listener started on 127.0.0.1:5002")
+            while True:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                    msg = data.decode("utf-8", errors="ignore").strip()
+                    if msg:
+                        logging.info("[ACK] %s", msg)
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    logging.warning("ACK listener error: %s", e)
+                    break
+        except Exception as e:
+            logging.warning("Failed to start ACK listener: %s", e)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 # Main tabs reference for tab_panels
 main_tabs = None
@@ -146,7 +180,7 @@ async def update_status_async() -> None:
             if move_page_instance.joint_labels and len(angles) >= 6:
                 for i, a in enumerate(angles[:6]):
                     if i < len(move_page_instance.joint_labels):
-                        move_page_instance.joint_labels[i].text = f"{a:.1f}"
+                        move_page_instance.joint_labels[i].text = f"{a:.3f}"
             if move_page_instance.joint_progress_bars and len(angles) >= 6:
                 for i, a in enumerate(angles[:6]):
                     if i < len(move_page_instance.joint_progress_bars):
@@ -160,11 +194,11 @@ async def update_status_async() -> None:
             x, y, z = pose[3], pose[7], pose[11]
             if move_page_instance.tool_labels:
                 if "X" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["X"].text = f"{x:.1f}"
+                    move_page_instance.tool_labels["X"].text = f"{x:.3f}"
                 if "Y" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Y"].text = f"{y:.1f}"
+                    move_page_instance.tool_labels["Y"].text = f"{y:.3f}"
                 if "Z" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Z"].text = f"{z:.1f}"
+                    move_page_instance.tool_labels["Z"].text = f"{z:.3f}"
 
         if len(io) >= 5:
             in1, in2, out1, out2, estop = io[:5]
@@ -320,7 +354,7 @@ def build_footer() -> None:
 
             ui.button("Set Port", on_click=handle_set_port)
             ui.button(
-                "Clear error", on_click=lambda: asyncio.create_task(send_clear_error())
+                "Clear error", on_click=send_clear_error
             ).props("color=warning")
             ui.button("Stop", on_click=lambda: asyncio.create_task(send_stop_motion())).props(
                 "color=negative"
@@ -347,6 +381,9 @@ def compose_ui() -> None:
         attach_ui_log(move_page_instance.response_log)
 
     build_footer()
+
+    # Start background ACK listener to show server ACKs in Response Log
+    start_ack_listener()
 
     # Auto-connect using stored COM port
     try:

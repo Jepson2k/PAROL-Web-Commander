@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,8 @@ class ServerManager:
         if not self.controller_path.exists():
             raise FileNotFoundError(f"Controller script not found: {self.controller_path}")
         self._proc: subprocess.Popen | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._stop_reader = threading.Event()
 
     @property
     def pid(self) -> int | None:
@@ -91,14 +94,40 @@ class ServerManager:
                 args,
                 cwd=str(cwd),
                 env=env,
-                stdout=None,  # inherit so controller logs are visible in terminal for debugging
-                stderr=None,
+                stdout=subprocess.PIPE,  # pipe to stream into UI log
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # line-buffered
             )
         except Exception as e:
             raise RuntimeError(f"Failed to start controller: {e}") from e
 
+        # Start background reader thread to stream server stdout/stderr to logging
+        if self._proc and self._proc.stdout is not None:
+            self._stop_reader.clear()
+            self._reader_thread = threading.Thread(
+                target=self._stream_output,
+                args=(self._proc,),
+                name="ServerOutputReader",
+                daemon=True,
+            )
+            self._reader_thread.start()
+
         # Give it a brief moment to initialize
         await asyncio.sleep(0.2)
+
+    def _stream_output(self, proc: subprocess.Popen) -> None:
+        """Read controller stdout and forward to logging for UI Response Log."""
+        try:
+            assert proc.stdout is not None
+            for raw_line in iter(proc.stdout.readline, ''):
+                if self._stop_reader.is_set():
+                    break
+                line = raw_line.rstrip('\r\n')
+                if line:
+                    logging.info("[SERVER] %s", line)
+        except Exception as e:
+            logging.warning("ServerManager: output reader stopped: %s", e)
 
     async def stop_controller(self, timeout: float = 5.0) -> None:
         """Stop the controller process if running."""
@@ -126,6 +155,16 @@ class ServerManager:
         if proc.poll() is None:
             with contextlib.suppress(Exception):
                 proc.kill()
+
+        # Stop and join background reader thread
+        with contextlib.suppress(Exception):
+            self._stop_reader.set()
+            if proc.stdout:
+                proc.stdout.close()
+        if self._reader_thread and self._reader_thread.is_alive():
+            with contextlib.suppress(Exception):
+                self._reader_thread.join(timeout=1.0)
+        self._reader_thread = None
 
         self._proc = None
 
