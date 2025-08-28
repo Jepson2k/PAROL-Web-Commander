@@ -185,8 +185,8 @@ async def update_status_async() -> None:
                 for i, a in enumerate(angles[:6]):
                     if i < len(move_page_instance.joint_progress_bars):
                         lim = JOINT_LIMITS_DEG[i] if i < len(JOINT_LIMITS_DEG) else [-180, 180]
-                        move_page_instance.joint_progress_bars[i].value = _normalize_joint_progress(
-                            a, lim[0], lim[1]
+                        move_page_instance.joint_progress_bars[i].value = round(
+                            _normalize_joint_progress(a, lim[0], lim[1]), 3
                         )
 
         if pose and len(pose) >= 12:

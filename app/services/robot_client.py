@@ -322,4 +322,4 @@ class RobotClient:
 
 
 # Module-level singleton instance
-client = RobotClient(host=HOST, port=PORT, timeout=0.20, retries=0)
+client = RobotClient(host=HOST, port=PORT, timeout=0.30, retries=1)
