@@ -84,21 +84,6 @@ class ServerManager:
         if options.extra_env:
             env.update(options.extra_env)
 
-        try:
-            if LOG_LEVEL <= logging.DEBUG:
-                server_level = "DEBUG"
-            elif LOG_LEVEL <= logging.INFO:
-                server_level = "INFO"
-            elif LOG_LEVEL <= logging.WARNING:
-                server_level = "WARNING"
-            elif LOG_LEVEL <= logging.ERROR:
-                server_level = "ERROR"
-            else:
-                server_level = "CRITICAL"
-            env.setdefault("PAROL_LOG_LEVEL", server_level)
-        except Exception:
-            env.setdefault("PAROL_LOG_LEVEL", "WARNING")
-
         # Launch the controller
         args = [sys.executable, "-u", str(self.controller_path)]
         try:
