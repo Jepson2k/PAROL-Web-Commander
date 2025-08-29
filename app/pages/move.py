@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import time
 from typing import TypedDict
 
 from nicegui import app as ng_app
@@ -13,6 +14,7 @@ from app.common.theme import get_theme as ctk_get_theme
 from app.constants import REPO_ROOT
 from app.services.robot_client import client
 from app.state import robot_state
+from functools import partial
 
 
 class MoveLayout(TypedDict):
@@ -64,9 +66,72 @@ class MovePage:
             self.PROGRAM_DIR = REPO_ROOT / "programs"
             self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
 
+        # Jog UI references and scheduling state
+        self._joint_left_imgs: dict[int, ui.image] = {}
+        self._joint_right_imgs: dict[int, ui.image] = {}
+        self._cart_axis_imgs: dict[str, ui.image] = {}
+        self._last_joint_sig: tuple[int, str, int] | None = None
+        self._last_cart_sig: tuple[str, int, str] | None = None
+        self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+        self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+
+        # Jog cadence constants (100 Hz)
+        self.JOG_TICK_S: float = 0.010
+        self.JOG_BURST_S: float = 0.009
+        self.CADENCE_WARN_WINDOW: int = 100
+        self.CADENCE_TOLERANCE: float = 0.002
+
     # ---- Jog helpers ----
 
-    def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
+    def _apply_pressed_style(self, widget: ui.image | None, pressed: bool) -> None:
+        if not widget:
+            return
+        if pressed:
+            widget.classes(add="is-pressed")
+        else:
+            widget.classes(remove="is-pressed")
+
+    def _cadence_tick(self, now: float, stats: dict, label: str) -> None:
+        last = stats.get("last_ts", 0.0)
+        if last > 0.0:
+            dt = now - last
+            stats["accum"] = stats.get("accum", 0.0) + dt
+            stats["count"] = stats.get("count", 0.0) + 1.0
+            if stats["count"] >= self.CADENCE_WARN_WINDOW:
+                avg = stats["accum"] / stats["count"]
+                if abs(avg - self.JOG_TICK_S) > self.CADENCE_TOLERANCE:
+                    logging.warning(
+                        "[CADENCE] %s avg dt=%.4f s (target=%.4f s, tol=%.4f s)",
+                        label, avg, self.JOG_TICK_S, self.CADENCE_TOLERANCE
+                    )
+                stats["accum"] = 0.0
+                stats["count"] = 0.0
+        stats["last_ts"] = now
+
+    def _get_first_pressed_joint(self) -> tuple[int, str] | None:
+        """Return (index, 'pos'|'neg') for the first pressed joint, else None."""
+        storage = ng_app.storage.client
+        pos = storage.get("jog_pressed_pos", [False] * 6)
+        neg = storage.get("jog_pressed_neg", [False] * 6)
+        if isinstance(pos, list) and isinstance(neg, list):
+            for j in range(min(6, len(pos), len(neg))):
+                if pos[j]:
+                    return (j, "pos")
+                if neg[j]:
+                    return (j, "neg")
+        return None
+
+    def _get_first_pressed_axis(self) -> str | None:
+        """Return the first pressed cartesian axis key like 'X+' if any."""
+        storage = ng_app.storage.client
+        axes = storage.get("cart_pressed_axes", {})
+        if isinstance(axes, dict):
+            for k, pressed in axes.items():
+                if pressed:
+                    return k
+        return None
+
+    async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Press-and-hold jog; if incremental mode is ON, fire one-shot step."""
         storage = ng_app.storage.client
         storage.setdefault("jog_pressed_pos", [False] * 6)
@@ -75,25 +140,19 @@ class MovePage:
         storage.setdefault("jog_speed", 50)
         storage.setdefault("joint_step_deg", 1.0)
 
+        if direction == "pos":
+            self._apply_pressed_style(self._joint_right_imgs.get(j), bool(is_pressed))
+        else:
+            self._apply_pressed_style(self._joint_left_imgs.get(j), bool(is_pressed))
+
         if 0 <= j < 6:
             if storage.get("incremental_jog", False) and is_pressed:
                 speed = max(1, min(100, int(storage.get("jog_speed", 50))))
                 step = abs(float(storage.get("joint_step_deg", 1.0)))
                 index = j if direction == "pos" else (j + 6)
-                # Note: client.jog_joint is now async, but we can't await in sync callback
-                # This will be handled differently - the UI will need async handlers
-                asyncio.create_task(
-                    client.jog_joint(
+                await client.jog_joint(
                         index, speed_percentage=speed, duration=None, distance_deg=step
                     )
-                )
-                logging.info(
-                    "JOG step joint %s %s %sdeg @ %s%%",
-                    j + 1,
-                    "+" if direction == "pos" else "-",
-                    step,
-                    speed,
-                )
                 return
 
             pos_pressed = storage.get("jog_pressed_pos", [False] * 6)
@@ -113,23 +172,21 @@ class MovePage:
         storage = ng_app.storage.client
         storage["jog_accel"] = max(1, min(100, int(v)))
 
-    def jog_tick(self) -> None:
-        """Send short jog bursts while plus/minus buttons are pressed."""
+    async def jog_tick(self) -> None:
+        """100 Hz: send one short joint jog burst if any button is pressed."""
         storage = ng_app.storage.client
         speed = max(1, min(100, int(storage.get("jog_speed", 50))))
-        duration = 0.1
-        pos = storage.get("jog_pressed_pos", [False] * 6)
-        neg = storage.get("jog_pressed_neg", [False] * 6)
-        if isinstance(pos, list) and isinstance(neg, list):
-            for j in range(min(6, len(pos), len(neg))):
-                if pos[j]:
-                    asyncio.create_task(client.jog_joint(j, speed, duration=duration))
-                if neg[j]:
-                    asyncio.create_task(client.jog_joint(j + 6, speed, duration=duration))
+        intent = self._get_first_pressed_joint()
+        if intent is not None:
+            j, d = intent
+            idx = j if d == "pos" else (j + 6)
+            await client.jog_joint(idx, speed_percentage=speed, duration=self.JOG_BURST_S)
+        # cadence monitor
+        self._cadence_tick(time.time(), self._tick_stats, "joint")
 
     # ---- Cartesian jog helpers ----
 
-    def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
+    async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         storage = ng_app.storage.client
         storage.setdefault(
             "cart_pressed_axes",
@@ -153,6 +210,7 @@ class MovePage:
         storage.setdefault("joint_step_deg", 1.0)
         storage.setdefault("frame", "TRF")
 
+        self._apply_pressed_style(self._cart_axis_imgs.get(axis), bool(is_pressed))
         axes = storage.get("cart_pressed_axes", {})
         if isinstance(axes, dict) and axis in axes:
             if storage.get("incremental_jog", False) and is_pressed:
@@ -160,8 +218,7 @@ class MovePage:
                 step = max(0.1, min(100.0, float(storage.get("joint_step_deg", 1.0))))
                 duration = max(0.02, min(0.5, step / 50.0))
                 frame = storage.get("frame", "TRF")
-                asyncio.create_task(client.jog_cartesian(frame, axis, speed, duration))
-                logging.info("CART JOG step %s %.2fs @ %s%% frame=%s", axis, duration, speed, frame)
+                await client.jog_cartesian(frame, axis, speed, duration)
                 return
             axes[axis] = bool(is_pressed)
             storage["cart_pressed_axes"] = axes
@@ -171,17 +228,16 @@ class MovePage:
         if frame in ("TRF", "WRF"):
             storage["frame"] = frame
 
-    def cart_jog_tick(self) -> None:
-        """Send short cartesian jog bursts while axis buttons are pressed."""
+    async def cart_jog_tick(self) -> None:
+        """100 Hz: send one short cartesian jog burst if any axis is pressed."""
         storage = ng_app.storage.client
         speed = max(1, min(100, int(storage.get("jog_speed", 50))))
-        duration = 0.1
         frame = storage.get("frame", "TRF")
-        axes = storage.get("cart_pressed_axes", {})
-        if isinstance(axes, dict):
-            for axis, pressed in axes.items():
-                if pressed:
-                    asyncio.create_task(client.jog_cartesian(frame, axis, speed, duration))
+        axis = self._get_first_pressed_axis()
+        if axis is not None:
+            await client.jog_cartesian(frame, axis, speed, self.JOG_BURST_S)
+        # cadence monitor
+        self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
     # ---- Robot actions ----
 
@@ -678,15 +734,9 @@ class MovePage:
                     self.io_summary_label = ui.label("IO: -").classes("text-sm")
                 # Buttons
                 with ui.row().classes("gap-2 w-full"):
-                    ui.button(
-                        "Enable", on_click=lambda: asyncio.create_task(self.send_enable())
-                    ).props("color=positive")
-                    ui.button(
-                        "Disable", on_click=lambda: asyncio.create_task(self.send_disable())
-                    ).props("color=negative")
-                    ui.button("Home", on_click=lambda: asyncio.create_task(self.send_home())).props(
-                        "color=primary"
-                    )
+                    ui.button("Enable", on_click=self.send_enable).props("color=positive")
+                    ui.button("Disable", on_click=self.send_disable).props("color=negative")
+                    ui.button("Home", on_click=self.send_home).props("color=primary")
 
     def render_log_content(self, pid: str, src_col: str) -> None:
         """Inner content for the Response Log panel (no outer card)."""
@@ -694,9 +744,7 @@ class MovePage:
             ui.label("Response Log").classes("text-md font-medium")
             self.drag_handle(pid, src_col)
         self.response_log = ui.log(max_lines=500).classes("w-full").style("height: 190px")
-        ui.button(
-            "Show received frame", on_click=lambda: asyncio.create_task(self.show_received_frame())
-        ).props("outline")
+        ui.button("Show received frame", on_click=self.show_received_frame).props("outline")
 
     def render_jog_content(self, pid: str, src_col: str) -> None:
         """Inner content for the Jog panel (no outer card)."""
@@ -729,12 +777,15 @@ class MovePage:
                         "width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;"
                     )
                     self.joint_progress_bars.append(bar)
-                    left.on("mousedown", lambda e, i=idx: self.set_joint_pressed(i, "neg", True))
-                    left.on("mouseup", lambda e, i=idx: self.set_joint_pressed(i, "neg", False))
-                    left.on("mouseleave", lambda e, i=idx: self.set_joint_pressed(i, "neg", False))
-                    right.on("mousedown", lambda e, i=idx: self.set_joint_pressed(i, "pos", True))
-                    right.on("mouseup", lambda e, i=idx: self.set_joint_pressed(i, "pos", False))
-                    right.on("mouseleave", lambda e, i=idx: self.set_joint_pressed(i, "pos", False))
+                    # store refs and bind async handlers
+                    self._joint_left_imgs[idx] = left
+                    self._joint_right_imgs[idx] = right
+                    left.on("mousedown", partial(self.set_joint_pressed, idx, "neg", True))
+                    left.on("mouseup", partial(self.set_joint_pressed, idx, "neg", False))
+                    left.on("mouseleave", partial(self.set_joint_pressed, idx, "neg", False))
+                    right.on("mousedown", partial(self.set_joint_pressed, idx, "pos", True))
+                    right.on("mouseup", partial(self.set_joint_pressed, idx, "pos", False))
+                    right.on("mouseleave", partial(self.set_joint_pressed, idx, "pos", False))
 
             self.joint_progress_bars.clear()
             for i, n in enumerate(joint_names):
@@ -747,9 +798,10 @@ class MovePage:
                 img = ui.image(src).style(
                     f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);"
                 )
-                img.on("mousedown", lambda e, a=axis: self.set_axis_pressed(a, True))
-                img.on("mouseup", lambda e, a=axis: self.set_axis_pressed(a, False))
-                img.on("mouseleave", lambda e, a=axis: self.set_axis_pressed(a, False))
+                self._cart_axis_imgs[axis] = img
+                img.on("mousedown", partial(self.set_axis_pressed, axis, True))
+                img.on("mouseup", partial(self.set_axis_pressed, axis, False))
+                img.on("mouseleave", partial(self.set_axis_pressed, axis, False))
 
             with ui.row().classes("items-start gap-8"):
                 with ui.element("div").classes("cart-jog-grid-3"):
@@ -902,15 +954,9 @@ class MovePage:
                 except Exception:
                     self.program_textarea.theme = "oneDark"
                 with ui.row().classes("gap-2"):
-                    ui.button(
-                        "Start", on_click=lambda: asyncio.create_task(self.execute_program())
-                    ).props("unelevated color=positive")
-                    ui.button(
-                        "Stop", on_click=lambda: asyncio.create_task(self.stop_program())
-                    ).props("unelevated color=negative")
-                    ui.button(
-                        "Save", on_click=lambda: asyncio.create_task(self.save_program())
-                    ).props("unelevated")
+                    ui.button("Start", on_click=self.execute_program).props("unelevated color=positive")
+                    ui.button("Stop", on_click=self.stop_program).props("unelevated color=negative")
+                    ui.button("Save", on_click=self.save_program).props("unelevated")
 
                     def save_as():
                         async def do_save_as():
@@ -929,9 +975,7 @@ class MovePage:
                             ).classes("w-80")
                             with ui.row().classes("gap-2"):
                                 ui.button("Cancel", on_click=save_as_dialog.close)
-                                ui.button(
-                                    "Save", on_click=lambda: asyncio.create_task(do_save_as())
-                                ).props("color=positive")
+                                ui.button("Save", on_click=do_save_as).props("color=positive")
                         save_as_dialog.open()
 
                     ui.button("Save as", on_click=save_as).props("unelevated")
