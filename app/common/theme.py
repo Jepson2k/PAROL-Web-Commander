@@ -419,4 +419,12 @@ body.body--light .drag-handle-btn:hover {
   word-break: break-word;
   white-space: normal;
 }
+
+/* Pressed visual feedback for jog controls */
+.is-pressed {
+  transform: scale(0.96);
+  filter: brightness(1.2);
+  outline: 1px solid var(--q-accent);
+  transition: transform 40ms linear, filter 40ms linear, outline-color 40ms linear;
+}
 """)
