@@ -370,11 +370,11 @@ def compose_ui() -> None:
     build_header_and_tabs()
 
     ui.timer(
-        interval=0.1, callback=lambda: move_page_instance.jog_tick()
-    )  # joint jog press-and-hold tick
+        interval=0.01, callback=move_page_instance.jog_tick
+    )
     ui.timer(
-        interval=0.1, callback=lambda: move_page_instance.cart_jog_tick()
-    )  # cartesian jog press-and-hold tick
+        interval=0.01, callback=move_page_instance.cart_jog_tick
+    )
 
     # Attach logging handler to move page response log
     if move_page_instance.response_log:
