@@ -7,12 +7,12 @@ import os
 import signal
 import subprocess
 import sys
-import time
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.constants import CONTROLLER_PATH
+from app.constants import CONTROLLER_PATH, LOG_LEVEL
 
 
 @dataclass
@@ -84,8 +84,20 @@ class ServerManager:
         if options.extra_env:
             env.update(options.extra_env)
 
-        # Unbuffered output for better logging
-        env.setdefault("PYTHONUNBUFFERED", "1")
+        try:
+            if LOG_LEVEL <= logging.DEBUG:
+                server_level = "DEBUG"
+            elif LOG_LEVEL <= logging.INFO:
+                server_level = "INFO"
+            elif LOG_LEVEL <= logging.WARNING:
+                server_level = "WARNING"
+            elif LOG_LEVEL <= logging.ERROR:
+                server_level = "ERROR"
+            else:
+                server_level = "CRITICAL"
+            env.setdefault("PAROL_LOG_LEVEL", server_level)
+        except Exception:
+            env.setdefault("PAROL_LOG_LEVEL", "WARNING")
 
         # Launch the controller
         args = [sys.executable, "-u", str(self.controller_path)]
@@ -125,7 +137,22 @@ class ServerManager:
                     break
                 line = raw_line.rstrip('\r\n')
                 if line:
-                    logging.info("[SERVER] %s", line)
+                    # Preserve severity if headless prefixes with [LEVEL]
+                    level = logging.INFO
+                    msg = line
+
+                    if line.startswith("[DEBUG]"):
+                        level, msg = logging.DEBUG, line[7:].lstrip()
+                    elif line.startswith("[INFO]"):
+                        level, msg = logging.INFO, line[6:].lstrip()
+                    elif line.startswith("[WARNING]"):
+                        level, msg = logging.WARNING, line[9:].lstrip()
+                    elif line.startswith("[ERROR]"):
+                        level, msg = logging.ERROR, line[7:].lstrip()
+                    elif line.startswith("[CRITICAL]"):
+                        level, msg = logging.CRITICAL, line[10:].lstrip()
+
+                    logging.log(level, "[SERVER] %s", msg)
         except Exception as e:
             logging.warning("ServerManager: output reader stopped: %s", e)
 
