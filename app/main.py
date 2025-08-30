@@ -50,38 +50,6 @@ settings_page_instance = SettingsPage()
 calibrate_page_instance = CalibratePage()
 gripper_page_instance = GripperPage()
 
-# --------------- ACK listener (UDP 5002) ---------------
-
-_ack_thread_started = False
-def start_ack_listener() -> None:
-    """Start a background thread that logs ACK frames from the controller on UDP 5002."""
-    global _ack_thread_started
-    if _ack_thread_started:
-        return
-    _ack_thread_started = True
-
-    def _run():
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind(("127.0.0.1", 5002))
-            sock.settimeout(0.5)
-            logging.info("ACK listener started on 127.0.0.1:5002")
-            while True:
-                try:
-                    data, addr = sock.recvfrom(4096)
-                    msg = data.decode("utf-8", errors="ignore").strip()
-                    if msg:
-                        logging.info("[ACK] %s", msg)
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    logging.warning("ACK listener error: %s", e)
-                    break
-        except Exception as e:
-            logging.warning("Failed to start ACK listener: %s", e)
-
-    threading.Thread(target=_run, daemon=True).start()
-
 # Main tabs reference for tab_panels
 main_tabs = None
 
@@ -369,21 +337,14 @@ def compose_ui() -> None:
     # Build header and tabs with panels
     build_header_and_tabs()
 
-    ui.timer(
-        interval=0.01, callback=move_page_instance.jog_tick
-    )
-    ui.timer(
-        interval=0.01, callback=move_page_instance.cart_jog_tick
-    )
+    ng_app.storage.client["joint_jog_timer"] = ui.timer(interval=0.01, callback=move_page_instance.jog_tick, active=False)
+    ng_app.storage.client["cart_jog_timer"] = ui.timer(interval=0.01, callback=move_page_instance.cart_jog_tick, active=False)
 
     # Attach logging handler to move page response log
     if move_page_instance.response_log:
         attach_ui_log(move_page_instance.response_log)
 
     build_footer()
-
-    # Start background ACK listener to show server ACKs in Response Log
-    start_ack_listener()
 
     # Auto-connect using stored COM port
     try:
@@ -393,7 +354,7 @@ def compose_ui() -> None:
     asyncio.create_task(start_controller(port))
 
 status_timer = ui.timer(
-    interval=0.03, callback=update_status_async, active=False
+    interval=0.2, callback=update_status_async, active=False
 )  # status poll (gated)
 
 if __name__ in {"__main__", "__mp_main__"}:

@@ -124,11 +124,11 @@ class MovePage:
     def _get_first_pressed_axis(self) -> str | None:
         """Return the first pressed cartesian axis key like 'X+' if any."""
         storage = ng_app.storage.client
-        axes = storage.get("cart_pressed_axes", {})
-        if isinstance(axes, dict):
-            for k, pressed in axes.items():
-                if pressed:
-                    return k
+        axes_any = storage.get("cart_pressed_axes", {})
+        if isinstance(axes_any, dict):
+            for k, pressed in axes_any.items():
+                if bool(pressed):
+                    return str(k)
         return None
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
@@ -163,6 +163,17 @@ class MovePage:
             elif direction == "neg" and isinstance(neg_pressed, list) and len(neg_pressed) == 6:
                 neg_pressed[j] = bool(is_pressed)
                 storage["jog_pressed_neg"] = neg_pressed
+
+            # Toggle per-client joint jog timer based on any pressed joint
+            try:
+                t = storage.get("joint_jog_timer")
+                any_pressed = any(storage.get("jog_pressed_pos", [False] * 6)) or any(
+                    storage.get("jog_pressed_neg", [False] * 6)
+                )
+                if t:
+                    t.active = bool(any_pressed)
+            except Exception as e:
+                logging.debug("joint_jog_timer toggle failed: %s", e)
 
     def set_jog_speed(self, v) -> None:
         storage = ng_app.storage.client
@@ -222,6 +233,18 @@ class MovePage:
                 return
             axes[axis] = bool(is_pressed)
             storage["cart_pressed_axes"] = axes
+
+            # Toggle per-client cartesian jog timer based on any pressed axis
+            try:
+                t = storage.get("cart_jog_timer")
+                axes_now = storage.get("cart_pressed_axes", {})
+                any_pressed = (
+                    any(bool(v) for v in axes_now.values()) if isinstance(axes_now, dict) else False
+                )
+                if t:
+                    t.active = bool(any_pressed)
+            except Exception as e:
+                logging.debug("cart_jog_timer toggle failed: %s", e)
 
     def set_frame(self, frame: str) -> None:
         storage = ng_app.storage.client
