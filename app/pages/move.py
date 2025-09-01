@@ -783,95 +783,83 @@ class MovePage:
         with ui.row().classes("w-full items-center justify-between"):
             with ui.row().classes("items-center gap-4"):
                 with ui.tabs() as jog_mode_tabs:
-                    ui.tab("Joint jog")
-                    ui.tab("Cartesian jog")
-                    jog_mode_tabs.value = "Joint jog"
+                    joint_tab = ui.tab("Joint jog")
+                    cart_tab = ui.tab("Cartesian jog")
+                jog_mode_tabs.value = joint_tab
                 frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props("dense")
                 frame_radio.on_value_change(
                     lambda e: self.set_frame(str(frame_radio.value or "TRF"))
                 )
             self.drag_handle(pid, src_col)
 
-        joint_jog_section = ui.column().classes("gap-2")
-        with joint_jog_section:
-            joint_names = ["J1", "J2", "J3", "J4", "J5", "J6"]
+        with ui.tab_panels(jog_mode_tabs, value=joint_tab).classes("w-full"):
+            with ui.tab_panel(joint_tab).classes("gap-2"):
+                    joint_names = ["J1", "J2", "J3", "J4", "J5", "J6"]
 
-            def make_joint_row(idx: int, name: str):
-                with ui.element("div").classes("joint-progress-container"):
-                    ui.label(name).classes("w-8")
-                    left = ui.image("/static/icons/button_arrow_1.webp").style(
-                        "width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;"
-                    )
-                    bar = (
-                        ui.linear_progress(value=0.5).props("rounded").classes("joint-progress-bar")
-                    )
-                    right = ui.image("/static/icons/button_arrow_1.webp").style(
-                        "width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;"
-                    )
-                    self.joint_progress_bars.append(bar)
-                    # store refs and bind async handlers
-                    self._joint_left_imgs[idx] = left
-                    self._joint_right_imgs[idx] = right
-                    left.on("mousedown", partial(self.set_joint_pressed, idx, "neg", True))
-                    left.on("mouseup", partial(self.set_joint_pressed, idx, "neg", False))
-                    left.on("mouseleave", partial(self.set_joint_pressed, idx, "neg", False))
-                    right.on("mousedown", partial(self.set_joint_pressed, idx, "pos", True))
-                    right.on("mouseup", partial(self.set_joint_pressed, idx, "pos", False))
-                    right.on("mouseleave", partial(self.set_joint_pressed, idx, "pos", False))
+                    def make_joint_row(idx: int, name: str):
+                        with ui.element("div").classes("joint-progress-container"):
+                            ui.label(name).classes("w-8")
+                            left = ui.image("/static/icons/button_arrow_1.webp").style(
+                                "width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;"
+                            )
+                            bar = (
+                                ui.linear_progress(value=0.5).props("rounded").classes("joint-progress-bar")
+                            )
+                            right = ui.image("/static/icons/button_arrow_1.webp").style(
+                                "width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;"
+                            )
+                            self.joint_progress_bars.append(bar)
+                            # store refs and bind async handlers
+                            self._joint_left_imgs[idx] = left
+                            self._joint_right_imgs[idx] = right
+                            left.on("mousedown", partial(self.set_joint_pressed, idx, "neg", True))
+                            left.on("mouseup", partial(self.set_joint_pressed, idx, "neg", False))
+                            left.on("mouseleave", partial(self.set_joint_pressed, idx, "neg", False))
+                            right.on("mousedown", partial(self.set_joint_pressed, idx, "pos", True))
+                            right.on("mouseup", partial(self.set_joint_pressed, idx, "pos", False))
+                            right.on("mouseleave", partial(self.set_joint_pressed, idx, "pos", False))
 
-            self.joint_progress_bars.clear()
-            for i, n in enumerate(joint_names):
-                make_joint_row(i, n)
+                    self.joint_progress_bars.clear()
+                    for i, n in enumerate(joint_names):
+                        make_joint_row(i, n)
 
-        cart_jog_section = ui.column().classes("gap-2")
-        with cart_jog_section:
+            with ui.tab_panel(cart_tab).classes("gap-2"):
 
-            def axis_image(src: str, axis: str, rotate_deg: int = 0):
-                img = ui.image(src).style(
-                    f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);"
-                )
-                self._cart_axis_imgs[axis] = img
-                img.on("mousedown", partial(self.set_axis_pressed, axis, True))
-                img.on("mouseup", partial(self.set_axis_pressed, axis, False))
-                img.on("mouseleave", partial(self.set_axis_pressed, axis, False))
+                    def axis_image(src: str, axis: str, rotate_deg: int = 0):
+                        img = ui.image(src).style(
+                            f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);"
+                        )
+                        self._cart_axis_imgs[axis] = img
+                        img.on("mousedown", partial(self.set_axis_pressed, axis, True))
+                        img.on("mouseup", partial(self.set_axis_pressed, axis, False))
+                        img.on("mouseleave", partial(self.set_axis_pressed, axis, False))
 
-            with ui.row().classes("items-start gap-8"):
-                with ui.element("div").classes("cart-jog-grid-3"):
-                    ui.element("div").style("width:72px;height:72px")
-                    axis_image("/static/icons/cart_x_up.webp", "X+")
-                    ui.element("div").style("width:72px;height:72px")
-                    axis_image("/static/icons/cart_y_left.webp", "Y-")
-                    ui.element("div").style("width:72px;height:72px")
-                    axis_image("/static/icons/cart_y_right.webp", "Y+")
-                    ui.element("div").style("width:72px;height:72px")
-                    axis_image("/static/icons/cart_x_down.webp", "X-")
-                    ui.element("div").style("width:72px;height:72px")
-                with ui.column().classes("gap-16"):
-                    axis_image("/static/icons/cart_z_up.webp", "Z+")
-                    axis_image("/static/icons/cart_z_down.webp", "Z-")
-                with ui.column().classes("gap-16"):
-                    axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
-                    axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
-                with ui.element("div").classes("cart-jog-grid-6"):
-                    ui.element("div")
-                    axis_image("/static/icons/RX_PLUS.webp", "RX+")
-                    ui.element("div")
-                    axis_image("/static/icons/RY_PLUS.webp", "RY+")
-                    ui.element("div")
-                    axis_image("/static/icons/RY_MINUS.webp", "RY-")
-                    ui.element("div")
-                    axis_image("/static/icons/RX_MINUS.webp", "RX-")
-
-        def update_jog_visibility() -> None:
-            if jog_mode_tabs.value == "Joint jog":
-                joint_jog_section.visible = True
-                cart_jog_section.visible = False
-            else:
-                joint_jog_section.visible = False
-                cart_jog_section.visible = True
-
-        jog_mode_tabs.on_value_change(lambda e: update_jog_visibility())
-        update_jog_visibility()
+                    with ui.row().classes("items-start gap-8"):
+                        with ui.element("div").classes("cart-jog-grid-3"):
+                            ui.element("div").style("width:72px;height:72px")
+                            axis_image("/static/icons/cart_x_up.webp", "X+")
+                            ui.element("div").style("width:72px;height:72px")
+                            axis_image("/static/icons/cart_y_left.webp", "Y-")
+                            ui.element("div").style("width:72px;height:72px")
+                            axis_image("/static/icons/cart_y_right.webp", "Y+")
+                            ui.element("div").style("width:72px;height:72px")
+                            axis_image("/static/icons/cart_x_down.webp", "X-")
+                            ui.element("div").style("width:72px;height:72px")
+                        with ui.column().classes("gap-16"):
+                            axis_image("/static/icons/cart_z_up.webp", "Z+")
+                            axis_image("/static/icons/cart_z_down.webp", "Z-")
+                        with ui.column().classes("gap-16"):
+                            axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
+                            axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
+                        with ui.element("div").classes("cart-jog-grid-6"):
+                            ui.element("div")
+                            axis_image("/static/icons/RX_PLUS.webp", "RX+")
+                            ui.element("div")
+                            axis_image("/static/icons/RY_PLUS.webp", "RY+")
+                            ui.element("div")
+                            axis_image("/static/icons/RY_MINUS.webp", "RY-")
+                            ui.element("div")
+                            axis_image("/static/icons/RX_MINUS.webp", "RX-")
 
     def build_command_palette_table(self, prefill_toggle) -> None:
         # Simplified structure with unique keys for row_key

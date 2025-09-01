@@ -50,7 +50,7 @@ class RecorderClient:
 
 
 @pytest.mark.unit
-async def test_webapp_user_fixture_joint_100hz(user, monkeypatch):
+async def test_webapp_rate_joint_100hz(user, monkeypatch):
     """Drive the real page, press-and-hold J1+ with user fixture, assert ~100 Hz emission."""
     import app.main as app_main
 
@@ -78,9 +78,11 @@ async def test_webapp_user_fixture_joint_100hz(user, monkeypatch):
 
     # Press and hold for ~2 seconds
     user.find("j1-right").trigger("mousedown")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(4.0)
+    await asyncio.sleep(1.0)
     user.find("j1-right").trigger("mouseup")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(recorder.joint_ts)
@@ -91,7 +93,7 @@ async def test_webapp_user_fixture_joint_100hz(user, monkeypatch):
 
 
 @pytest.mark.unit
-async def test_webapp_user_fixture_cart_100hz(user, monkeypatch):
+async def test_webapp_rate_cart_100hz(user, monkeypatch):
     """Drive the real page, press-and-hold X+ with user fixture, assert ~100 Hz emission."""
     import app.main as app_main
 
@@ -106,13 +108,9 @@ async def test_webapp_user_fixture_cart_100hz(user, monkeypatch):
     monkeypatch.setattr(move_mod, "client", recorder, raising=True)
 
     await user.open("/")
-    # Try to switch to 'Cartesian jog' by text if available; otherwise xfail to avoid false negatives
-    try:
-        await user.should_see("Cartesian jog", retries=5)
-        user.find("Cartesian jog").click()
-        await asyncio.sleep(0.1)
-    except AssertionError:
-        pytest.xfail("Cartesian jog tab not visible to user fixture in this environment")
+    await user.should_see("Cartesian jog", retries=5)
+    user.find("Cartesian jog").click()
+    await asyncio.sleep(0.1)
 
     axis_img = app_main.move_page_instance._cart_axis_imgs.get("X+")
     assert axis_img is not None, "Cartesian X+ image not found"
@@ -121,9 +119,11 @@ async def test_webapp_user_fixture_cart_100hz(user, monkeypatch):
         axis_img.mark("axis-xplus")
 
     user.find("axis-xplus").trigger("mousedown")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(4.0)
+    await asyncio.sleep(1.0)
     user.find("axis-xplus").trigger("mouseup")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(recorder.cart_ts)

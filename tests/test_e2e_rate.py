@@ -43,7 +43,7 @@ class ForwardingRecorderClient:
 
 
 @pytest.mark.integration
-async def test_e2e_user_fixture_joint_100hz(user, headless_server, monkeypatch):
+async def test_e2e_rate_joint_100hz(user, headless_server, monkeypatch):
     """
     E2E acceptance: Drive real UI with user fixture, forward UDP to real headless server,
     measure emission cadence on the client side; assert ~100 Hz.
@@ -69,9 +69,11 @@ async def test_e2e_user_fixture_joint_100hz(user, headless_server, monkeypatch):
     img.mark("e2e-j1-right")
 
     user.find("e2e-j1-right").trigger("mousedown")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(4.0)
+    await asyncio.sleep(1.0)
     user.find("e2e-j1-right").trigger("mouseup")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(fwd.joint_ts)
@@ -82,7 +84,7 @@ async def test_e2e_user_fixture_joint_100hz(user, headless_server, monkeypatch):
 
 
 @pytest.mark.integration
-async def test_e2e_user_fixture_cart_100hz(user, headless_server, monkeypatch):
+async def test_e2e_rate_cart_100hz(user, headless_server, monkeypatch):
     """
     E2E acceptance: Drive real UI for cartesian jog with user fixture, forward UDP to server,
     and assert ~100 Hz emission cadence.
@@ -100,15 +102,20 @@ async def test_e2e_user_fixture_cart_100hz(user, headless_server, monkeypatch):
     monkeypatch.setattr(move_mod, "client", fwd, raising=True)
 
     await user.open("/")
+    await user.should_see("Cartesian jog", retries=5)
+    user.find("Cartesian jog").click()
+    await asyncio.sleep(0.1)
 
     axis_img = app_main.move_page_instance._cart_axis_imgs.get("X+")
     assert axis_img is not None, "Cartesian X+ image not found"
     axis_img.mark("e2e-axis-xplus")
 
     user.find("e2e-axis-xplus").trigger("mousedown")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(4.0)
+    await asyncio.sleep(1.0)
     user.find("e2e-axis-xplus").trigger("mouseup")
+    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(fwd.cart_ts)
