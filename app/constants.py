@@ -30,6 +30,7 @@ AUTO_START: bool = os.getenv("PAROL6_AUTO_START", "0") in ("1", "true", "True", 
 DEFAULT_COM_PORT: str | None = os.getenv("PAROL6_COM_PORT") or None
 UI_PORT: int = int(os.getenv("PAROL6_UI_PORT", "8080"))
 
+
 def _resolve_log_level() -> int:
     s = os.getenv("PAROL_LOG_LEVEL")
     if s:
@@ -44,5 +45,6 @@ def _resolve_log_level() -> int:
         return mapping.get(name, logging.WARNING)
     else:
         return logging.WARNING
+
 
 LOG_LEVEL: int = _resolve_log_level()

@@ -5,6 +5,7 @@ import contextlib
 import logging
 import re
 import time
+from functools import partial
 from typing import TypedDict
 
 from nicegui import app as ng_app
@@ -14,7 +15,6 @@ from app.common.theme import get_theme as ctk_get_theme
 from app.constants import REPO_ROOT
 from app.services.robot_client import client
 from app.state import robot_state
-from functools import partial
 
 
 class MoveLayout(TypedDict):
@@ -102,7 +102,10 @@ class MovePage:
                 if abs(avg - self.JOG_TICK_S) > self.CADENCE_TOLERANCE:
                     logging.warning(
                         "[CADENCE] %s avg dt=%.4f s (target=%.4f s, tol=%.4f s)",
-                        label, avg, self.JOG_TICK_S, self.CADENCE_TOLERANCE
+                        label,
+                        avg,
+                        self.JOG_TICK_S,
+                        self.CADENCE_TOLERANCE,
                     )
                 stats["accum"] = 0.0
                 stats["count"] = 0.0
@@ -151,8 +154,8 @@ class MovePage:
                 step = abs(float(storage.get("joint_step_deg", 1.0)))
                 index = j if direction == "pos" else (j + 6)
                 await client.jog_joint(
-                        index, speed_percentage=speed, duration=None, distance_deg=step
-                    )
+                    index, speed_percentage=speed, duration=None, distance_deg=step
+                )
                 return
 
             pos_pressed = storage.get("jog_pressed_pos", [False] * 6)
@@ -610,8 +613,14 @@ class MovePage:
             return
 
         # Determine source and destination lists
-        src_list = self.current_layout["left"] if self._drag_src == "left" else self.current_layout["right"]
-        dst_list = self.current_layout["left"] if dst_col == "left" else self.current_layout["right"]
+        src_list = (
+            self.current_layout["left"]
+            if self._drag_src == "left"
+            else self.current_layout["right"]
+        )
+        dst_list = (
+            self.current_layout["left"] if dst_col == "left" else self.current_layout["right"]
+        )
 
         # Compute original source index (if present)
         try:
@@ -977,7 +986,9 @@ class MovePage:
                 except Exception:
                     self.program_textarea.theme = "oneDark"
                 with ui.row().classes("gap-2"):
-                    ui.button("Start", on_click=self.execute_program).props("unelevated color=positive")
+                    ui.button("Start", on_click=self.execute_program).props(
+                        "unelevated color=positive"
+                    )
                     ui.button("Stop", on_click=self.stop_program).props("unelevated color=negative")
                     ui.button("Save", on_click=self.save_program).props("unelevated")
 

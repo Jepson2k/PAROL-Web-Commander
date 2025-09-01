@@ -195,8 +195,8 @@ class RobotClient:
         duration: float | None = None,
         speed_percentage: int | None = None,
         accel_percentage: int | None = None,  # kept; not sent
-        profile: str | None = None,           # kept; not sent
-        tracking: str | None = None,          # kept; not sent
+        profile: str | None = None,  # kept; not sent
+        tracking: str | None = None,  # kept; not sent
     ) -> str:
         """
         Send minimal MOVEPOSE wire format expected by the server:
@@ -214,8 +214,8 @@ class RobotClient:
         duration: float | None = None,
         speed_percentage: float | None = None,
         accel_percentage: int | None = None,  # kept; not sent
-        profile: str | None = None,           # kept; not sent
-        tracking: str | None = None,          # kept; not sent
+        profile: str | None = None,  # kept; not sent
+        tracking: str | None = None,  # kept; not sent
     ) -> str:
         """
         Send minimal MOVECART wire format expected by the server:

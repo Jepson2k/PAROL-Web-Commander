@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.constants import CONTROLLER_PATH, LOG_LEVEL
+from app.constants import CONTROLLER_PATH
 
 
 @dataclass
@@ -117,10 +117,10 @@ class ServerManager:
         """Read controller stdout and forward to logging for UI Response Log."""
         try:
             assert proc.stdout is not None
-            for raw_line in iter(proc.stdout.readline, ''):
+            for raw_line in iter(proc.stdout.readline, ""):
                 if self._stop_reader.is_set():
                     break
-                line = raw_line.rstrip('\r\n')
+                line = raw_line.rstrip("\r\n")
                 if line:
                     # Preserve severity if headless prefixes with [LEVEL]
                     level = logging.INFO

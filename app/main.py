@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
-import threading
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -321,24 +319,27 @@ def build_footer() -> None:
                 await set_port(com_input.value or "")
 
             ui.button("Set Port", on_click=handle_set_port)
-            ui.button(
-                "Clear error", on_click=send_clear_error
-            ).props("color=warning")
+            ui.button("Clear error", on_click=send_clear_error).props("color=warning")
             ui.button("Stop", on_click=lambda: asyncio.create_task(send_stop_motion())).props(
                 "color=negative"
             )
 
+
 @ui.page("/")
 def compose_ui() -> None:
     apply_theme(get_theme())
-    ui.query('.nicegui-content').classes('p-0')
+    ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
 
     # Build header and tabs with panels
     build_header_and_tabs()
 
-    ng_app.storage.client["joint_jog_timer"] = ui.timer(interval=0.01, callback=move_page_instance.jog_tick, active=False)
-    ng_app.storage.client["cart_jog_timer"] = ui.timer(interval=0.01, callback=move_page_instance.cart_jog_tick, active=False)
+    ng_app.storage.client["joint_jog_timer"] = ui.timer(
+        interval=0.01, callback=move_page_instance.jog_tick, active=False
+    )
+    ng_app.storage.client["cart_jog_timer"] = ui.timer(
+        interval=0.01, callback=move_page_instance.cart_jog_tick, active=False
+    )
 
     # Attach logging handler to move page response log
     if move_page_instance.response_log:
@@ -353,9 +354,18 @@ def compose_ui() -> None:
         port = DEFAULT_COM_PORT or ""
     asyncio.create_task(start_controller(port))
 
+
 status_timer = ui.timer(
     interval=0.2, callback=update_status_async, active=False
 )  # status poll (gated)
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="PAROL6 NiceGUI Commander", port=UI_PORT, reload=True, storage_secret="unnecessary_for_now")
+    ui.run(
+        title="PAROL6 NiceGUI Commander",
+        port=UI_PORT,
+        reload=True,
+        storage_secret="unnecessary_for_now",
+        loop="uvloop",
+        http="httptools",
+        ws="wsproto",
+    )

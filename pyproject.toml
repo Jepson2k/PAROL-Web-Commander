@@ -17,6 +17,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.5.0",
     "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
     "pre-commit>=3.0.0",
 ]
 
@@ -29,7 +30,7 @@ fix = true
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings  
+    "W",   # pycodestyle warnings
     "F",   # Pyflakes
     "UP",  # pyupgrade
     "B",   # flake8-bugbear
@@ -80,6 +81,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+asyncio_mode = "auto"
 addopts = [
     "--strict-markers",
     "--strict-config",
