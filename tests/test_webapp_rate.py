@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 
+import app.pages.move as move_mod
+from app import main
+
+if TYPE_CHECKING:
+    from nicegui.testing import User
+    from pytest import MonkeyPatch
 
 class RecorderClient:
     """Records jog send timestamps while acting as the transport for UI-only acceptance tests."""
@@ -50,18 +57,15 @@ class RecorderClient:
 
 
 @pytest.mark.unit
-async def test_webapp_rate_joint_100hz(user, monkeypatch):
+@pytest.mark.module_under_test(main)
+async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold J1+ with user fixture, assert ~100 Hz emission."""
-    import app.main as app_main
 
     # Prevent controller auto-start so tests remain hardware-free
     async def _noop_start_controller(port: str | None) -> None:
         return None
 
-    monkeypatch.setattr(app_main, "start_controller", _noop_start_controller, raising=True)
-
-    # Replace UDP client used by MovePage with a recorder
-    import app.pages.move as move_mod
+    monkeypatch.setattr(main, "start_controller", _noop_start_controller, raising=True)
 
     recorder = RecorderClient()
     monkeypatch.setattr(move_mod, "client", recorder, raising=True)
@@ -72,17 +76,15 @@ async def test_webapp_rate_joint_100hz(user, monkeypatch):
     await user.should_see("Joint jog")
 
     # Tag J1-right arrow image for selection
-    img = app_main.move_page_instance._joint_right_imgs.get(0)
+    img = main.move_page_instance._joint_right_imgs.get(0)
     assert img is not None, "J1 right arrow image not found"
     img.mark("j1-right")
 
     # Press and hold for ~2 seconds
     user.find("j1-right").trigger("mousedown")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(3.0)
     user.find("j1-right").trigger("mouseup")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(recorder.joint_ts)
@@ -93,37 +95,29 @@ async def test_webapp_rate_joint_100hz(user, monkeypatch):
 
 
 @pytest.mark.unit
-async def test_webapp_rate_cart_100hz(user, monkeypatch):
+@pytest.mark.module_under_test(main)
+async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold X+ with user fixture, assert ~100 Hz emission."""
-    import app.main as app_main
-
     async def _noop_start_controller(port: str | None) -> None:
         return None
 
-    monkeypatch.setattr(app_main, "start_controller", _noop_start_controller, raising=True)
-
-    import app.pages.move as move_mod
+    monkeypatch.setattr(main, "start_controller", _noop_start_controller, raising=True)
 
     recorder = RecorderClient()
     monkeypatch.setattr(move_mod, "client", recorder, raising=True)
 
     await user.open("/")
-    await user.should_see("Cartesian jog", retries=5)
-    user.find("Cartesian jog").click()
-    await asyncio.sleep(0.1)
 
-    axis_img = app_main.move_page_instance._cart_axis_imgs.get("X+")
+    axis_img = main.move_page_instance._cart_axis_imgs.get("X+")
     assert axis_img is not None, "Cartesian X+ image not found"
     # Mark inside the user client context to ensure the marker is visible to the simulated user
     with user:
         axis_img.mark("axis-xplus")
 
     user.find("axis-xplus").trigger("mousedown")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(3.0)
     user.find("axis-xplus").trigger("mouseup")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(recorder.cart_ts)

@@ -333,12 +333,12 @@ def compose_ui() -> None:
 
     # Build header and tabs with panels
     build_header_and_tabs()
-
+    # Need a 0.009 interval to acheive at least 100hz control loop
     ng_app.storage.client["joint_jog_timer"] = ui.timer(
-        interval=0.01, callback=move_page_instance.jog_tick, active=False
+        interval=0.009, callback=move_page_instance.jog_tick, active=False
     )
     ng_app.storage.client["cart_jog_timer"] = ui.timer(
-        interval=0.01, callback=move_page_instance.cart_jog_tick, active=False
+        interval=0.009, callback=move_page_instance.cart_jog_tick, active=False
     )
 
     # Attach logging handler to move page response log

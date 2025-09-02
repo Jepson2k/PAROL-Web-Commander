@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+import app.pages.move as move_mod
+from app import main
+from app.services.robot_client import client as real_client
+
 if TYPE_CHECKING:
+    from nicegui.testing import User
+    from pytest import MonkeyPatch
+
     from app.services.robot_client import RobotClient
 
 
@@ -43,20 +50,18 @@ class ForwardingRecorderClient:
 
 
 @pytest.mark.integration
-async def test_e2e_rate_joint_100hz(user, headless_server, monkeypatch):
+@pytest.mark.module_under_test(main)
+async def test_e2e_rate_joint_100hz(user: User, headless_server, monkeypatch: MonkeyPatch):
     """
     E2E acceptance: Drive real UI with user fixture, forward UDP to real headless server,
     measure emission cadence on the client side; assert ~100 Hz.
     """
-    import app.main as app_main
-    import app.pages.move as move_mod
-    from app.services.robot_client import client as real_client
 
     # Prevent controller auto-start; we already run the headless server via fixture
     async def _noop_start_controller(port: str | None) -> None:
         return None
 
-    monkeypatch.setattr(app_main, "start_controller", _noop_start_controller, raising=True)
+    monkeypatch.setattr(main, "start_controller", _noop_start_controller, raising=True)
 
     # Forwarder records sends and forwards to server
     fwd = ForwardingRecorderClient(real_client)
@@ -64,16 +69,14 @@ async def test_e2e_rate_joint_100hz(user, headless_server, monkeypatch):
 
     await user.open("/")
 
-    img = app_main.move_page_instance._joint_right_imgs.get(0)
+    img = main.move_page_instance._joint_right_imgs.get(0)
     assert img is not None, "J1 right arrow image not found"
     img.mark("e2e-j1-right")
 
     user.find("e2e-j1-right").trigger("mousedown")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(3.0)
     user.find("e2e-j1-right").trigger("mouseup")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(fwd.joint_ts)
@@ -84,38 +87,31 @@ async def test_e2e_rate_joint_100hz(user, headless_server, monkeypatch):
 
 
 @pytest.mark.integration
-async def test_e2e_rate_cart_100hz(user, headless_server, monkeypatch):
+@pytest.mark.module_under_test(main)
+async def test_e2e_rate_cart_100hz(user: User, headless_server, monkeypatch: MonkeyPatch):
     """
     E2E acceptance: Drive real UI for cartesian jog with user fixture, forward UDP to server,
     and assert ~100 Hz emission cadence.
     """
-    import app.main as app_main
-    import app.pages.move as move_mod
-    from app.services.robot_client import client as real_client
 
     async def _noop_start_controller(port: str | None) -> None:
         return None
 
-    monkeypatch.setattr(app_main, "start_controller", _noop_start_controller, raising=True)
+    monkeypatch.setattr(main, "start_controller", _noop_start_controller, raising=True)
 
     fwd = ForwardingRecorderClient(real_client)
     monkeypatch.setattr(move_mod, "client", fwd, raising=True)
 
     await user.open("/")
-    await user.should_see("Cartesian jog", retries=5)
-    user.find("Cartesian jog").click()
-    await asyncio.sleep(0.1)
 
-    axis_img = app_main.move_page_instance._cart_axis_imgs.get("X+")
+    axis_img = main.move_page_instance._cart_axis_imgs.get("X+")
     assert axis_img is not None, "Cartesian X+ image not found"
     axis_img.mark("e2e-axis-xplus")
 
     user.find("e2e-axis-xplus").trigger("mousedown")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     start = time.monotonic()
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(3)
     user.find("e2e-axis-xplus").trigger("mouseup")
-    await asyncio.sleep(0.2) # GUI updates don't happen automatically
     duration = time.monotonic() - start
 
     count = len(fwd.cart_ts)

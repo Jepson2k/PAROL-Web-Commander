@@ -33,6 +33,8 @@ def headless_server() -> Iterator[subprocess.Popen]:
     env = os.environ.copy()
     env["PAROL6_NOAUTOHOME"] = "1"
     env["PAROL_LOG_LEVEL"] = "WARNING"
+    # Enable hardware-free simulation so IK commands can run end-to-end at 100 Hz
+    env["PAROL6_FAKE_SERIAL"] = "1"
 
     proc = subprocess.Popen(
         [sys.executable, str(server_script)],

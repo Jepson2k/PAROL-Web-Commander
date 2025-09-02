@@ -76,7 +76,7 @@ class MovePage:
         self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
 
         # Jog cadence constants (100 Hz)
-        self.JOG_TICK_S: float = 0.010
+        self.JOG_TICK_S: float = 0.009
         self.JOG_BURST_S: float = 0.009
         self.CADENCE_WARN_WINDOW: int = 100
         self.CADENCE_TOLERANCE: float = 0.002
@@ -113,9 +113,8 @@ class MovePage:
 
     def _get_first_pressed_joint(self) -> tuple[int, str] | None:
         """Return (index, 'pos'|'neg') for the first pressed joint, else None."""
-        storage = ng_app.storage.client
-        pos = storage.get("jog_pressed_pos", [False] * 6)
-        neg = storage.get("jog_pressed_neg", [False] * 6)
+        pos = ng_app.storage.client.get("jog_pressed_pos", [False] * 6)
+        neg = ng_app.storage.client.get("jog_pressed_neg", [False] * 6)
         if isinstance(pos, list) and isinstance(neg, list):
             for j in range(min(6, len(pos), len(neg))):
                 if pos[j]:
@@ -126,8 +125,7 @@ class MovePage:
 
     def _get_first_pressed_axis(self) -> str | None:
         """Return the first pressed cartesian axis key like 'X+' if any."""
-        storage = ng_app.storage.client
-        axes_any = storage.get("cart_pressed_axes", {})
+        axes_any = ng_app.storage.client.get("cart_pressed_axes", {})
         if isinstance(axes_any, dict):
             for k, pressed in axes_any.items():
                 if bool(pressed):
@@ -179,17 +177,14 @@ class MovePage:
                 logging.debug("joint_jog_timer toggle failed: %s", e)
 
     def set_jog_speed(self, v) -> None:
-        storage = ng_app.storage.client
-        storage["jog_speed"] = max(1, min(100, int(v)))
+        ng_app.storage.client["jog_speed"] = max(1, min(100, int(v)))
 
     def set_jog_accel(self, v) -> None:
-        storage = ng_app.storage.client
-        storage["jog_accel"] = max(1, min(100, int(v)))
+        ng_app.storage.client["jog_accel"] = max(1, min(100, int(v)))
 
     async def jog_tick(self) -> None:
         """100 Hz: send one short joint jog burst if any button is pressed."""
-        storage = ng_app.storage.client
-        speed = max(1, min(100, int(storage.get("jog_speed", 50))))
+        speed = max(1, min(100, int(ng_app.storage.client.get("jog_speed", 50))))
         intent = self._get_first_pressed_joint()
         if intent is not None:
             j, d = intent
