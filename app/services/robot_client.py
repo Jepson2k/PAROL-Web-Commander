@@ -72,6 +72,14 @@ class RobotClient:
         """Requires server support for CLEAR_ERROR command."""
         return await self._send("CLEAR_ERROR")
 
+    async def stream_on(self) -> str:
+        """Enable zero-queue streaming mode on the server."""
+        return await self._send("STREAM|ON")
+
+    async def stream_off(self) -> str:
+        """Disable zero-queue streaming mode on the server."""
+        return await self._send("STREAM|OFF")
+
     async def set_com_port(self, port_str: str) -> str:
         """
         Best-effort COM port change. Requires server support to take effect immediately.

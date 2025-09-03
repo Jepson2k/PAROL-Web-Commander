@@ -52,6 +52,12 @@ class RecorderClient:
     async def stop(self) -> str:
         return "OK"
 
+    async def stream_on(self) -> str:
+        return "OK"
+
+    async def stream_off(self) -> str:
+        return "OK"
+
     async def _request(self, message: str, bufsize: int = 2048) -> str | None:
         return None
 

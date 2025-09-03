@@ -44,6 +44,12 @@ class ForwardingRecorderClient:
         self.cart_ts.append(time.monotonic())
         return await self.real.jog_cartesian(frame, axis, speed_percentage, duration)
 
+    async def stream_on(self) -> str:
+        return await self.real.stream_on()
+
+    async def stream_off(self) -> str:
+        return await self.real.stream_off()
+
     # Pass-through for any other calls if triggered
     async def __getattr__(self, name):
         return getattr(self.real, name)

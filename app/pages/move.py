@@ -77,9 +77,10 @@ class MovePage:
 
         # Jog cadence constants (100 Hz)
         self.JOG_TICK_S: float = 0.009
-        self.JOG_BURST_S: float = 0.009
         self.CADENCE_WARN_WINDOW: int = 100
         self.CADENCE_TOLERANCE: float = 0.002
+        # Streaming watchdog timeout to use as "duration" while stream_mode is ON
+        self.STREAM_TIMEOUT_S: float = 0.2
 
     # ---- Jog helpers ----
 
@@ -166,15 +167,17 @@ class MovePage:
                 storage["jog_pressed_neg"] = neg_pressed
 
             # Toggle per-client joint jog timer based on any pressed joint
-            try:
-                t = storage.get("joint_jog_timer")
-                any_pressed = any(storage.get("jog_pressed_pos", [False] * 6)) or any(
-                    storage.get("jog_pressed_neg", [False] * 6)
-                )
-                if t:
-                    t.active = bool(any_pressed)
-            except Exception as e:
-                logging.debug("joint_jog_timer toggle failed: %s", e)
+            t = storage.get("joint_jog_timer")
+            any_pressed = any(storage.get("jog_pressed_pos", [False] * 6)) or any(
+                storage.get("jog_pressed_neg", [False] * 6)
+            )
+            if t:
+                t.active = bool(any_pressed)
+
+            if any_pressed:
+                await client.stream_on()
+            else:
+                await client.stream_off()
 
     def set_jog_speed(self, v) -> None:
         ng_app.storage.client["jog_speed"] = max(1, min(100, int(v)))
@@ -183,13 +186,13 @@ class MovePage:
         ng_app.storage.client["jog_accel"] = max(1, min(100, int(v)))
 
     async def jog_tick(self) -> None:
-        """100 Hz: send one short joint jog burst if any button is pressed."""
+        """100 Hz: send/update joint streaming jog if any button is pressed."""
         speed = max(1, min(100, int(ng_app.storage.client.get("jog_speed", 50))))
         intent = self._get_first_pressed_joint()
         if intent is not None:
             j, d = intent
             idx = j if d == "pos" else (j + 6)
-            await client.jog_joint(idx, speed_percentage=speed, duration=self.JOG_BURST_S)
+            await client.jog_joint(idx, speed_percentage=speed, duration=self.STREAM_TIMEOUT_S)
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats, "joint")
 
@@ -233,16 +236,18 @@ class MovePage:
             storage["cart_pressed_axes"] = axes
 
             # Toggle per-client cartesian jog timer based on any pressed axis
-            try:
-                t = storage.get("cart_jog_timer")
-                axes_now = storage.get("cart_pressed_axes", {})
-                any_pressed = (
-                    any(bool(v) for v in axes_now.values()) if isinstance(axes_now, dict) else False
-                )
-                if t:
-                    t.active = bool(any_pressed)
-            except Exception as e:
-                logging.debug("cart_jog_timer toggle failed: %s", e)
+            t = storage.get("cart_jog_timer")
+            axes_now = storage.get("cart_pressed_axes", {})
+            any_pressed = (
+                any(bool(v) for v in axes_now.values()) if isinstance(axes_now, dict) else False
+            )
+            if t:
+                t.active = bool(any_pressed)
+
+            if any_pressed:
+                await client.stream_on()
+            else:
+                await client.stream_off()
 
     def set_frame(self, frame: str) -> None:
         storage = ng_app.storage.client
@@ -250,13 +255,13 @@ class MovePage:
             storage["frame"] = frame
 
     async def cart_jog_tick(self) -> None:
-        """100 Hz: send one short cartesian jog burst if any axis is pressed."""
+        """100 Hz: send/update cartesian streaming jog if any axis is pressed."""
         storage = ng_app.storage.client
         speed = max(1, min(100, int(storage.get("jog_speed", 50))))
         frame = storage.get("frame", "TRF")
         axis = self._get_first_pressed_axis()
         if axis is not None:
-            await client.jog_cartesian(frame, axis, speed, self.JOG_BURST_S)
+            await client.jog_cartesian(frame, axis, speed, self.STREAM_TIMEOUT_S)
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
