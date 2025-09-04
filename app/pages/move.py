@@ -5,7 +5,6 @@ import contextlib
 import logging
 import math
 import re
-import tempfile
 import time
 from functools import partial
 from typing import TypedDict
@@ -13,11 +12,11 @@ from typing import TypedDict
 from nicegui import app as ng_app
 from nicegui import ui
 
-from app.common.theme import get_theme as ctk_get_theme
+from app.common.theme import get_theme
 from app.constants import PAROL6_URDF_PATH, REPO_ROOT
 from app.services.robot_client import client
 from app.state import robot_state
-from urdf_scene_nicegui import UrdfScene
+from urdf_scene_nicegui import UrdfScene  # type: ignore
 
 
 class MoveLayout(TypedDict):
@@ -667,61 +666,54 @@ class MovePage:
     def render_urdf_content(self, pid: str, src_col: str) -> None:
         """Inner content for the URDF Viewer panel"""
         with ui.row().classes("items-center justify-between w-full"):
-            ui.label("URDF Viewer").classes("text-md font-medium")
+            with ui.row().classes("gap-4"):
+                ui.label("URDF Viewer")
+                # Sync toggle
+                sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync)
+
+                def update_sync():
+                    self.urdf_auto_sync = bool(sync_switch.value)
+                    self.urdf_config["auto_sync"] = self.urdf_auto_sync
+                    logging.info("URDF auto sync: %s", self.urdf_auto_sync)
+
+                sync_switch.on_value_change(lambda e: update_sync())
+
+                # Scale input
+                scale_input = ui.number(
+                    label="Scale",
+                    value=self.urdf_config.get("scale_stls", 1.0),
+                    min=0.1,
+                    max=10.0,
+                    step=0.1
+                ).style("width: 50px")
+
+                def update_scale():
+                    if scale_input.value is not None:
+                        val = max(0.1, min(10.0, float(scale_input.value)))
+                        self.urdf_config["scale_stls"] = val
+                        logging.info("URDF scale updated: %s", val)
+
+                scale_input.on_value_change(lambda e: update_scale())
+
+                # Reload button
+                async def reload_urdf():
+                    try:
+                        await self._initialize_urdf_scene()
+                        ui.notify("URDF reloaded", color="positive")
+                        logging.info("URDF scene reloaded")
+                    except Exception as e:
+                        ui.notify(f"URDF reload failed: {e}", color="negative")
+                        logging.error("URDF reload failed: %s", e)
+
+                ui.button("Reload", on_click=reload_urdf).props("outline")
             self.drag_handle(pid, src_col)
-
-        # Controls row
-        with ui.row().classes("items-center gap-4 w-full"):
-            # Sync toggle
-            sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync)
-
-            def update_sync():
-                self.urdf_auto_sync = bool(sync_switch.value)
-                self.urdf_config["auto_sync"] = self.urdf_auto_sync
-                logging.info("URDF auto sync: %s", self.urdf_auto_sync)
-
-            sync_switch.on_value_change(lambda e: update_sync())
-
-            # Scale input
-            scale_input = ui.number(
-                label="Scale",
-                value=self.urdf_config.get("scale_stls", 1.0),
-                min=0.1,
-                max=10.0,
-                step=0.1
-            ).style("width: 100px")
-
-            def update_scale():
-                if scale_input.value is not None:
-                    val = max(0.1, min(10.0, float(scale_input.value)))
-                    self.urdf_config["scale_stls"] = val
-                    logging.info("URDF scale updated: %s", val)
-
-            scale_input.on_value_change(lambda e: update_scale())
-
-            # Reload button
-            async def reload_urdf():
-                try:
-                    await self._initialize_urdf_scene()
-                    ui.notify("URDF reloaded", color="positive")
-                    logging.info("URDF scene reloaded")
-                except Exception as e:
-                    ui.notify(f"URDF reload failed: {e}", color="negative")
-                    logging.error("URDF reload failed: %s", e)
-
-            ui.button("Reload", on_click=reload_urdf).props("outline")
-
-        # URDF scene container (will be populated by _initialize_urdf_scene)
-        scene_container = ui.element("div").classes("w-full").style("height: 100px")
 
         # Initialize URDF scene
         async def init_scene():
             try:
-                await self._initialize_urdf_scene(scene_container)
+                await self._initialize_urdf_scene()
                 logging.info("URDF scene initialized")
             except Exception as e:
-                with scene_container:
-                    ui.label(f"URDF Error: {e}").classes("text-red-500")
                 logging.error("URDF initialization failed: %s", e)
 
         # Use timer to delay initialization until UI is ready
@@ -739,7 +731,7 @@ class MovePage:
 
         # Create a temporary URDF file with continuous joints changed to revolute
         # This is needed because urdf_scene_nicegui doesn't support continuous joints
-        with open(PAROL6_URDF_PATH, 'r') as f:
+        with open(PAROL6_URDF_PATH) as f:
             urdf_content = f.read()
 
         # Replace continuous joint type with revolute (L6 joint has limits so it's effectively revolute)
@@ -753,16 +745,55 @@ class MovePage:
             with open(temp_urdf_path, 'w') as tmp_file:
                 tmp_file.write(urdf_content)
 
+            # Detect theme and set appropriate colors
+            mode = get_theme()
+            is_dark = (mode != "light")
+            bg_color = "#212121" if is_dark else "#eeeeee"
+            material_color = "#9ca3af" if is_dark else "#666666"
+
+            # Update config with theme-aware colors
+            self.urdf_config["background_color"] = bg_color
+            self.urdf_config["material"] = material_color
+
             # Create new scene with current config
-            with container or ui.element("div"):
-                # Constructor takes urdf_path as required parameter
-                self.urdf_scene = UrdfScene(str(temp_urdf_path))
-                # Show method is not async and takes display parameters
-                self.urdf_scene.show(
-                    scale_stls=self.urdf_config.get("scale_stls", 1.0),
-                    material=self.urdf_config.get("material"),
-                    background_color=self.urdf_config.get("background_color", "#eee")
+            self.urdf_scene = UrdfScene(str(temp_urdf_path))
+            assert self.urdf_scene is not None
+            # Show method is not async and takes display parameters
+            self.urdf_scene.show(
+                scale_stls=self.urdf_config.get("scale_stls", 1.0),
+                material=self.urdf_config.get("material"),
+                background_color=self.urdf_config.get("background_color", "#eee")
+            )
+
+            # Override the scene height and set closer camera position
+            if self.urdf_scene.scene:
+                scene: ui.scene = self.urdf_scene.scene
+                scene._props["grid"] = (10, 100)
+                # Remove the viewport-based height and set fixed height
+                scene.classes(remove="h-[66vh]").style("height: 375px")
+                # Set camera closer to the robot arm with proper look-at positioning
+                scene.move_camera(
+                    x=0.3, y=0.3, z=0.22,                    # Camera position
+                    look_at_z=0.22,
+                    duration=0.0                            # Instant movement
                 )
+
+                # Add large world coordinate frame at origin (fixed)
+                world_axes_size = 0.30
+                scene.line([0, 0, 0], [world_axes_size, 0, 0]).material("#ff0000") # X-axis red
+                scene.line([0, 0, 0], [0, world_axes_size, 0]).material("#00ff00")  # Y-axis green
+                scene.line([0, 0, 0], [0, 0, world_axes_size]).material("#0000ff")  # Z-axis blue
+
+                # Add large end-of-arm coordinate frame
+                if self.urdf_scene.joint_names:
+                    eef_joint = self.urdf_scene.joint_names[-1]  # Last actuated joint
+                    eef_group = self.urdf_scene.joint_groups.get(eef_joint)
+                    if eef_group:
+                        eef_axes_size = 0.15
+                        with eef_group:
+                            scene.line([0, 0, 0], [eef_axes_size, 0, 0]).material("#ff0000")  # X-axis red
+                            scene.line([0, 0, 0], [0, eef_axes_size, 0]).material("#00ff00")  # Y-axis green
+                            scene.line([0, 0, 0], [0, 0, eef_axes_size]).material("#0000ff")  # Z-axis blue
 
         finally:
             # Clean up temporary file
@@ -790,17 +821,17 @@ class MovePage:
             # Validate that all angles are numeric (not strings like "-")
             valid_angles = []
             for angle in angles_deg[:6]:  # Take only first 6 angles
-                if isinstance(angle, (int, float)) and not isinstance(angle, bool):
+                if isinstance(angle, int | float) and not isinstance(angle, bool):
                     if math.isfinite(angle):
                         valid_angles.append(float(angle))
                     else:
                         return  # Skip update for NaN or infinite values
                 else:
                     return  # Skip update for any non-numeric data
-            
+
             if len(valid_angles) != 6:
                 return  # Need all 6 angles
-            
+
             # Convert degrees to radians and apply index mapping
             angles_rad = []
             for i in range(6):
@@ -811,13 +842,13 @@ class MovePage:
                     angles_rad.append(angle_rad)
                 else:
                     angles_rad.append(0.0)
-            
+
             # Create ordered list of angles based on URDF joint names
             # The set_axis_values method expects a list, not a dictionary!
             if hasattr(self.urdf_scene, 'set_axis_values') and hasattr(self.urdf_scene, 'joint_names'):
                 urdf_joint_names = list(self.urdf_scene.joint_names)
                 angles_ordered = []
-                
+
                 for joint_name in urdf_joint_names:
                     # Map URDF joint name back to our controller index
                     try:
@@ -828,10 +859,10 @@ class MovePage:
                             angles_ordered.append(0.0)
                     except (ValueError, KeyError):
                         angles_ordered.append(0.0)
-                
+
                 # Pass list of float values in the order expected by the library
                 self.urdf_scene.set_axis_values(angles_ordered)
-                
+
         except Exception as e:
             logging.error("Failed to update URDF angles: %s", e)
 
@@ -1155,9 +1186,9 @@ class MovePage:
                     .classes("w-full")
                     .style("height: 360px")
                 )
-                # Initialize CodeMirror theme based on CTk theme/system
+                # Initialize CodeMirror theme based on theme/system
                 try:
-                    mode = ctk_get_theme()
+                    mode = get_theme()
                     effective = "light" if mode == "light" else "dark"
                     self.program_textarea.theme = (
                         "basicLight" if effective == "light" else "oneDark"
