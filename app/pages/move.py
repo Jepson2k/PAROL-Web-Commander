@@ -65,6 +65,8 @@ class MovePage:
             "auto_sync": True,
             "joint_name_order": ["L1", "L2", "L3", "L4", "L5", "L6"],
             "deg_to_rad": True,
+            "angle_signs": [1, 1, -1, -1, -1, -1],  # Sign correction for joint directions
+            "angle_offsets": [0, 90, 180, 0, 0, 180],  # Zero-reference offsets (degrees) for each joint
         }
 
         # Drag-and-drop layout
@@ -666,10 +668,10 @@ class MovePage:
     def render_urdf_content(self, pid: str, src_col: str) -> None:
         """Inner content for the URDF Viewer panel"""
         with ui.row().classes("items-center justify-between w-full"):
-            with ui.row().classes("gap-4"):
+            with ui.row():
                 ui.label("URDF Viewer")
                 # Sync toggle
-                sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync)
+                sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync).classes("p-0")
 
                 def update_sync():
                     self.urdf_auto_sync = bool(sync_switch.value)
@@ -677,35 +679,6 @@ class MovePage:
                     logging.info("URDF auto sync: %s", self.urdf_auto_sync)
 
                 sync_switch.on_value_change(lambda e: update_sync())
-
-                # Scale input
-                scale_input = ui.number(
-                    label="Scale",
-                    value=self.urdf_config.get("scale_stls", 1.0),
-                    min=0.1,
-                    max=10.0,
-                    step=0.1
-                ).style("width: 50px")
-
-                def update_scale():
-                    if scale_input.value is not None:
-                        val = max(0.1, min(10.0, float(scale_input.value)))
-                        self.urdf_config["scale_stls"] = val
-                        logging.info("URDF scale updated: %s", val)
-
-                scale_input.on_value_change(lambda e: update_scale())
-
-                # Reload button
-                async def reload_urdf():
-                    try:
-                        await self._initialize_urdf_scene()
-                        ui.notify("URDF reloaded", color="positive")
-                        logging.info("URDF scene reloaded")
-                    except Exception as e:
-                        ui.notify(f"URDF reload failed: {e}", color="negative")
-                        logging.error("URDF reload failed: %s", e)
-
-                ui.button("Reload", on_click=reload_urdf).props("outline")
             self.drag_handle(pid, src_col)
 
         # Initialize URDF scene
@@ -832,13 +805,19 @@ class MovePage:
             if len(valid_angles) != 6:
                 return  # Need all 6 angles
 
-            # Convert degrees to radians and apply index mapping
+            # Convert degrees to radians, apply sign correction and index mapping
             angles_rad = []
+            angle_signs = self.urdf_config.get("angle_signs", [1, 1, 1, 1, 1, 1])
             for i in range(6):
                 if i < len(self.urdf_index_mapping) and self.urdf_index_mapping[i] < len(valid_angles):
                     controller_idx = self.urdf_index_mapping[i]
                     angle_deg = valid_angles[controller_idx]
-                    angle_rad = math.radians(angle_deg) if self.urdf_config.get("deg_to_rad", True) else angle_deg
+                    # Apply sign correction and offset
+                    sign = 1 if controller_idx >= len(angle_signs) else (1 if angle_signs[controller_idx] >= 0 else -1)
+                    angle_offsets = self.urdf_config.get("angle_offsets", [0, 0, 0, 0, 0, 0])
+                    offset = angle_offsets[controller_idx] if controller_idx < len(angle_offsets) else 0
+                    angle_deg_corrected = angle_deg * sign + offset
+                    angle_rad = math.radians(angle_deg_corrected) if self.urdf_config.get("deg_to_rad", True) else angle_deg_corrected
                     angles_rad.append(angle_rad)
                 else:
                     angles_rad.append(0.0)
