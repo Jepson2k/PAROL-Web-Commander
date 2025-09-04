@@ -155,6 +155,9 @@ async def update_status_async() -> None:
                             _normalize_joint_progress(a, lim[0], lim[1]), 3
                         )
 
+            # Update URDF viewer with live joint angles
+            move_page_instance.update_urdf_angles(angles)
+
         if pose and len(pose) >= 12:
             # Pose matrix flattened; indices 3,7,11 as XYZ
             x, y, z = pose[3], pose[7], pose[11]

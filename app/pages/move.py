@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
+import tempfile
 import time
 from functools import partial
 from typing import TypedDict
@@ -12,9 +14,10 @@ from nicegui import app as ng_app
 from nicegui import ui
 
 from app.common.theme import get_theme as ctk_get_theme
-from app.constants import REPO_ROOT
+from app.constants import PAROL6_URDF_PATH, REPO_ROOT
 from app.services.robot_client import client
 from app.state import robot_state
+from urdf_scene_nicegui import UrdfScene
 
 
 class MoveLayout(TypedDict):
@@ -50,8 +53,23 @@ class MovePage:
         self.program_cancel_event: asyncio.Event | None = None
         self.program_speed_percentage: int | None = None  # set by JointVelSet alias
 
+        # URDF viewer state
+        self.urdf_scene = None  # UrdfScene instance
+        self.urdf_auto_sync: bool = True
+        self.urdf_joint_names: list[str] | None = None
+        self.urdf_index_mapping: list[int] = [0, 1, 2, 3, 4, 5]  # J1..J6 -> L1..L6
+        self.urdf_config: dict = {
+            "urdf_path": str(PAROL6_URDF_PATH),
+            "scale_stls": 1.0,
+            "material": "#888",
+            "background_color": "#eee",
+            "auto_sync": True,
+            "joint_name_order": ["L1", "L2", "L3", "L4", "L5", "L6"],
+            "deg_to_rad": True,
+        }
+
         # Drag-and-drop layout
-        self.DEFAULT_LAYOUT: MoveLayout = {"left": ["jog", "readouts"], "right": ["editor", "log"]}
+        self.DEFAULT_LAYOUT: MoveLayout = {"left": ["jog", "readouts"], "right": ["urdf", "editor", "log"]}
         self.current_layout = self.DEFAULT_LAYOUT.copy()
         self._drag_id: str | None = None
         self._drag_src: str | None = None
@@ -644,6 +662,179 @@ class MovePage:
         self._drag_id = None
         self._drag_src = None
 
+    # ---- URDF viewer methods ----
+
+    def render_urdf_content(self, pid: str, src_col: str) -> None:
+        """Inner content for the URDF Viewer panel"""
+        with ui.row().classes("items-center justify-between w-full"):
+            ui.label("URDF Viewer").classes("text-md font-medium")
+            self.drag_handle(pid, src_col)
+
+        # Controls row
+        with ui.row().classes("items-center gap-4 w-full"):
+            # Sync toggle
+            sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync)
+
+            def update_sync():
+                self.urdf_auto_sync = bool(sync_switch.value)
+                self.urdf_config["auto_sync"] = self.urdf_auto_sync
+                logging.info("URDF auto sync: %s", self.urdf_auto_sync)
+
+            sync_switch.on_value_change(lambda e: update_sync())
+
+            # Scale input
+            scale_input = ui.number(
+                label="Scale",
+                value=self.urdf_config.get("scale_stls", 1.0),
+                min=0.1,
+                max=10.0,
+                step=0.1
+            ).style("width: 100px")
+
+            def update_scale():
+                if scale_input.value is not None:
+                    val = max(0.1, min(10.0, float(scale_input.value)))
+                    self.urdf_config["scale_stls"] = val
+                    logging.info("URDF scale updated: %s", val)
+
+            scale_input.on_value_change(lambda e: update_scale())
+
+            # Reload button
+            async def reload_urdf():
+                try:
+                    await self._initialize_urdf_scene()
+                    ui.notify("URDF reloaded", color="positive")
+                    logging.info("URDF scene reloaded")
+                except Exception as e:
+                    ui.notify(f"URDF reload failed: {e}", color="negative")
+                    logging.error("URDF reload failed: %s", e)
+
+            ui.button("Reload", on_click=reload_urdf).props("outline")
+
+        # URDF scene container (will be populated by _initialize_urdf_scene)
+        scene_container = ui.element("div").classes("w-full").style("height: 100px")
+
+        # Initialize URDF scene
+        async def init_scene():
+            try:
+                await self._initialize_urdf_scene(scene_container)
+                logging.info("URDF scene initialized")
+            except Exception as e:
+                with scene_container:
+                    ui.label(f"URDF Error: {e}").classes("text-red-500")
+                logging.error("URDF initialization failed: %s", e)
+
+        # Use timer to delay initialization until UI is ready
+        ui.timer(0.1, init_scene, once=True)
+
+    async def _initialize_urdf_scene(self, container=None) -> None:
+        """Initialize the URDF scene with error handling."""
+        # Check if URDF file exists
+        if not PAROL6_URDF_PATH.exists():
+            raise FileNotFoundError(f"URDF file not found: {PAROL6_URDF_PATH}")
+
+        # Clear existing scene
+        if container:
+            container.clear()
+
+        # Create a temporary URDF file with continuous joints changed to revolute
+        # This is needed because urdf_scene_nicegui doesn't support continuous joints
+        with open(PAROL6_URDF_PATH, 'r') as f:
+            urdf_content = f.read()
+
+        # Replace continuous joint type with revolute (L6 joint has limits so it's effectively revolute)
+        urdf_content = urdf_content.replace('type="continuous"', 'type="revolute"')
+
+        # Create temporary file in same directory to preserve mesh path resolution
+        import os
+        temp_urdf_path = PAROL6_URDF_PATH.parent / "PAROL6_temp.urdf"
+
+        try:
+            with open(temp_urdf_path, 'w') as tmp_file:
+                tmp_file.write(urdf_content)
+
+            # Create new scene with current config
+            with container or ui.element("div"):
+                # Constructor takes urdf_path as required parameter
+                self.urdf_scene = UrdfScene(str(temp_urdf_path))
+                # Show method is not async and takes display parameters
+                self.urdf_scene.show(
+                    scale_stls=self.urdf_config.get("scale_stls", 1.0),
+                    material=self.urdf_config.get("material"),
+                    background_color=self.urdf_config.get("background_color", "#eee")
+                )
+
+        finally:
+            # Clean up temporary file
+            if temp_urdf_path.exists():
+                os.unlink(temp_urdf_path)
+
+        # Cache joint names for mapping
+        if hasattr(self.urdf_scene, 'get_joint_names'):
+            self.urdf_joint_names = list(self.urdf_scene.get_joint_names())
+        else:
+            # Fallback to expected joint names
+            self.urdf_joint_names = self.urdf_config.get("joint_name_order", ["L1", "L2", "L3", "L4", "L5", "L6"])
+
+        logging.info("URDF scene initialized with joints: %s", self.urdf_joint_names)
+
+    def update_urdf_angles(self, angles_deg: list[float]) -> None:
+        """Update URDF scene with new joint angles (degrees -> radians)."""
+        if not self.urdf_scene or not self.urdf_auto_sync:
+            return
+
+        if not angles_deg or len(angles_deg) < 6:
+            return
+
+        try:
+            # Validate that all angles are numeric (not strings like "-")
+            valid_angles = []
+            for angle in angles_deg[:6]:  # Take only first 6 angles
+                if isinstance(angle, (int, float)) and not isinstance(angle, bool):
+                    if math.isfinite(angle):
+                        valid_angles.append(float(angle))
+                    else:
+                        return  # Skip update for NaN or infinite values
+                else:
+                    return  # Skip update for any non-numeric data
+            
+            if len(valid_angles) != 6:
+                return  # Need all 6 angles
+            
+            # Convert degrees to radians and apply index mapping
+            angles_rad = []
+            for i in range(6):
+                if i < len(self.urdf_index_mapping) and self.urdf_index_mapping[i] < len(valid_angles):
+                    controller_idx = self.urdf_index_mapping[i]
+                    angle_deg = valid_angles[controller_idx]
+                    angle_rad = math.radians(angle_deg) if self.urdf_config.get("deg_to_rad", True) else angle_deg
+                    angles_rad.append(angle_rad)
+                else:
+                    angles_rad.append(0.0)
+            
+            # Create ordered list of angles based on URDF joint names
+            # The set_axis_values method expects a list, not a dictionary!
+            if hasattr(self.urdf_scene, 'set_axis_values') and hasattr(self.urdf_scene, 'joint_names'):
+                urdf_joint_names = list(self.urdf_scene.joint_names)
+                angles_ordered = []
+                
+                for joint_name in urdf_joint_names:
+                    # Map URDF joint name back to our controller index
+                    try:
+                        urdf_idx = self.urdf_config["joint_name_order"].index(joint_name)
+                        if urdf_idx < len(angles_rad):
+                            angles_ordered.append(angles_rad[urdf_idx])
+                        else:
+                            angles_ordered.append(0.0)
+                    except (ValueError, KeyError):
+                        angles_ordered.append(0.0)
+                
+                # Pass list of float values in the order expected by the library
+                self.urdf_scene.set_axis_values(angles_ordered)
+                
+        except Exception as e:
+            logging.error("Failed to update URDF angles: %s", e)
+
     # ---- File operations ----
 
     def open_file_picker(self) -> None:
@@ -1027,6 +1218,8 @@ class MovePage:
             self.draggable_card("Readouts & Controls", pid, src_col, self.render_readouts_content)
         elif pid == "log":
             self.draggable_card("Response Log", pid, src_col, self.render_log_content)
+        elif pid == "urdf":
+            self.draggable_card("URDF Viewer", pid, src_col, self.render_urdf_content, "min-h-[500px]")
 
     def render_panel_wrapper(self, parent, pid: str, src_col: str):
         # Render the draggable card (dragging limited to header handle).

@@ -8,12 +8,16 @@ from pathlib import Path
 # Repository root and controller path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTROLLER_PATH = (REPO_ROOT / "PAROL6-python-API" / "headless_commander.py").as_posix()
+PAROL6_URDF_PATH = REPO_ROOT / "PAROL6-Desktop-robot-arm" / "PAROL6_URDF" / "PAROL6" / "urdf" / "PAROL6.urdf"
 
 # Official PAROL6 documentation URL
 PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
 
 # Ensure PAROL6-python-API on path
 sys.path.append((REPO_ROOT / "PAROL6-python-API").as_posix())
+
+# Ensure urdf_scene_nicegui on path
+sys.path.append((REPO_ROOT / "urdf_scene_nicegui" / "src").as_posix())
 
 try:
     # Official constant from PAROL6

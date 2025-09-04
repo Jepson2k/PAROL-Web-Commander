@@ -10,6 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
     "nicegui>=2.0.0",
     "python-dotenv>=1.0.0",
+    "urchin>=0.0.27",
+    "numpy>=1.24",
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
