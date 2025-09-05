@@ -323,9 +323,7 @@ def build_footer() -> None:
 
             ui.button("Set Port", on_click=handle_set_port)
             ui.button("Clear error", on_click=send_clear_error).props("color=warning")
-            ui.button("Stop", on_click=lambda: asyncio.create_task(send_stop_motion())).props(
-                "color=negative"
-            )
+            ui.button("Stop", on_click=send_stop_motion).props("color=negative")
 
 
 @ui.page("/")
