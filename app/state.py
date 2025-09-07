@@ -50,7 +50,9 @@ class StatusSnapshot:
 @dataclass
 class RobotState:
     angles: list[float] = field(default_factory=list)  # len=6 in degrees
-    pose: list[float] = field(default_factory=list)  # len=16 homogeneous transform flattened
+    pose: list[float] = field(
+        default_factory=list
+    )  # len=16 homogeneous transform flattened
     io: list[int] = field(default_factory=list)  # [in1,in2,out1,out2,estop]
     gripper: list[int] = field(default_factory=list)  # [id,pos,spd,cur,status,obj]
     connected: bool = False

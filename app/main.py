@@ -113,7 +113,9 @@ async def set_port(port_str: str) -> None:
 # --------------- Status polling ---------------
 
 
-def _normalize_joint_progress(angle_deg: float, min_deg: float, max_deg: float) -> float:
+def _normalize_joint_progress(
+    angle_deg: float, min_deg: float, max_deg: float
+) -> float:
     if max_deg <= min_deg:
         return 0.0
     val = (angle_deg - min_deg) / (max_deg - min_deg)
@@ -150,7 +152,11 @@ async def update_status_async() -> None:
             if move_page_instance.joint_progress_bars and len(angles) >= 6:
                 for i, a in enumerate(angles[:6]):
                     if i < len(move_page_instance.joint_progress_bars):
-                        lim = JOINT_LIMITS_DEG[i] if i < len(JOINT_LIMITS_DEG) else [-180, 180]
+                        lim = (
+                            JOINT_LIMITS_DEG[i]
+                            if i < len(JOINT_LIMITS_DEG)
+                            else [-180, 180]
+                        )
                         move_page_instance.joint_progress_bars[i].value = round(
                             _normalize_joint_progress(a, lim[0], lim[1]), 3
                         )
@@ -192,9 +198,7 @@ async def update_status_async() -> None:
 
             # Update Move page IO summary
             if move_page_instance.io_summary_label:
-                move_page_instance.io_summary_label.text = (
-                    f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2} ESTOP={estop_text}"
-                )
+                move_page_instance.io_summary_label.text = f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2} ESTOP={estop_text}"
         else:
             # Clear labels on failure
             if estop_label:
@@ -241,7 +245,9 @@ async def update_status_async() -> None:
                     "Gripper current feedback is: -"
                 )
             if gripper_page_instance.grip_obj_detect_label:
-                gripper_page_instance.grip_obj_detect_label.text = "Gripper object detection is: -"
+                gripper_page_instance.grip_obj_detect_label.text = (
+                    "Gripper object detection is: -"
+                )
 
         # Update calibrate page go-to-limit button based on connection
         calibrate_page_instance._update_go_to_limit_button()
@@ -265,7 +271,10 @@ async def update_status_async() -> None:
 
 def build_header_and_tabs() -> None:
     # Header with left navigation tabs, centered firmware text, right help + theme toggle
-    with ui.header().classes("px-3 py-1"), ui.row().classes("w-full items-center justify-between"):
+    with (
+        ui.header().classes("px-3 py-1"),
+        ui.row().classes("w-full items-center justify-between"),
+    ):
         # Left: navigation tabs (will be returned for tab_panels)
         global main_tabs
         with ui.tabs() as main_tabs:
@@ -314,7 +323,9 @@ def build_footer() -> None:
 
             # Persist port on edits
             com_input.on_value_change(
-                lambda e: ng_app.storage.user.__setitem__("com_port", com_input.value or "")
+                lambda e: ng_app.storage.user.__setitem__(
+                    "com_port", com_input.value or ""
+                )
             )
 
             async def handle_set_port():

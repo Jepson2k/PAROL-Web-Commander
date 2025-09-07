@@ -22,7 +22,9 @@ class AnsiColorFormatter(logging.Formatter):
     """Formatter that adds ANSI colors and a compact timestamp."""
 
     def __init__(self, colored: bool = True) -> None:
-        super().__init__(fmt="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
+        super().__init__(
+            fmt="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S"
+        )
         self.colored = colored and sys.stderr.isatty()
 
     def format(self, record: logging.LogRecord) -> str:
@@ -54,7 +56,9 @@ class NiceGuiLogHandler(logging.Handler):
     def __init__(self, level: int = logging.INFO) -> None:
         super().__init__(level=level)
         # Basic, non-colored format for UI (timestamp + level + message)
-        self.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+        self.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+        )
 
     def emit(self, record: logging.LogRecord) -> None:
         if not _ui_log_targets:

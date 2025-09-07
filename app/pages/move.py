@@ -31,7 +31,9 @@ class MovePage:
         # UI refs for status polling
         self.tool_labels: dict[str, ui.label] = {}  # keys: "X","Y","Z","Rx","Ry","Rz"
         self.joint_labels: list[ui.label] = []  # 6 label refs for q1..q6
-        self.joint_progress_bars: list[ui.linear_progress] = []  # progress bars for q1..q6
+        self.joint_progress_bars: list[
+            ui.linear_progress
+        ] = []  # progress bars for q1..q6
 
         # Readouts card IO summary (cross-reference with IoPage for consistency)
         self.io_summary_label: ui.label | None = None
@@ -65,12 +67,29 @@ class MovePage:
             "auto_sync": True,
             "joint_name_order": ["L1", "L2", "L3", "L4", "L5", "L6"],
             "deg_to_rad": True,
-            "angle_signs": [1, 1, -1, -1, -1, -1],  # Sign correction for joint directions
-            "angle_offsets": [0, 90, 180, 0, 0, 180],  # Zero-reference offsets (degrees) for each joint
+            "angle_signs": [
+                1,
+                1,
+                -1,
+                -1,
+                -1,
+                -1,
+            ],  # Sign correction for joint directions
+            "angle_offsets": [
+                0,
+                90,
+                180,
+                0,
+                0,
+                180,
+            ],  # Zero-reference offsets (degrees) for each joint
         }
 
         # Drag-and-drop layout
-        self.DEFAULT_LAYOUT: MoveLayout = {"left": ["jog", "readouts"], "right": ["urdf", "editor", "log"]}
+        self.DEFAULT_LAYOUT: MoveLayout = {
+            "left": ["jog", "readouts"],
+            "right": ["urdf", "editor", "log"],
+        }
         self.current_layout = self.DEFAULT_LAYOUT.copy()
         self._drag_id: str | None = None
         self._drag_src: str | None = None
@@ -80,7 +99,9 @@ class MovePage:
         self.right_col_container: ui.column | None = None
 
         # Program directory
-        self.PROGRAM_DIR = REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
+        self.PROGRAM_DIR = (
+            REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
+        )
         if not self.PROGRAM_DIR.exists():
             self.PROGRAM_DIR = REPO_ROOT / "programs"
             self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
@@ -99,7 +120,7 @@ class MovePage:
         self.CADENCE_WARN_WINDOW: int = 100
         self.CADENCE_TOLERANCE: float = 0.002
         # Streaming watchdog timeout to use as "duration" while stream_mode is ON
-        self.STREAM_TIMEOUT_S: float = 0.2
+        self.STREAM_TIMEOUT_S: float = 0.1
 
     # ---- Jog helpers ----
 
@@ -178,10 +199,18 @@ class MovePage:
 
             pos_pressed = storage.get("jog_pressed_pos", [False] * 6)
             neg_pressed = storage.get("jog_pressed_neg", [False] * 6)
-            if direction == "pos" and isinstance(pos_pressed, list) and len(pos_pressed) == 6:
+            if (
+                direction == "pos"
+                and isinstance(pos_pressed, list)
+                and len(pos_pressed) == 6
+            ):
                 pos_pressed[j] = bool(is_pressed)
                 storage["jog_pressed_pos"] = pos_pressed
-            elif direction == "neg" and isinstance(neg_pressed, list) and len(neg_pressed) == 6:
+            elif (
+                direction == "neg"
+                and isinstance(neg_pressed, list)
+                and len(neg_pressed) == 6
+            ):
                 neg_pressed[j] = bool(is_pressed)
                 storage["jog_pressed_neg"] = neg_pressed
 
@@ -211,7 +240,9 @@ class MovePage:
         if intent is not None:
             j, d = intent
             idx = j if d == "pos" else (j + 6)
-            await client.jog_joint(idx, speed_percentage=speed, duration=self.STREAM_TIMEOUT_S)
+            await client.jog_joint(
+                idx, speed_percentage=speed, duration=self.STREAM_TIMEOUT_S
+            )
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats, "joint")
 
@@ -258,7 +289,9 @@ class MovePage:
             t = storage.get("cart_jog_timer")
             axes_now = storage.get("cart_pressed_axes", {})
             any_pressed = (
-                any(bool(v) for v in axes_now.values()) if isinstance(axes_now, dict) else False
+                any(bool(v) for v in axes_now.values())
+                if isinstance(axes_now, dict)
+                else False
             )
             if t:
                 t.active = bool(any_pressed)
@@ -357,7 +390,9 @@ class MovePage:
                 num = float(tkn)
                 values.append(num)
             except Exception:
-                errors.append(f"Expected numeric value #{len(values) + 1} but got '{tkn}'")
+                errors.append(
+                    f"Expected numeric value #{len(values) + 1} but got '{tkn}'"
+                )
                 break
             idx += 1
 
@@ -440,7 +475,11 @@ class MovePage:
         try:
             name = (
                 filename
-                or (self.program_filename_input.value if self.program_filename_input else "")
+                or (
+                    self.program_filename_input.value
+                    if self.program_filename_input
+                    else ""
+                )
                 or ""
             )
             text = (self.PROGRAM_DIR / name).read_text(encoding="utf-8")
@@ -456,7 +495,11 @@ class MovePage:
         try:
             name = (
                 as_name
-                or (self.program_filename_input.value if self.program_filename_input else "")
+                or (
+                    self.program_filename_input.value
+                    if self.program_filename_input
+                    else ""
+                )
                 or ""
             )
             content = self.program_textarea.value if self.program_textarea else ""
@@ -475,10 +518,14 @@ class MovePage:
     _re_joint_move = re.compile(r"^\s*JointMove\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
     _re_pose_move = re.compile(r"^\s*PoseMove\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
     # Legacy CTk command regex
-    _re_move_joint_legacy = re.compile(r"^\s*MoveJoint\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
+    _re_move_joint_legacy = re.compile(
+        r"^\s*MoveJoint\(\s*([^\)]*)\)\s*$", re.IGNORECASE
+    )
     _re_move_pose_legacy = re.compile(r"^\s*MovePose\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
     _re_move_cart_legacy = re.compile(r"^\s*MoveCart\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
-    _re_move_cart_rel_trf = re.compile(r"^\s*MoveCartRelTRF\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
+    _re_move_cart_rel_trf = re.compile(
+        r"^\s*MoveCartRelTRF\(\s*([^\)]*)\)\s*$", re.IGNORECASE
+    )
     _re_speed_joint = re.compile(r"^\s*SpeedJoint\(\s*([0-9]*)\s*\)\s*$", re.IGNORECASE)
     _re_speed_cart = re.compile(r"^\s*SpeedCart\(\s*([0-9]*)\s*\)\s*$", re.IGNORECASE)
     # Legacy function-style helpers
@@ -486,7 +533,9 @@ class MovePage:
     _re_begin_fn = re.compile(r"^\s*Begin\(\s*\)\s*$", re.IGNORECASE)
     _re_end_fn = re.compile(r"^\s*End\(\s*\)\s*$", re.IGNORECASE)
     _re_loop_fn = re.compile(r"^\s*Loop\(\s*\)\s*$", re.IGNORECASE)
-    _re_output_fn = re.compile(r"^\s*Output\(\s*(\d+)\s*,\s*(HIGH|LOW)\s*\)\s*$", re.IGNORECASE)
+    _re_output_fn = re.compile(
+        r"^\s*Output\(\s*(\d+)\s*,\s*(HIGH|LOW)\s*\)\s*$", re.IGNORECASE
+    )
     _re_gripper_fn = re.compile(
         r"^\s*Gripper\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*$", re.IGNORECASE
     )
@@ -494,7 +543,11 @@ class MovePage:
 
     async def _run_program(self) -> None:
         self.program_speed_percentage = None  # reset each run
-        lines = (self.program_textarea.value or "").splitlines() if self.program_textarea else []
+        lines = (
+            (self.program_textarea.value or "").splitlines()
+            if self.program_textarea
+            else []
+        )
 
         for raw in lines:
             if self.program_cancel_event and self.program_cancel_event.is_set():
@@ -638,7 +691,9 @@ class MovePage:
             else self.current_layout["right"]
         )
         dst_list = (
-            self.current_layout["left"] if dst_col == "left" else self.current_layout["right"]
+            self.current_layout["left"]
+            if dst_col == "left"
+            else self.current_layout["right"]
         )
 
         # Compute original source index (if present)
@@ -671,7 +726,9 @@ class MovePage:
             with ui.row():
                 ui.label("URDF Viewer")
                 # Sync toggle
-                sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync).classes("p-0")
+                sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync).classes(
+                    "p-0"
+                )
 
                 def update_sync():
                     self.urdf_auto_sync = bool(sync_switch.value)
@@ -712,15 +769,16 @@ class MovePage:
 
         # Create temporary file in same directory to preserve mesh path resolution
         import os
+
         temp_urdf_path = PAROL6_URDF_PATH.parent / "PAROL6_temp.urdf"
 
         try:
-            with open(temp_urdf_path, 'w') as tmp_file:
+            with open(temp_urdf_path, "w") as tmp_file:
                 tmp_file.write(urdf_content)
 
             # Detect theme and set appropriate colors
             mode = get_theme()
-            is_dark = (mode != "light")
+            is_dark = mode != "light"
             bg_color = "#212121" if is_dark else "#eeeeee"
             material_color = "#9ca3af" if is_dark else "#666666"
 
@@ -735,7 +793,7 @@ class MovePage:
             self.urdf_scene.show(
                 scale_stls=self.urdf_config.get("scale_stls", 1.0),
                 material=self.urdf_config.get("material"),
-                background_color=self.urdf_config.get("background_color", "#eee")
+                background_color=self.urdf_config.get("background_color", "#eee"),
             )
 
             # Override the scene height and set closer camera position
@@ -746,16 +804,24 @@ class MovePage:
                 scene.classes(remove="h-[66vh]").style("height: 375px")
                 # Set camera closer to the robot arm with proper look-at positioning
                 scene.move_camera(
-                    x=0.3, y=0.3, z=0.22,                    # Camera position
+                    x=0.3,
+                    y=0.3,
+                    z=0.22,  # Camera position
                     look_at_z=0.22,
-                    duration=0.0                            # Instant movement
+                    duration=0.0,  # Instant movement
                 )
 
                 # Add large world coordinate frame at origin (fixed)
                 world_axes_size = 0.30
-                scene.line([0, 0, 0], [world_axes_size, 0, 0]).material("#ff0000") # X-axis red
-                scene.line([0, 0, 0], [0, world_axes_size, 0]).material("#00ff00")  # Y-axis green
-                scene.line([0, 0, 0], [0, 0, world_axes_size]).material("#0000ff")  # Z-axis blue
+                scene.line([0, 0, 0], [world_axes_size, 0, 0]).material(
+                    "#ff0000"
+                )  # X-axis red
+                scene.line([0, 0, 0], [0, world_axes_size, 0]).material(
+                    "#00ff00"
+                )  # Y-axis green
+                scene.line([0, 0, 0], [0, 0, world_axes_size]).material(
+                    "#0000ff"
+                )  # Z-axis blue
 
                 # Add large end-of-arm coordinate frame
                 if self.urdf_scene.joint_names:
@@ -764,9 +830,15 @@ class MovePage:
                     if eef_group:
                         eef_axes_size = 0.15
                         with eef_group:
-                            scene.line([0, 0, 0], [eef_axes_size, 0, 0]).material("#ff0000")  # X-axis red
-                            scene.line([0, 0, 0], [0, eef_axes_size, 0]).material("#00ff00")  # Y-axis green
-                            scene.line([0, 0, 0], [0, 0, eef_axes_size]).material("#0000ff")  # Z-axis blue
+                            scene.line([0, 0, 0], [eef_axes_size, 0, 0]).material(
+                                "#ff0000"
+                            )  # X-axis red
+                            scene.line([0, 0, 0], [0, eef_axes_size, 0]).material(
+                                "#00ff00"
+                            )  # Y-axis green
+                            scene.line([0, 0, 0], [0, 0, eef_axes_size]).material(
+                                "#0000ff"
+                            )  # Z-axis blue
 
         finally:
             # Clean up temporary file
@@ -774,11 +846,13 @@ class MovePage:
                 os.unlink(temp_urdf_path)
 
         # Cache joint names for mapping
-        if hasattr(self.urdf_scene, 'get_joint_names'):
+        if hasattr(self.urdf_scene, "get_joint_names"):
             self.urdf_joint_names = list(self.urdf_scene.get_joint_names())
         else:
             # Fallback to expected joint names
-            self.urdf_joint_names = self.urdf_config.get("joint_name_order", ["L1", "L2", "L3", "L4", "L5", "L6"])
+            self.urdf_joint_names = self.urdf_config.get(
+                "joint_name_order", ["L1", "L2", "L3", "L4", "L5", "L6"]
+            )
 
         logging.info("URDF scene initialized with joints: %s", self.urdf_joint_names)
 
@@ -809,29 +883,49 @@ class MovePage:
             angles_rad = []
             angle_signs = self.urdf_config.get("angle_signs", [1, 1, 1, 1, 1, 1])
             for i in range(6):
-                if i < len(self.urdf_index_mapping) and self.urdf_index_mapping[i] < len(valid_angles):
+                if i < len(self.urdf_index_mapping) and self.urdf_index_mapping[
+                    i
+                ] < len(valid_angles):
                     controller_idx = self.urdf_index_mapping[i]
                     angle_deg = valid_angles[controller_idx]
                     # Apply sign correction and offset
-                    sign = 1 if controller_idx >= len(angle_signs) else (1 if angle_signs[controller_idx] >= 0 else -1)
-                    angle_offsets = self.urdf_config.get("angle_offsets", [0, 0, 0, 0, 0, 0])
-                    offset = angle_offsets[controller_idx] if controller_idx < len(angle_offsets) else 0
+                    sign = (
+                        1
+                        if controller_idx >= len(angle_signs)
+                        else (1 if angle_signs[controller_idx] >= 0 else -1)
+                    )
+                    angle_offsets = self.urdf_config.get(
+                        "angle_offsets", [0, 0, 0, 0, 0, 0]
+                    )
+                    offset = (
+                        angle_offsets[controller_idx]
+                        if controller_idx < len(angle_offsets)
+                        else 0
+                    )
                     angle_deg_corrected = angle_deg * sign + offset
-                    angle_rad = math.radians(angle_deg_corrected) if self.urdf_config.get("deg_to_rad", True) else angle_deg_corrected
+                    angle_rad = (
+                        math.radians(angle_deg_corrected)
+                        if self.urdf_config.get("deg_to_rad", True)
+                        else angle_deg_corrected
+                    )
                     angles_rad.append(angle_rad)
                 else:
                     angles_rad.append(0.0)
 
             # Create ordered list of angles based on URDF joint names
             # The set_axis_values method expects a list, not a dictionary!
-            if hasattr(self.urdf_scene, 'set_axis_values') and hasattr(self.urdf_scene, 'joint_names'):
+            if hasattr(self.urdf_scene, "set_axis_values") and hasattr(
+                self.urdf_scene, "joint_names"
+            ):
                 urdf_joint_names = list(self.urdf_scene.joint_names)
                 angles_ordered = []
 
                 for joint_name in urdf_joint_names:
                     # Map URDF joint name back to our controller index
                     try:
-                        urdf_idx = self.urdf_config["joint_name_order"].index(joint_name)
+                        urdf_idx = self.urdf_config["joint_name_order"].index(
+                            joint_name
+                        )
                         if urdf_idx < len(angles_rad):
                             angles_ordered.append(angles_rad[urdf_idx])
                         else:
@@ -860,7 +954,9 @@ class MovePage:
                     if self.program_filename_input:
                         self.program_filename_input.value = name
                     if self.program_textarea:
-                        self.program_textarea.value = data.decode("utf-8", errors="ignore")
+                        self.program_textarea.value = data.decode(
+                            "utf-8", errors="ignore"
+                        )
                     ui.notify(f"Loaded {name}", color="primary")
                 except Exception as ex:
                     ui.notify(f"Open failed: {ex}", color="negative")
@@ -886,7 +982,9 @@ class MovePage:
         wrapper.on("dragstart", lambda e, p=pid, s=src_col: self.on_dragstart(p, s))
         wrapper.on("dragend", lambda e: self.on_dragend())
         with wrapper:
-            ui.icon("drag_indicator").classes("text-white opacity-90").style("font-size: 18px;")
+            ui.icon("drag_indicator").classes("text-white opacity-90").style(
+                "font-size: 18px;"
+            )
         return wrapper
 
     def render_readouts_content(self, pid: str, src_col: str) -> None:
@@ -902,14 +1000,18 @@ class MovePage:
                 ui.label("Tool positions").classes("text-sm")
                 for key in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
                     with ui.row().classes("items-center gap-2"):
-                        ui.label(f"{key}:").classes("text-xs text-[var(--ctk-muted)] w-6")
+                        ui.label(f"{key}:").classes(
+                            "text-xs text-[var(--ctk-muted)] w-6"
+                        )
                         self.tool_labels[key] = ui.label("-").classes("text-4xl")
             with ui.column().classes("readouts-col"):
                 ui.label("Joint positions").classes("text-sm")
                 self.joint_labels.clear()
                 for i in range(6):
                     with ui.row().classes("items-center gap-2"):
-                        ui.label(f"θ{i + 1}:").classes("text-xs text-[var(--ctk-muted)] w-6")
+                        ui.label(f"θ{i + 1}:").classes(
+                            "text-xs text-[var(--ctk-muted)] w-6"
+                        )
                         self.joint_labels.append(ui.label("-").classes("text-4xl"))
             with ui.column().classes("readouts-controls"):
                 ui.label("Controls").classes("text-sm")
@@ -917,7 +1019,10 @@ class MovePage:
                 ui.label("Jog velocity %").classes("text-xs text-[var(--ctk-muted)]")
                 jog_speed_slider = (
                     ui.slider(
-                        min=1, max=100, value=ng_app.storage.client.get("jog_speed", 50), step=1
+                        min=1,
+                        max=100,
+                        value=ng_app.storage.client.get("jog_speed", 50),
+                        step=1,
                     )
                     .classes("w-full")
                     .style("width: 100%")
@@ -928,7 +1033,10 @@ class MovePage:
                 ui.label("Jog accel %").classes("text-xs text-[var(--ctk-muted)]")
                 jog_accel_slider = (
                     ui.slider(
-                        min=1, max=100, value=ng_app.storage.client.get("jog_accel", 50), step=1
+                        min=1,
+                        max=100,
+                        value=ng_app.storage.client.get("jog_accel", 50),
+                        step=1,
                     )
                     .classes("w-full")
                     .style("width: 100%")
@@ -939,7 +1047,8 @@ class MovePage:
                 # Incremental and step
                 with ui.row().classes("items-center gap-4 w-full"):
                     self.incremental_jog_checkbox = ui.switch(
-                        "Incremental jog", value=ng_app.storage.client.get("incremental_jog", False)
+                        "Incremental jog",
+                        value=ng_app.storage.client.get("incremental_jog", False),
                     )
 
                     def update_incremental():
@@ -948,7 +1057,9 @@ class MovePage:
                                 self.incremental_jog_checkbox.value
                             )
 
-                    self.incremental_jog_checkbox.on_value_change(lambda e: update_incremental())
+                    self.incremental_jog_checkbox.on_value_change(
+                        lambda e: update_incremental()
+                    )
                     self.joint_step_input = ui.number(
                         label="Step size (deg/mm)",
                         value=ng_app.storage.client.get("joint_step_deg", 1.0),
@@ -958,8 +1069,13 @@ class MovePage:
                     ).style("width: 120px")
 
                     def update_step_size():
-                        if self.joint_step_input and self.joint_step_input.value is not None:
-                            val = max(0.1, min(100.0, float(self.joint_step_input.value)))
+                        if (
+                            self.joint_step_input
+                            and self.joint_step_input.value is not None
+                        ):
+                            val = max(
+                                0.1, min(100.0, float(self.joint_step_input.value))
+                            )
                             ng_app.storage.client["joint_step_deg"] = val
 
                     self.joint_step_input.on_value_change(lambda e: update_step_size())
@@ -967,8 +1083,12 @@ class MovePage:
                     self.io_summary_label = ui.label("IO: -").classes("text-sm")
                 # Buttons
                 with ui.row().classes("gap-2 w-full"):
-                    ui.button("Enable", on_click=self.send_enable).props("color=positive")
-                    ui.button("Disable", on_click=self.send_disable).props("color=negative")
+                    ui.button("Enable", on_click=self.send_enable).props(
+                        "color=positive"
+                    )
+                    ui.button("Disable", on_click=self.send_disable).props(
+                        "color=negative"
+                    )
                     ui.button("Home", on_click=self.send_home).props("color=primary")
 
     def render_log_content(self, pid: str, src_col: str) -> None:
@@ -976,8 +1096,14 @@ class MovePage:
         with ui.row().classes("items-center justify-between w-full"):
             ui.label("Response Log").classes("text-md font-medium")
             self.drag_handle(pid, src_col)
-        self.response_log = ui.log(max_lines=500).classes("w-full whitespace-pre-wrap break-words").style("height: 190px")
-        ui.button("Show received frame", on_click=self.show_received_frame).props("outline")
+        self.response_log = (
+            ui.log(max_lines=500)
+            .classes("w-full whitespace-pre-wrap break-words")
+            .style("height: 190px")
+        )
+        ui.button("Show received frame", on_click=self.show_received_frame).props(
+            "outline"
+        )
 
     def render_jog_content(self, pid: str, src_col: str) -> None:
         """Inner content for the Jog panel (no outer card)."""
@@ -987,7 +1113,9 @@ class MovePage:
                     joint_tab = ui.tab("Joint jog")
                     cart_tab = ui.tab("Cartesian jog")
                 jog_mode_tabs.value = joint_tab
-                frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props("dense")
+                frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props(
+                    "dense"
+                )
                 frame_radio.on_value_change(
                     lambda e: self.set_frame(str(frame_radio.value or "TRF"))
                 )
@@ -995,72 +1123,92 @@ class MovePage:
 
         with ui.tab_panels(jog_mode_tabs, value=joint_tab).classes("w-full"):
             with ui.tab_panel(joint_tab).classes("gap-2"):
-                    joint_names = ["J1", "J2", "J3", "J4", "J5", "J6"]
+                joint_names = ["J1", "J2", "J3", "J4", "J5", "J6"]
 
-                    def make_joint_row(idx: int, name: str):
-                        with ui.element("div").classes("joint-progress-container"):
-                            ui.label(name).classes("w-8")
-                            left = ui.image("/static/icons/button_arrow_1.webp").style(
-                                "width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;"
-                            )
-                            bar = (
-                                ui.linear_progress(value=0.5).props("rounded").classes("joint-progress-bar")
-                            )
-                            right = ui.image("/static/icons/button_arrow_1.webp").style(
-                                "width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;"
-                            )
-                            self.joint_progress_bars.append(bar)
-                            # store refs and bind async handlers
-                            self._joint_left_imgs[idx] = left
-                            self._joint_right_imgs[idx] = right
-                            left.on("mousedown", partial(self.set_joint_pressed, idx, "neg", True))
-                            left.on("mouseup", partial(self.set_joint_pressed, idx, "neg", False))
-                            left.on("mouseleave", partial(self.set_joint_pressed, idx, "neg", False))
-                            right.on("mousedown", partial(self.set_joint_pressed, idx, "pos", True))
-                            right.on("mouseup", partial(self.set_joint_pressed, idx, "pos", False))
-                            right.on("mouseleave", partial(self.set_joint_pressed, idx, "pos", False))
+                def make_joint_row(idx: int, name: str):
+                    with ui.element("div").classes("joint-progress-container"):
+                        ui.label(name).classes("w-8")
+                        left = ui.image("/static/icons/button_arrow_1.webp").style(
+                            "width:60px;height:60px;object-fit:contain;transform:rotate(270deg);cursor:pointer;"
+                        )
+                        bar = (
+                            ui.linear_progress(value=0.5)
+                            .props("rounded")
+                            .classes("joint-progress-bar")
+                        )
+                        right = ui.image("/static/icons/button_arrow_1.webp").style(
+                            "width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;"
+                        )
+                        self.joint_progress_bars.append(bar)
+                        # store refs and bind async handlers
+                        self._joint_left_imgs[idx] = left
+                        self._joint_right_imgs[idx] = right
+                        left.on(
+                            "mousedown",
+                            partial(self.set_joint_pressed, idx, "neg", True),
+                        )
+                        left.on(
+                            "mouseup",
+                            partial(self.set_joint_pressed, idx, "neg", False),
+                        )
+                        left.on(
+                            "mouseleave",
+                            partial(self.set_joint_pressed, idx, "neg", False),
+                        )
+                        right.on(
+                            "mousedown",
+                            partial(self.set_joint_pressed, idx, "pos", True),
+                        )
+                        right.on(
+                            "mouseup",
+                            partial(self.set_joint_pressed, idx, "pos", False),
+                        )
+                        right.on(
+                            "mouseleave",
+                            partial(self.set_joint_pressed, idx, "pos", False),
+                        )
 
-                    self.joint_progress_bars.clear()
-                    for i, n in enumerate(joint_names):
-                        make_joint_row(i, n)
+                self.joint_progress_bars.clear()
+                for i, n in enumerate(joint_names):
+                    make_joint_row(i, n)
 
             with ui.tab_panel(cart_tab).classes("gap-2"):
 
-                    def axis_image(src: str, axis: str, rotate_deg: int = 0):
-                        img = ui.image(src).style(
-                            f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);"
-                        )
-                        self._cart_axis_imgs[axis] = img
-                        img.on("mousedown", partial(self.set_axis_pressed, axis, True))
-                        img.on("mouseup", partial(self.set_axis_pressed, axis, False))
-                        img.on("mouseleave", partial(self.set_axis_pressed, axis, False))
+                def axis_image(src: str, axis: str, rotate_deg: int = 0):
+                    img = ui.image(src).style(
+                        f"width:72px;height:72px;object-fit:contain;cursor:pointer;transform:rotate({rotate_deg}deg);"
+                    )
+                    self._cart_axis_imgs[axis] = img
+                    img.on("mousedown", partial(self.set_axis_pressed, axis, True))
+                    img.on("mouseup", partial(self.set_axis_pressed, axis, False))
+                    img.on("mouseleave", partial(self.set_axis_pressed, axis, False))
 
-                    with ui.row().classes("items-start gap-8"):
-                        with ui.element("div").classes("cart-jog-grid-3"):
-                            ui.element("div").style("width:72px;height:72px")
-                            axis_image("/static/icons/cart_x_up.webp", "X+")
-                            ui.element("div").style("width:72px;height:72px")
-                            axis_image("/static/icons/cart_y_left.webp", "Y-")
-                            ui.element("div").style("width:72px;height:72px")
-                            axis_image("/static/icons/cart_y_right.webp", "Y+")
-                            ui.element("div").style("width:72px;height:72px")
-                            axis_image("/static/icons/cart_x_down.webp", "X-")
-                            ui.element("div").style("width:72px;height:72px")
-                        with ui.column().classes("gap-16"):
-                            axis_image("/static/icons/cart_z_up.webp", "Z+")
-                            axis_image("/static/icons/cart_z_down.webp", "Z-")
-                        with ui.column().classes("gap-16"):
-                            axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
-                            axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
-                        with ui.element("div").classes("cart-jog-grid-6"):
-                            ui.element("div")
-                            axis_image("/static/icons/RX_PLUS.webp", "RX+")
-                            ui.element("div")
-                            axis_image("/static/icons/RY_PLUS.webp", "RY+")
-                            ui.element("div")
-                            axis_image("/static/icons/RY_MINUS.webp", "RY-")
-                            ui.element("div")
-                            axis_image("/static/icons/RX_MINUS.webp", "RX-")
+                with ui.row().classes("items-start gap-8"):
+                    with ui.element("div").classes("cart-jog-grid-3"):
+                        ui.element("div").style("width:72px;height:72px")
+                        axis_image("/static/icons/cart_x_up.webp", "X+")
+                        ui.element("div").style("width:72px;height:72px")
+                        axis_image("/static/icons/cart_y_left.webp", "Y-")
+                        ui.element("div").style("width:72px;height:72px")
+                        axis_image("/static/icons/cart_y_right.webp", "Y+")
+                        ui.element("div").style("width:72px;height:72px")
+                        axis_image("/static/icons/cart_x_down.webp", "X-")
+                        ui.element("div").style("width:72px;height:72px")
+                    with ui.column().classes("gap-16"):
+                        axis_image("/static/icons/cart_z_up.webp", "Z+")
+                        axis_image("/static/icons/cart_z_down.webp", "Z-")
+                    with ui.column().classes("gap-16"):
+                        axis_image("/static/icons/RZ_PLUS.webp", "RZ+")
+                        axis_image("/static/icons/RZ_MINUS.webp", "RZ-")
+                    with ui.element("div").classes("cart-jog-grid-6"):
+                        ui.element("div")
+                        axis_image("/static/icons/RX_PLUS.webp", "RX+")
+                        ui.element("div")
+                        axis_image("/static/icons/RY_PLUS.webp", "RY+")
+                        ui.element("div")
+                        axis_image("/static/icons/RY_MINUS.webp", "RY-")
+                        ui.element("div")
+                        axis_image("/static/icons/RX_MINUS.webp", "RX-")
 
     def build_command_palette_table(self, prefill_toggle) -> None:
         # Simplified structure with unique keys for row_key
@@ -1108,14 +1256,20 @@ class MovePage:
             if key == "MoveJoint":
                 if current and robot_state.angles and len(robot_state.angles) >= 6:
                     return (
-                        "MoveJoint(" + ", ".join(f"{a:.1f}" for a in robot_state.angles[:6]) + ")"
+                        "MoveJoint("
+                        + ", ".join(f"{a:.1f}" for a in robot_state.angles[:6])
+                        + ")"
                     )
                 return "MoveJoint(0, 0, 0, 0, 0, 0)"
             elif key == "SpeedJoint":
                 return "SpeedJoint(50)"
             elif key == "MovePose":
                 if current and robot_state.pose and len(robot_state.pose) >= 12:
-                    x, y, z = robot_state.pose[3], robot_state.pose[7], robot_state.pose[11]
+                    x, y, z = (
+                        robot_state.pose[3],
+                        robot_state.pose[7],
+                        robot_state.pose[11],
+                    )
                     return f"MovePose({x:.1f}, {y:.1f}, {z:.1f}, 0, 0, 0)"
                 return "MovePose(0, 0, 0, 0, 0, 0)"
             elif key == "Home":
@@ -1153,10 +1307,12 @@ class MovePage:
             with ui.column().classes("editor-main"):
                 with ui.row().classes("items-center gap-2 w-full"):
                     ui.label("Program:").classes("text-md font-medium")
-                    self.program_filename_input = ui.input(label="Filename", value="").classes(
-                        "text-sm font-small flex-1"
+                    self.program_filename_input = ui.input(
+                        label="Filename", value=""
+                    ).classes("text-sm font-small flex-1")
+                    ui.button("Open", on_click=self.open_file_picker).props(
+                        "unelevated"
                     )
-                    ui.button("Open", on_click=self.open_file_picker).props("unelevated")
                 self.program_textarea = (
                     ui.codemirror(
                         value="",
@@ -1178,7 +1334,9 @@ class MovePage:
                     ui.button("Start", on_click=self.execute_program).props(
                         "unelevated color=positive"
                     )
-                    ui.button("Stop", on_click=self.stop_program).props("unelevated color=negative")
+                    ui.button("Stop", on_click=self.stop_program).props(
+                        "unelevated color=negative"
+                    )
                     ui.button("Save", on_click=self.save_program).props("unelevated")
 
                     def save_as():
@@ -1198,7 +1356,9 @@ class MovePage:
                             ).classes("w-80")
                             with ui.row().classes("gap-2"):
                                 ui.button("Cancel", on_click=save_as_dialog.close)
-                                ui.button("Save", on_click=do_save_as).props("color=positive")
+                                ui.button("Save", on_click=do_save_as).props(
+                                    "color=positive"
+                                )
                         save_as_dialog.open()
 
                     ui.button("Save as", on_click=save_as).props("unelevated")
@@ -1219,17 +1379,27 @@ class MovePage:
     def render_panel_contents(self, pid: str, src_col: str) -> None:
         # Use a draggable header handle and place content-only bodies inside.
         if pid == "jog":
-            self.draggable_card("Jog", pid, src_col, self.render_jog_content, "min-h-[500px]")
+            self.draggable_card(
+                "Jog", pid, src_col, self.render_jog_content, "min-h-[500px]"
+            )
         elif pid == "editor":
             self.draggable_card(
-                "Program editor", pid, src_col, self.render_editor_content, "min-h-[500px]"
+                "Program editor",
+                pid,
+                src_col,
+                self.render_editor_content,
+                "min-h-[500px]",
             )
         elif pid == "readouts":
-            self.draggable_card("Readouts & Controls", pid, src_col, self.render_readouts_content)
+            self.draggable_card(
+                "Readouts & Controls", pid, src_col, self.render_readouts_content
+            )
         elif pid == "log":
             self.draggable_card("Response Log", pid, src_col, self.render_log_content)
         elif pid == "urdf":
-            self.draggable_card("URDF Viewer", pid, src_col, self.render_urdf_content, "min-h-[500px]")
+            self.draggable_card(
+                "URDF Viewer", pid, src_col, self.render_urdf_content, "min-h-[500px]"
+            )
 
     def render_panel_wrapper(self, parent, pid: str, src_col: str):
         # Render the draggable card (dragging limited to header handle).
@@ -1239,7 +1409,11 @@ class MovePage:
     def render_drop_spacer(self, parent, col_name: str, index: int):
         # Create the spacer inside the parent so it occupies space and can push siblings down
         with parent:
-            spacer = ui.element("div").classes("drop-spacer m-0 p-0 b-0").style("width: 100%;")
+            spacer = (
+                ui.element("div")
+                .classes("drop-spacer m-0 p-0 b-0")
+                .style("width: 100%;")
+            )
             spacer.on("dragenter", lambda e, s=spacer: s.classes(add="active"))
             spacer.on("dragover.prevent", lambda e, s=spacer: s.classes(add="active"))
             spacer.on("dragleave", lambda e, s=spacer: s.classes(remove="active"))
@@ -1253,11 +1427,17 @@ class MovePage:
 
     def render_one_column(self, container, col_name: str):
         # column-level highlight
-        container.on("dragover.prevent", lambda e, c=container: c.classes(add="highlight"))
+        container.on(
+            "dragover.prevent", lambda e, c=container: c.classes(add="highlight")
+        )
         container.on("dragleave", lambda e, c=container: c.classes(remove="highlight"))
 
         # interleave spacers and panels
-        items = self.current_layout["left"] if col_name == "left" else self.current_layout["right"]
+        items = (
+            self.current_layout["left"]
+            if col_name == "left"
+            else self.current_layout["right"]
+        )
         self.render_drop_spacer(container, col_name, 0)
         for i, pid in enumerate(items):
             self.render_panel_wrapper(container, pid, col_name)

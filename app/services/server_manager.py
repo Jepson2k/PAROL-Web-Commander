@@ -36,7 +36,9 @@ class ServerManager:
     def __init__(self, controller_path: str) -> None:
         self.controller_path = Path(controller_path).resolve()
         if not self.controller_path.exists():
-            raise FileNotFoundError(f"Controller script not found: {self.controller_path}")
+            raise FileNotFoundError(
+                f"Controller script not found: {self.controller_path}"
+            )
         self._proc: subprocess.Popen | None = None
         self._reader_thread: threading.Thread | None = None
         self._stop_reader = threading.Event()
@@ -85,7 +87,7 @@ class ServerManager:
             env.update(options.extra_env)
 
         # Launch the controller
-        args = [sys.executable, "-u", str(self.controller_path)]
+        args = [sys.executable, "-u", str(self.controller_path), f"--log-level={logging.getLevelName(logging.getLogger().level)}"]
         try:
             self._proc = subprocess.Popen(
                 args,
@@ -121,6 +123,7 @@ class ServerManager:
                 if self._stop_reader.is_set():
                     break
                 line = raw_line.rstrip("\r\n")
+                line = line[line.find(" "):].lstrip()
                 if line:
                     # Preserve severity if headless prefixes with [LEVEL]
                     level = logging.INFO

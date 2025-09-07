@@ -43,9 +43,17 @@ class IoPage:
                 ui.separator()
                 with ui.row().classes("items-center gap-4"):
                     self.io_out1_label = ui.label("OUTPUT 1 is: -").classes("text-sm")
-                    ui.button("LOW", on_click=partial(self.set_output, 1, 0)).props("unelevated")
-                    ui.button("HIGH", on_click=partial(self.set_output, 1, 1)).props("unelevated")
+                    ui.button("LOW", on_click=partial(self.set_output, 1, 0)).props(
+                        "unelevated"
+                    )
+                    ui.button("HIGH", on_click=partial(self.set_output, 1, 1)).props(
+                        "unelevated"
+                    )
                 with ui.row().classes("items-center gap-4"):
                     self.io_out2_label = ui.label("OUTPUT 2 is: -").classes("text-sm")
-                    ui.button("LOW", on_click=partial(self.set_output, 2, 0)).props("unelevated")
-                    ui.button("HIGH", on_click=partial(self.set_output, 2, 1)).props("unelevated")
+                    ui.button("LOW", on_click=partial(self.set_output, 2, 0)).props(
+                        "unelevated"
+                    )
+                    ui.button("HIGH", on_click=partial(self.set_output, 2, 1)).props(
+                        "unelevated"
+                    )

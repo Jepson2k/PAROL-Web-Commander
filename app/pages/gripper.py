@@ -42,8 +42,14 @@ class GripperPage:
     async def _grip_move(self) -> None:
         try:
             pos = int(self.grip_pos_slider.value or 0) if self.grip_pos_slider else 0
-            spd = int(self.grip_speed_slider.value or 0) if self.grip_speed_slider else 0
-            cur = int(self.grip_current_slider.value or 100) if self.grip_current_slider else 100
+            spd = (
+                int(self.grip_speed_slider.value or 0) if self.grip_speed_slider else 0
+            )
+            cur = (
+                int(self.grip_current_slider.value or 100)
+                if self.grip_current_slider
+                else 100
+            )
             resp = await client.control_electric_gripper(
                 "move", position=pos, speed=spd, current=cur
             )
@@ -70,12 +76,18 @@ class GripperPage:
             # Device info
             with ui.row().classes("items-center gap-4"):
                 self.grip_id_label = ui.label("Gripper ID is: -").classes("text-sm")
-                self.grip_cal_status_label = ui.label("Calibration status is: -").classes("text-sm")
-                self.grip_err_status_label = ui.label("Error status is: -").classes("text-sm")
+                self.grip_cal_status_label = ui.label(
+                    "Calibration status is: -"
+                ).classes("text-sm")
+                self.grip_err_status_label = ui.label("Error status is: -").classes(
+                    "text-sm"
+                )
 
             # Actions
             with ui.row().classes("items-center gap-2"):
-                ui.button("Calibrate gripper", on_click=self._grip_cal).props("unelevated")
+                ui.button("Calibrate gripper", on_click=self._grip_cal).props(
+                    "unelevated"
+                )
                 ui.button("Clear gripper error", on_click=self._grip_clear_error).props(
                     "unelevated"
                 )
@@ -83,30 +95,38 @@ class GripperPage:
             # Command parameters
             ui.label("Command parameters").classes("text-sm mt-2")
             with ui.row().classes("items-center gap-2"):
-                self.grip_pos_slider = ui.slider(min=0, max=255, value=10, step=1).classes("w-64")
+                self.grip_pos_slider = ui.slider(
+                    min=0, max=255, value=10, step=1
+                ).classes("w-64")
                 ui.label("Position").classes("text-xs text-[var(--ctk-muted)]")
             with ui.row().classes("items-center gap-2"):
-                self.grip_speed_slider = ui.slider(min=0, max=255, value=50, step=1).classes("w-64")
+                self.grip_speed_slider = ui.slider(
+                    min=0, max=255, value=50, step=1
+                ).classes("w-64")
                 ui.label("Speed").classes("text-xs text-[var(--ctk-muted)]")
             with ui.row().classes("items-center gap-2"):
-                self.grip_current_slider = ui.slider(min=100, max=1000, value=180, step=10).classes(
-                    "w-64"
-                )
+                self.grip_current_slider = ui.slider(
+                    min=100, max=1000, value=180, step=10
+                ).classes("w-64")
                 ui.label("Current (mA)").classes("text-xs text-[var(--ctk-muted)]")
             with ui.row().classes("items-center gap-2"):
-                ui.button("Move GoTo", on_click=self._grip_move).props("unelevated color=primary")
-                self.grip_id_input = ui.input(label="Change ID", value="0").classes("w-24")
+                ui.button("Move GoTo", on_click=self._grip_move).props(
+                    "unelevated color=primary"
+                )
+                self.grip_id_input = ui.input(label="Change ID", value="0").classes(
+                    "w-24"
+                )
                 ui.button("Apply ID", on_click=self._grip_change_id).props("unelevated")
 
             # Feedback
             ui.label("Gripper feedback").classes("text-sm mt-2")
             with ui.column().classes("gap-1"):
-                self.grip_pos_feedback_label = ui.label("Gripper position feedback is: -").classes(
-                    "text-sm"
-                )
+                self.grip_pos_feedback_label = ui.label(
+                    "Gripper position feedback is: -"
+                ).classes("text-sm")
                 self.grip_current_feedback_label = ui.label(
                     "Gripper current feedback is: -"
                 ).classes("text-sm")
-                self.grip_obj_detect_label = ui.label("Gripper object detection is: -").classes(
-                    "text-sm"
-                )
+                self.grip_obj_detect_label = ui.label(
+                    "Gripper object detection is: -"
+                ).classes("text-sm")

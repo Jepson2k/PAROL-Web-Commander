@@ -22,7 +22,9 @@ class RobotClient:
       - Host and port are configurable to support non-local deployments during development.
     """
 
-    def __init__(self, host: str, port: int, timeout: float = 2.0, retries: int = 1) -> None:
+    def __init__(
+        self, host: str, port: int, timeout: float = 2.0, retries: int = 1
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -153,7 +155,12 @@ class RobotClient:
         try:
             # Split top-level sections after "STATUS|"
             sections = resp.split("|")[1:]
-            result: dict[str, object] = {"pose": None, "angles": None, "io": None, "gripper": None}
+            result: dict[str, object] = {
+                "pose": None,
+                "angles": None,
+                "io": None,
+                "gripper": None,
+            }
             for sec in sections:
                 if sec.startswith("POSE="):
                     vals = [float(x) for x in sec[len("POSE=") :].split(",") if x]
@@ -273,7 +280,9 @@ class RobotClient:
         """
         dur_str = "NONE" if duration is None else str(duration)
         dist_str = "NONE" if distance_deg is None else str(distance_deg)
-        return await self._send(f"JOG|{joint_index}|{speed_percentage}|{dur_str}|{dist_str}")
+        return await self._send(
+            f"JOG|{joint_index}|{speed_percentage}|{dur_str}|{dist_str}"
+        )
 
     async def jog_cartesian(
         self, frame: str, axis: str, speed_percentage: int, duration: float
@@ -283,7 +292,9 @@ class RobotClient:
         """
         return await self._send(f"CARTJOG|{frame}|{axis}|{speed_percentage}|{duration}")
 
-    async def jog_multiple(self, joints: list[int], speeds: list[float], duration: float) -> str:
+    async def jog_multiple(
+        self, joints: list[int], speeds: list[float], duration: float
+    ) -> str:
         """
         Send a MULTIJOG command to jog multiple joints simultaneously for 'duration' seconds.
         """

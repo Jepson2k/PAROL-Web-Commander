@@ -8,7 +8,15 @@ from pathlib import Path
 # Repository root and controller path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTROLLER_PATH = (REPO_ROOT / "PAROL6-python-API" / "headless_commander.py").as_posix()
-PAROL6_URDF_PATH = REPO_ROOT / "PAROL6-Desktop-robot-arm" / "PAROL6_URDF" / "PAROL6" / "urdf" / "PAROL6.urdf"
+PAROL6_URDF_PATH = (
+    REPO_ROOT
+    / "external"
+    / "PAROL6-Desktop-robot-arm"
+    / "PAROL6_URDF"
+    / "PAROL6"
+    / "urdf"
+    / "PAROL6.urdf"
+)
 
 # Official PAROL6 documentation URL
 PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
@@ -30,7 +38,13 @@ except Exception as e:
 JOINT_LIMITS_DEG = Joint_limits_degree
 HOST: str = os.getenv("PAROL6_SERVER_HOST", "127.0.0.1")
 PORT: int = int(os.getenv("PAROL6_SERVER_PORT", "5001"))
-AUTO_START: bool = os.getenv("PAROL6_AUTO_START", "0") in ("1", "true", "True", "yes", "YES")
+AUTO_START: bool = os.getenv("PAROL6_AUTO_START", "0") in (
+    "1",
+    "true",
+    "True",
+    "yes",
+    "YES",
+)
 DEFAULT_COM_PORT: str | None = os.getenv("PAROL6_COM_PORT") or None
 UI_PORT: int = int(os.getenv("PAROL6_UI_PORT", "8080"))
 

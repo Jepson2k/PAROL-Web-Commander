@@ -42,7 +42,9 @@ class CalibratePage:
         """Move the selected joint to its limit position using JOINT_LIMITS_DEG."""
         try:
             if not self.joint_selector or not self.limit_selector:
-                ui.notify("Joint or direction selector not initialized", color="negative")
+                ui.notify(
+                    "Joint or direction selector not initialized", color="negative"
+                )
                 return
 
             angles = robot_state.angles or []
@@ -55,7 +57,9 @@ class CalibratePage:
             if not joint_text or not str(joint_text).startswith("Joint "):
                 ui.notify("Please select a joint", color="warning")
                 return
-            joint_index = int(str(joint_text).split()[-1]) - 1  # Convert to 0-based index
+            joint_index = (
+                int(str(joint_text).split()[-1]) - 1
+            )  # Convert to 0-based index
 
             # Get joint limits
             if joint_index < 0 or joint_index >= len(JOINT_LIMITS_DEG):
@@ -83,7 +87,9 @@ class CalibratePage:
             target_angles[joint_index] = target_angle
 
             # Send move command
-            await client.move_joints(target_angles, duration=None, speed_percentage=speed)
+            await client.move_joints(
+                target_angles, duration=None, speed_percentage=speed
+            )
             ui.notify(
                 f"Moving Joint {joint_index + 1} to {str(direction).lower()} ({target_angle:.1f}°)",
                 color="primary",
@@ -102,7 +108,11 @@ class CalibratePage:
     # ---- UI ----
 
     def _update_go_to_limit_button(self) -> None:
-        if not self.go_to_limit_button or not self.joint_selector or not self.limit_selector:
+        if (
+            not self.go_to_limit_button
+            or not self.joint_selector
+            or not self.limit_selector
+        ):
             return
         has_joint = self.joint_selector.value is not None
         has_direction = self.limit_selector.value is not None
@@ -120,10 +130,12 @@ class CalibratePage:
                     "Enable", on_click=lambda: asyncio.create_task(self._send_enable())
                 ).props("unelevated color=positive")
                 ui.button(
-                    "Disable", on_click=lambda: asyncio.create_task(self._send_disable())
+                    "Disable",
+                    on_click=lambda: asyncio.create_task(self._send_disable()),
                 ).props("unelevated color=negative")
                 self.go_to_limit_button = ui.button(
-                    "Go to limit", on_click=lambda: asyncio.create_task(self.go_to_limit())
+                    "Go to limit",
+                    on_click=lambda: asyncio.create_task(self.go_to_limit()),
                 ).props("unelevated disable")
 
             with ui.row().classes("items-center gap-2"):
@@ -139,7 +151,11 @@ class CalibratePage:
                 ).props("dense")
 
             # Enable/disable Go-to-limit button when selections or connection change
-            self.joint_selector.on_value_change(lambda: self._update_go_to_limit_button())
-            self.limit_selector.on_value_change(lambda: self._update_go_to_limit_button())
+            self.joint_selector.on_value_change(
+                lambda: self._update_go_to_limit_button()
+            )
+            self.limit_selector.on_value_change(
+                lambda: self._update_go_to_limit_button()
+            )
             # Initial state
             self._update_go_to_limit_button()
