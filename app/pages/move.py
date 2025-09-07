@@ -976,7 +976,7 @@ class MovePage:
         with ui.row().classes("items-center justify-between w-full"):
             ui.label("Response Log").classes("text-md font-medium")
             self.drag_handle(pid, src_col)
-        self.response_log = ui.log(max_lines=500).classes("w-full").style("height: 190px")
+        self.response_log = ui.log(max_lines=500).classes("w-full whitespace-pre-wrap break-words").style("height: 190px")
         ui.button("Show received frame", on_click=self.show_received_frame).props("outline")
 
     def render_jog_content(self, pid: str, src_col: str) -> None:
