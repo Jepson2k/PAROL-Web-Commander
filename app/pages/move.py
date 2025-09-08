@@ -4,10 +4,9 @@ import asyncio
 import contextlib
 import logging
 import math
-import re
 import time
 from functools import partial
-from typing import TypedDict, cast
+from typing import TypedDict
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -15,9 +14,8 @@ from nicegui import ui
 from app.common.theme import get_theme
 from app.constants import PAROL6_URDF_PATH, REPO_ROOT
 from app.services.robot_client import client
-from app.state import robot_state
 from urdf_scene_nicegui import UrdfScene  # type: ignore
-from parol6.protocol.types import Axis
+from app.services.script_runner import ScriptProcessHandle
 
 
 class MoveLayout(TypedDict):
@@ -50,10 +48,14 @@ class MovePage:
         self.program_filename_input: ui.input | None = None
         self.program_textarea: ui.codemirror | None = None
 
-        # Program execution
+        # Program execution - legacy (to be removed)
         self.program_task: asyncio.Task | None = None
         self.program_cancel_event: asyncio.Event | None = None
         self.program_speed_percentage: int | None = None  # set by JointVelSet alias
+
+        # Script execution via subprocess
+        self.script_handle: ScriptProcessHandle | None = None
+        self.script_running: bool = False
 
         # URDF viewer state
         self.urdf_scene = None  # UrdfScene instance
@@ -281,7 +283,7 @@ class MovePage:
                 step = max(0.1, min(100.0, float(storage.get("joint_step_deg", 1.0))))
                 duration = max(0.02, min(0.5, step / 50.0))
                 frame = storage.get("frame", "TRF")
-                await client.jog_cartesian(frame, cast(Axis, axis), speed, duration)
+                await client.jog_cartesian(frame, axis, speed, duration)
                 return
             axes[axis] = bool(is_pressed)
             storage["cart_pressed_axes"] = axes
@@ -314,9 +316,7 @@ class MovePage:
         frame = storage.get("frame", "TRF")
         axis = self._get_first_pressed_axis()
         if axis is not None:
-            await client.jog_cartesian(
-                frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
-            )
+            await client.jog_cartesian(frame, axis, speed, self.STREAM_TIMEOUT_S)
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
@@ -359,118 +359,6 @@ class MovePage:
                 logging.warning("No frame received (GET_STATUS unsupported)")
         except Exception as e:
             logging.error("GET_STATUS raw failed: %s", e)
-
-    # ---- Program helpers ----
-
-    def _get_opt(self, tokens: list[str], key: str) -> float | None:
-        key = key.upper()
-        for t in tokens:
-            if t.upper().startswith(f"{key}="):
-                return float(t.split("=", 1)[1])
-        return None
-
-    def _parse_csv_floats(self, s: str) -> list[float] | None:
-        return [float(x.strip()) for x in s.split(",") if x.strip() != ""]
-
-    def _parse_motion_args(self, argstr: str) -> tuple[list[float], dict, list[str]]:
-        """Parse motion function arguments like "j1,j2,j3,j4,j5,j6, v=50, a=30, t=2.5, trap, speed"""
-        tokens_raw = [t.strip() for t in (argstr or "").split(",") if t.strip() != ""]
-        values: list[float] = []
-        errors: list[str] = []
-        opts: dict[str, float | str | None] = {
-            "v": None,
-            "a": None,
-            "t": None,
-            "profile": None,
-            "tracking": None,
-        }
-
-        # Collect exactly 6 leading numeric values
-        idx = 0
-        while idx < len(tokens_raw) and len(values) < 6:
-            tkn = tokens_raw[idx]
-            try:
-                num = float(tkn)
-                values.append(num)
-            except Exception:
-                errors.append(
-                    f"Expected numeric value #{len(values) + 1} but got '{tkn}'"
-                )
-                break
-            idx += 1
-
-        if not errors and len(values) != 6:
-            errors.append(f"Expected 6 numeric values, got {len(values)}")
-
-        # Parse options after the 6 numerics
-        seen = set()
-        while not errors and idx < len(tokens_raw):
-            tkn = tokens_raw[idx]
-            low = tkn.lower()
-
-            if low.startswith("v="):
-                if "v" in seen:
-                    errors.append("Duplicate 'v' option")
-                    break
-                seen.add("v")
-                rhs = tkn.split("=", 1)[1].strip()
-                try:
-                    v = float(rhs)
-                except Exception:
-                    errors.append(f"Malformed v value '{rhs}'")
-                    break
-                if not (0 <= v <= 100):
-                    errors.append(f"v out of range (0..100): {v}")
-                    break
-                opts["v"] = v
-            elif low.startswith("a="):
-                if "a" in seen:
-                    errors.append("Duplicate 'a' option")
-                    break
-                seen.add("a")
-                rhs = tkn.split("=", 1)[1].strip()
-                try:
-                    a = float(rhs)
-                except Exception:
-                    errors.append(f"Malformed a value '{rhs}'")
-                    break
-                if not (0 <= a <= 100):
-                    errors.append(f"a out of range (0..100): {a}")
-                    break
-                opts["a"] = a
-            elif low.startswith("t="):
-                if "t" in seen:
-                    errors.append("Duplicate 't' option")
-                    break
-                seen.add("t")
-                rhs = tkn.split("=", 1)[1].strip()
-                try:
-                    tval = float(rhs)
-                except Exception:
-                    errors.append(f"Malformed t value '{rhs}'")
-                    break
-                if not (tval > 0):
-                    errors.append(f"t must be > 0: {tval}")
-                    break
-                opts["t"] = tval
-            elif low in ("trap", "poly"):
-                if "profile" in seen:
-                    errors.append("Duplicate profile token")
-                    break
-                seen.add("profile")
-                opts["profile"] = low
-            elif low == "speed":
-                if "tracking" in seen:
-                    errors.append("Duplicate tracking token")
-                    break
-                seen.add("tracking")
-                opts["tracking"] = "SPEED"
-            else:
-                errors.append(f"Unknown token '{tkn}' (options must be after 6 values)")
-                break
-            idx += 1
-
-        return values, opts, errors
 
     # ---- Program execution ----
 
@@ -515,142 +403,133 @@ class MovePage:
             ui.notify(f"Save failed: {e}", color="negative")
             logging.error("Save failed: %s", e)
 
-    # Program regex patterns
-    _re_delay = re.compile(r"^\s*Delay\(\s*([0-9]*\.?[0-9]+)\s*\)\s*$", re.IGNORECASE)
-    _re_joint_vel = re.compile(r"^\s*JointVelSet\(\s*([0-9]+)\s*\)\s*$", re.IGNORECASE)
-    _re_joint_move = re.compile(r"^\s*JointMove\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
-    _re_pose_move = re.compile(r"^\s*PoseMove\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
-    # Legacy CTk command regex
-    _re_move_joint_legacy = re.compile(
-        r"^\s*MoveJoint\(\s*([^\)]*)\)\s*$", re.IGNORECASE
-    )
-    _re_move_pose_legacy = re.compile(r"^\s*MovePose\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
-    _re_move_cart_legacy = re.compile(r"^\s*MoveCart\(\s*([^\)]*)\)\s*$", re.IGNORECASE)
-    _re_move_cart_rel_trf = re.compile(
-        r"^\s*MoveCartRelTRF\(\s*([^\)]*)\)\s*$", re.IGNORECASE
-    )
-    _re_speed_joint = re.compile(r"^\s*SpeedJoint\(\s*([0-9]*)\s*\)\s*$", re.IGNORECASE)
-    _re_speed_cart = re.compile(r"^\s*SpeedCart\(\s*([0-9]*)\s*\)\s*$", re.IGNORECASE)
-    # Legacy function-style helpers
-    _re_home_fn = re.compile(r"^\s*Home\(\s*\)\s*$", re.IGNORECASE)
-    _re_begin_fn = re.compile(r"^\s*Begin\(\s*\)\s*$", re.IGNORECASE)
-    _re_end_fn = re.compile(r"^\s*End\(\s*\)\s*$", re.IGNORECASE)
-    _re_loop_fn = re.compile(r"^\s*Loop\(\s*\)\s*$", re.IGNORECASE)
-    _re_output_fn = re.compile(
-        r"^\s*Output\(\s*(\d+)\s*,\s*(HIGH|LOW)\s*\)\s*$", re.IGNORECASE
-    )
-    _re_gripper_fn = re.compile(
-        r"^\s*Gripper\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*$", re.IGNORECASE
-    )
-    _re_gripper_cal_fn = re.compile(r"^\s*Gripper_cal\(\s*\)\s*$", re.IGNORECASE)
-
-    async def _run_program(self) -> None:
-        self.program_speed_percentage = None  # reset each run
-        lines = (
-            (self.program_textarea.value or "").splitlines()
-            if self.program_textarea
-            else []
-        )
-
-        for raw in lines:
-            if self.program_cancel_event and self.program_cancel_event.is_set():
-                ui.notify("Program stopped", color="warning")
-                logging.warning("Program stopped")
-                return
-
-            line = raw.strip()
-            if not line or line.startswith(("#", "//", ";")):
-                continue
-
-            # Function-style legacy commands
-            m = self._re_home_fn.match(line)
-            if m:
-                try:
-                    await client.home()
-                    logging.info("Home()")
-                    await asyncio.sleep(0.1)
-                except Exception as e:
-                    logging.error("Home() failed: %s", e)
-                continue
-
-            # Handle alias forms
-            m = self._re_delay.match(line)
-            if m:
-                try:
-                    sec = float(m.group(1))
-                    logging.info("Delay(%s)", sec)
-                    await asyncio.sleep(sec)
-                except Exception as e:
-                    ui.notify(f"Program error at '{line}': {e}", color="negative")
-                    logging.error("Program error at '%s': %s", line, e)
-                    return
-                continue
-
-            m = self._re_joint_vel.match(line)
-            if m:
-                try:
-                    self.program_speed_percentage = int(m.group(1))
-                    logging.info("JointVelSet(%s)", self.program_speed_percentage)
-                except Exception as e:
-                    ui.notify(f"Program error at '{line}': {e}", color="negative")
-                    logging.error("Program error at '%s': %s", line, e)
-                    return
-                continue
-
-            # Legacy commands remain supported
-            tokens = line.split()
-            if not tokens:
-                continue
-            cmd = tokens[0].upper()
-            try:
-                if cmd == "HOME":
-                    await client.home()
-                    logging.info("HOME")
-                    await asyncio.sleep(0.1)
-                elif cmd == "DELAY" and len(tokens) >= 2:
-                    sec = float(tokens[1])
-                    logging.info("DELAY %s", sec)
-                    await asyncio.sleep(sec)
-                elif cmd == "ENABLE":
-                    await client.enable()
-                    logging.info("ENABLE")
-                    await asyncio.sleep(0.05)
-                elif cmd == "DISABLE":
-                    await client.disable()
-                    logging.info("DISABLE")
-                    await asyncio.sleep(0.05)
-                elif cmd == "CLEAR_ERROR":
-                    await client.clear_error()
-                    logging.info("CLEAR_ERROR")
-                    await asyncio.sleep(0.05)
-                elif cmd == "STOP":
-                    await client.stop()
-                    logging.warning("STOP")
-                    await asyncio.sleep(0.05)
-                else:
-                    ui.notify(f"Unknown command: {line}", color="warning")
-                    logging.warning("Unknown command: %s", line)
-                    await asyncio.sleep(0.01)
-            except Exception as e:
-                ui.notify(f"Program error at '{line}': {e}", color="negative")
-                logging.error("Program error at '%s': %s", line, e)
-                return
-
-        ui.notify("Program finished", color="positive")
-        logging.info("Program finished")
-
     async def execute_program(self) -> None:
-        if self.program_task and not self.program_task.done():
-            ui.notify("Program already running", color="warning")
-            return
-        self.program_cancel_event = asyncio.Event()
-        self.program_task = asyncio.create_task(self._run_program())
+        """Legacy method - now delegates to Python script execution."""
+        await self._start_script_process()
 
     async def stop_program(self) -> None:
-        if self.program_cancel_event:
-            self.program_cancel_event.set()
-        if self.program_task:
-            await asyncio.wait_for(self.program_task, timeout=0.1)
+        """Legacy method - now delegates to Python script stop."""
+        await self._stop_script_process()
+
+    # ---- New Python script execution ----
+
+    def _default_python_snippet(self) -> str:
+        """Generate the initial pre-filled Python code with inlined HOST/PORT."""
+        from app.constants import HOST, PORT
+
+        return f"""from parol6 import RobotClient
+import time
+
+# Connect to robot controller
+HOST, PORT = "{HOST}", {PORT}
+client = RobotClient(host=HOST, port=PORT, timeout=0.30, retries=1)
+
+if __name__ == "__main__":
+    # Enable robot and go to home position
+    print("Enabling robot...")
+    client.enable()
+
+    print("Moving to home position...")
+    client.home()
+
+    # Get status to confirm connection
+    status = client.get_status()
+    print(f"Robot status: {{status}}")
+
+    print("Script completed successfully")
+"""
+
+    async def _start_script_process(self) -> None:
+        """Save current editor content and start it as a Python subprocess."""
+        if self.script_running:
+            ui.notify("Script already running", color="warning")
+            return
+
+        try:
+            # Get filename, default to program.py if empty
+            filename = (
+                self.program_filename_input.value.strip()
+                if self.program_filename_input
+                else ""
+            ) or "program.py"
+
+            # Ensure .py extension
+            if not filename.endswith(".py"):
+                filename += ".py"
+
+            # Save script content to file
+            content = self.program_textarea.value if self.program_textarea else ""
+            script_path = self.PROGRAM_DIR / filename
+            script_path.write_text(content, encoding="utf-8")
+
+            # Update filename input
+            if self.program_filename_input:
+                self.program_filename_input.value = filename
+
+            # Create script configuration
+            from app.services.script_runner import run_script, create_default_config
+
+            config = create_default_config(str(script_path), str(REPO_ROOT))
+
+            # Start the script process with log callbacks
+            def on_stdout(line: str):
+                if self.response_log:
+                    self.response_log.push(line)
+
+            def on_stderr(line: str):
+                if self.response_log:
+                    self.response_log.push(line)
+
+            self.script_handle = await run_script(config, on_stdout, on_stderr)
+            self.script_running = True
+
+            ui.notify(f"Started script: {filename}", color="positive")
+            logging.info("Started script: %s", filename)
+
+        except Exception as e:
+            ui.notify(f"Failed to start script: {e}", color="negative")
+            logging.error("Failed to start script: %s", e)
+
+    async def _stop_script_process(self) -> None:
+        """Stop the running script process."""
+        if not self.script_running or not self.script_handle:
+            ui.notify("No script running", color="warning")
+            return
+
+        try:
+            from app.services.script_runner import stop_script
+
+            await stop_script(self.script_handle)
+            self.script_handle = None
+            self.script_running = False
+
+            ui.notify("Script stopped", color="warning")
+            logging.info("Script stopped by user")
+
+        except Exception as e:
+            ui.notify(f"Error stopping script: {e}", color="negative")
+            logging.error("Error stopping script: %s", e)
+            # Force reset state even if stop failed
+            self.script_handle = None
+            self.script_running = False
+
+    def _insert_python_snippet(self, key: str) -> str:
+        """Get Python code snippet for the given key."""
+        snippets = {
+            "enable": "client.enable()",
+            "disable": "client.disable()",
+            "home": "client.home()",
+            "stop": "client.stop()",
+            "clear_error": "client.clear_error()",
+            "delay": "time.sleep(1.0)",
+            "get_status": "status = client.get_status()\nprint(status)",
+            "get_angles": "angles = client.get_angles()\nprint(f'Joint angles: {angles}')",
+            "move_joint": "client.move_joint([0, 0, 0, 0, 0, 0])",
+            "jog_joint": "client.jog_joint(0, speed_percentage=50, duration=1.0)",
+            "set_speed": "client.set_speed(50)",
+            "comment": "# Add your robot commands here",
+        }
+        return snippets.get(key, f"# {key}")
 
     # ---- Layout management ----
 
@@ -1214,31 +1093,26 @@ class MovePage:
                         axis_image("/static/icons/RX_MINUS.webp", "RX-")
 
     def build_command_palette_table(self, prefill_toggle) -> None:
-        # Simplified structure with unique keys for row_key
+        # Python snippet palette with useful robot commands
         rows = [
-            {"key": "MoveJoint", "title": "MoveJoint()"},
-            {"key": "MovePose", "title": "MovePose()"},
-            {"key": "SpeedJoint", "title": "SpeedJoint()"},
-            {"key": "MoveCart", "title": "MoveCart()"},
-            {"key": "MoveCartRelTRF", "title": "MoveCartRelTRF()"},
-            {"key": "SpeedCart", "title": "SpeedCart()"},
-            {"key": "Home", "title": "Home()"},
-            {"key": "Delay", "title": "Delay()"},
-            {"key": "End", "title": "End()"},
-            {"key": "Loop", "title": "Loop()"},
-            {"key": "Begin", "title": "Begin()"},
-            {"key": "Input", "title": "Input()"},
-            {"key": "Output", "title": "Output()"},
-            {"key": "Gripper", "title": "Gripper()"},
-            {"key": "Gripper_cal", "title": "Gripper_cal()"},
-            {"key": "Get_data", "title": "Get_data()"},
-            {"key": "Timeouts", "title": "Timeouts()"},
+            {"key": "enable", "title": "client.enable()"},
+            {"key": "home", "title": "client.home()"},
+            {"key": "move_joint", "title": "client.move_joint([...])"},
+            {"key": "jog_joint", "title": "client.jog_joint(...)"},
+            {"key": "get_status", "title": "Get status"},
+            {"key": "get_angles", "title": "Get joint angles"},
+            {"key": "delay", "title": "time.sleep(...)"},
+            {"key": "disable", "title": "client.disable()"},
+            {"key": "stop", "title": "client.stop()"},
+            {"key": "clear_error", "title": "client.clear_error()"},
+            {"key": "set_speed", "title": "client.set_speed(...)"},
+            {"key": "comment", "title": "# Comment"},
         ]
 
         columns = [
             {
                 "name": "title",
-                "label": "Command",
+                "label": "Python Command",
                 "field": "title",
                 "sortable": True,
                 "align": "left",
@@ -1253,51 +1127,18 @@ class MovePage:
                 row_key="key",  # Use unique key column
             ).props("flat dense separator=horizontal")
 
-        def make_snippet(key: str) -> str:
-            current = bool(prefill_toggle.value)
-
-            if key == "MoveJoint":
-                if current and robot_state.angles and len(robot_state.angles) >= 6:
-                    return (
-                        "MoveJoint("
-                        + ", ".join(f"{a:.1f}" for a in robot_state.angles[:6])
-                        + ")"
-                    )
-                return "MoveJoint(0, 0, 0, 0, 0, 0)"
-            elif key == "SpeedJoint":
-                return "SpeedJoint(50)"
-            elif key == "MovePose":
-                if current and robot_state.pose and len(robot_state.pose) >= 12:
-                    x, y, z = (
-                        robot_state.pose[3],
-                        robot_state.pose[7],
-                        robot_state.pose[11],
-                    )
-                    return f"MovePose({x:.1f}, {y:.1f}, {z:.1f}, 0, 0, 0)"
-                return "MovePose(0, 0, 0, 0, 0, 0)"
-            elif key == "Home":
-                return "Home()"
-            elif key == "Delay":
-                return "Delay(1.0)"
-            else:
-                # Fallback to row title
-                for row in rows:
-                    if row.get("key") == key:
-                        return row.get("title", key)
-                return key
-
         def insert_from_row(e) -> None:
             try:
                 row_data = e.args[1] if len(e.args) >= 2 else {}
                 key = row_data.get("key", "")
 
                 if key and self.program_textarea:
-                    snippet = make_snippet(key)
+                    snippet = self._insert_python_snippet(key)
                     val = self.program_textarea.value
                     if val and not val.endswith("\n"):
                         val += "\n"
                     self.program_textarea.value = val + snippet + "\n"
-                    logging.info("Added command: %s", snippet)
+                    logging.info("Added Python snippet: %s", snippet)
             except Exception as ex:
                 ui.notify(f"Click handler error: {ex}", color="negative")
                 logging.error("Click handler error: %s", ex)
@@ -1318,7 +1159,8 @@ class MovePage:
                     )
                 self.program_textarea = (
                     ui.codemirror(
-                        value="",
+                        value=self._default_python_snippet(),
+                        language="Python",
                         line_wrapping=True,
                     )
                     .classes("w-full")
@@ -1334,10 +1176,10 @@ class MovePage:
                 except Exception:
                     self.program_textarea.theme = "oneDark"
                 with ui.row().classes("gap-2"):
-                    ui.button("Start", on_click=self.execute_program).props(
+                    ui.button("Start", on_click=self._start_script_process).props(
                         "unelevated color=positive"
                     )
-                    ui.button("Stop", on_click=self.stop_program).props(
+                    ui.button("Stop", on_click=self._stop_script_process).props(
                         "unelevated color=negative"
                     )
                     ui.button("Save", on_click=self.save_program).props("unelevated")

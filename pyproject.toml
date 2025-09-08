@@ -28,11 +28,7 @@ extend-exclude = [
 exclude = '(?x)(^external/|PAROL.*/)$'
 
 [[tool.mypy.overrides]]
-module = ["PAROL6_ROBOT", "PAROL6_ROBOT.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["parol6", "parol6.*"]
+module = ["parol6", "parol6.*", "roboticstoolbox", "roboticstoolbox.*", "spatialmath", "spatialmath.*"]
 ignore_missing_imports = true
 
 # ---- Pytest configuration ----
