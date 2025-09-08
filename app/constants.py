@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from parol6.PAROL6_ROBOT import Joint_limits_degree
 
 # Repository root and controller path
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,13 +28,6 @@ sys.path.append((REPO_ROOT / "PAROL6-python-API").as_posix())
 # Ensure urdf_scene_nicegui on path
 sys.path.append((REPO_ROOT / "urdf_scene_nicegui" / "src").as_posix())
 
-try:
-    # Official constant from PAROL6
-    from PAROL6_ROBOT import Joint_limits_degree  # pyright: ignore[reportMissingImports] # noqa: I001
-except Exception as e:
-    logging.critical("Failed to import PAROL6_ROBOT.Joint_limits_degree: %s", e)
-    # Fail fast: the app should not start without valid joint limits
-    sys.exit(1)
 
 JOINT_LIMITS_DEG = Joint_limits_degree
 HOST: str = os.getenv("PAROL6_SERVER_HOST", "127.0.0.1")
