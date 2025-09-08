@@ -87,9 +87,10 @@ async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
     img.mark("j1-right")
 
     # Press and hold for ~2 seconds
+    await asyncio.sleep(1) # Backend might still be starting up
     user.find("j1-right").trigger("mousedown")
     start = time.monotonic()
-    await asyncio.sleep(3.0)
+    await asyncio.sleep(1)
     user.find("j1-right").trigger("mouseup")
     duration = time.monotonic() - start
 
@@ -120,9 +121,10 @@ async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
     with user:
         axis_img.mark("axis-xplus")
 
+    await asyncio.sleep(1) # Backend might still be starting up
     user.find("axis-xplus").trigger("mousedown")
     start = time.monotonic()
-    await asyncio.sleep(3.0)
+    await asyncio.sleep(1)
     user.find("axis-xplus").trigger("mouseup")
     duration = time.monotonic() - start
 

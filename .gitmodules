@@ -1,0 +1,9 @@
+[submodule "external/PAROL6-python-API"]
+	path = external/PAROL6-python-API
+	url = https://github.com/Jepson2k/PAROL6-python-API.git
+[submodule "external/urdf_scene_nicegui"]
+	path = external/urdf_scene_nicegui
+	url = https://github.com/chhinze/urdf_scene_nicegui.git
+[submodule "external/PAROL6-Desktop-robot-arm"]
+	path = external/PAROL6-Desktop-robot-arm
+	url = https://github.com/PCrnjak/PAROL6-Desktop-robot-arm.git

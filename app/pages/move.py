@@ -7,7 +7,7 @@ import math
 import re
 import time
 from functools import partial
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -17,6 +17,7 @@ from app.constants import PAROL6_URDF_PATH, REPO_ROOT
 from app.services.robot_client import client
 from app.state import robot_state
 from urdf_scene_nicegui import UrdfScene  # type: ignore
+from parol6.protocol.types import Axis
 
 
 class MoveLayout(TypedDict):
@@ -116,7 +117,7 @@ class MovePage:
         self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
 
         # Jog cadence constants (100 Hz)
-        self.JOG_TICK_S: float = 0.009
+        self.JOG_TICK_S: float = 0.01
         self.CADENCE_WARN_WINDOW: int = 100
         self.CADENCE_TOLERANCE: float = 0.002
         # Streaming watchdog timeout to use as "duration" while stream_mode is ON
@@ -280,7 +281,7 @@ class MovePage:
                 step = max(0.1, min(100.0, float(storage.get("joint_step_deg", 1.0))))
                 duration = max(0.02, min(0.5, step / 50.0))
                 frame = storage.get("frame", "TRF")
-                await client.jog_cartesian(frame, axis, speed, duration)
+                await client.jog_cartesian(frame, cast(Axis, axis), speed, duration)
                 return
             axes[axis] = bool(is_pressed)
             storage["cart_pressed_axes"] = axes
@@ -313,7 +314,7 @@ class MovePage:
         frame = storage.get("frame", "TRF")
         axis = self._get_first_pressed_axis()
         if axis is not None:
-            await client.jog_cartesian(frame, axis, speed, self.STREAM_TIMEOUT_S)
+            await client.jog_cartesian(frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S)
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
