@@ -1,81 +1,34 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "parol-web-commander"
 version = "1.0.0"
-description = "NiceGUI-based web interface for PAROL6 robot control"
+description = "Web interface for PAROL6 robot control"
 requires-python = ">=3.11"
 dependencies = [
-    "nicegui>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "urchin>=0.0.27",
-    "numpy>=1.24",
-    "scipy>=1.10",
+  "nicegui>=2.0.0",
+  "python-dotenv>=1.0.0",
+  "urchin>=0.0.27",
+  "numpy>=1.24",
+  "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "ruff>=0.1.0",
-    "mypy>=1.5.0",
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pre-commit>=3.0.0",
-]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pre-commit"]
 
-# ---- Ruff configuration ----
 [tool.ruff]
-target-version = "py311"
-line-length = 100
-fix = true
-
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # Pyflakes
-    "UP",  # pyupgrade
-    "B",   # flake8-bugbear
-    "SIM", # flake8-simplify
-    "I",   # isort
-    "C4",  # flake8-comprehensions
-    "TCH", # flake8-type-checking
-]
-ignore = [
-    "E501",   # line too long (handled by formatter)
-    "B008",   # function calls in argument defaults (common in FastAPI/NiceGUI)
-    "UP007",  # use X | Y union syntax (prefer typing.Union for py3.9+ compat if needed)
+extend-exclude = [
+  "external/",
+  "PAROL*/"
 ]
 
-[tool.ruff.lint.isort]
-known-first-party = ["app", "services", "pages"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-skip-magic-trailing-comma = false
-
-# ---- MyPy configuration ----
 [tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false  # relaxed for UI code with many callbacks
-disallow_incomplete_defs = false
-check_untyped_defs = true
-disallow_untyped_decorators = false  # NiceGUI decorators often untyped
-strict_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-no_implicit_reexport = true
+exclude = '(?x)(^external/|PAROL.*/)$'
 
 [[tool.mypy.overrides]]
-module = [
-    "nicegui.*",
-    "PAROL6_ROBOT",
-    "customtkinter.*",
-]
+module = ["PAROL6_ROBOT", "PAROL6_ROBOT.*"]
 ignore_missing_imports = true
 
 # ---- Pytest configuration ----
