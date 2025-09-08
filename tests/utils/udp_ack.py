@@ -72,7 +72,9 @@ def ack_listener_start(bind_host: str = "127.0.0.1", bind_port: int = 5002):
                     continue
                 cmd_id, status, details = parsed
                 try:  # noqa: SIM105
-                    q.put_nowait(AckEvent(cmd_id=cmd_id, status=status, details=details, t=t))
+                    q.put_nowait(
+                        AckEvent(cmd_id=cmd_id, status=status, details=details, t=t)
+                    )
                 except Exception:
                     # Best-effort; drop if queue is full or invalid
                     pass

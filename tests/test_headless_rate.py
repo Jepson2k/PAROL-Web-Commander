@@ -29,7 +29,10 @@ def test_headless_movejoint_loop_frequency(headless_server, ack_listener):
 
     steps = int(2.0 / 0.01)  # INTERVAL_S=0.01
     hz = steps / dt
-    assert hz >= 95.0, f"Effective loop rate too low: {hz:.2f} Hz (dt={dt:.3f}s, steps={steps})"
+    assert (
+        hz >= 95.0
+    ), f"Effective loop rate too low: {hz:.2f} Hz (dt={dt:.3f}s, steps={steps})"
+
 
 @pytest.mark.integration
 def test_headless_cartjog_loop_frequency(headless_server, ack_listener):
@@ -55,4 +58,6 @@ def test_headless_cartjog_loop_frequency(headless_server, ack_listener):
 
     steps = int(2.0 / 0.01)  # INTERVAL_S=0.01
     hz = steps / dt
-    assert hz >= 95.0, f"IK (CARTJOG) effective loop rate too low: {hz:.2f} Hz (dt={dt:.3f}s, steps={steps})"
+    assert (
+        hz >= 95.0
+    ), f"IK (CARTJOG) effective loop rate too low: {hz:.2f} Hz (dt={dt:.3f}s, steps={steps})"

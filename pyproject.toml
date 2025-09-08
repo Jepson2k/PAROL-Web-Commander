@@ -31,6 +31,10 @@ exclude = '(?x)(^external/|PAROL.*/)$'
 module = ["PAROL6_ROBOT", "PAROL6_ROBOT.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["parol6", "parol6.*"]
+ignore_missing_imports = true
+
 # ---- Pytest configuration ----
 [tool.pytest.ini_options]
 testpaths = ["tests"]

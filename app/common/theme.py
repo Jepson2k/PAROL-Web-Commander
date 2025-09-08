@@ -176,7 +176,8 @@ def toggle_theme() -> ThemeMode:
 
 def inject_layout_css() -> None:
     """Injects the app's layout and component CSS previously embedded in main.py."""
-    ui.add_css("""
+    ui.add_css(
+        """
 /* Drag handle styles */
 .drag-handle-btn {
   background: rgba(255,255,255,0.08);
@@ -427,4 +428,5 @@ body.body--light .drag-handle-btn:hover {
   outline: 1px solid var(--q-accent);
   transition: transform 40ms linear, filter 40ms linear, outline-color 40ms linear;
 }
-""")
+"""
+    )

@@ -314,7 +314,9 @@ class MovePage:
         frame = storage.get("frame", "TRF")
         axis = self._get_first_pressed_axis()
         if axis is not None:
-            await client.jog_cartesian(frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S)
+            await client.jog_cartesian(
+                frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
+            )
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 

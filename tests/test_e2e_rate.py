@@ -37,7 +37,9 @@ class ForwardingRecorderClient:
         distance_deg: float | None = None,
     ) -> str | dict:
         self.joint_ts.append(time.monotonic())
-        return await self.real.jog_joint(joint_index, speed_percentage, duration, distance_deg)
+        return await self.real.jog_joint(
+            joint_index, speed_percentage, duration, distance_deg
+        )
 
     async def jog_cartesian(
         self, frame: Frame, axis: Axis, speed_percentage: int, duration: float
@@ -58,7 +60,9 @@ class ForwardingRecorderClient:
 
 @pytest.mark.integration
 @pytest.mark.module_under_test(main)
-async def test_e2e_rate_joint_100hz(user: User, headless_server, monkeypatch: MonkeyPatch):
+async def test_e2e_rate_joint_100hz(
+    user: User, headless_server, monkeypatch: MonkeyPatch
+):
     """
     E2E acceptance: Drive real UI with user fixture, forward UDP to real headless server,
     measure emission cadence on the client side; assert ~100 Hz.
@@ -80,7 +84,7 @@ async def test_e2e_rate_joint_100hz(user: User, headless_server, monkeypatch: Mo
     assert img is not None, "J1 right arrow image not found"
     img.mark("e2e-j1-right")
 
-    await asyncio.sleep(1) # Backend might still be starting up
+    await asyncio.sleep(1)  # Backend might still be starting up
     user.find("e2e-j1-right").trigger("mousedown")
     start = time.monotonic()
     await asyncio.sleep(1)
@@ -94,10 +98,14 @@ async def test_e2e_rate_joint_100hz(user: User, headless_server, monkeypatch: Mo
     ), f"E2E joint emission too low: {hz:.2f} Hz (count={count}, duration={duration:.3f}s)"
 
 
-@pytest.mark.xfail(reason="Expected to fail until jacobian twist differential solver is finished")
+@pytest.mark.xfail(
+    reason="Expected to fail until jacobian twist differential solver is finished"
+)
 @pytest.mark.integration
 @pytest.mark.module_under_test(main)
-async def test_e2e_rate_cart_100hz(user: User, headless_server, monkeypatch: MonkeyPatch):
+async def test_e2e_rate_cart_100hz(
+    user: User, headless_server, monkeypatch: MonkeyPatch
+):
     """
     E2E acceptance: Drive real UI for cartesian jog with user fixture, forward UDP to server,
     and assert ~100 Hz emission cadence.
@@ -117,7 +125,7 @@ async def test_e2e_rate_cart_100hz(user: User, headless_server, monkeypatch: Mon
     assert axis_img is not None, "Cartesian X+ image not found"
     axis_img.mark("e2e-axis-xplus")
 
-    await asyncio.sleep(1) # Backend might still be starting up
+    await asyncio.sleep(1)  # Backend might still be starting up
     user.find("e2e-axis-xplus").trigger("mousedown")
     start = time.monotonic()
     await asyncio.sleep(1)

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from nicegui.testing import User
     from pytest import MonkeyPatch
 
+
 class RecorderClient:
     """Records jog send timestamps while acting as the transport for UI-only acceptance tests."""
 
@@ -87,7 +88,7 @@ async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
     img.mark("j1-right")
 
     # Press and hold for ~2 seconds
-    await asyncio.sleep(1) # Backend might still be starting up
+    await asyncio.sleep(1)  # Backend might still be starting up
     user.find("j1-right").trigger("mousedown")
     start = time.monotonic()
     await asyncio.sleep(1)
@@ -105,6 +106,7 @@ async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
 @pytest.mark.module_under_test(main)
 async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold X+ with user fixture, assert ~100 Hz emission."""
+
     async def _noop_start_controller(port: str | None) -> None:
         return None
 
@@ -121,7 +123,7 @@ async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
     with user:
         axis_img.mark("axis-xplus")
 
-    await asyncio.sleep(1) # Backend might still be starting up
+    await asyncio.sleep(1)  # Backend might still be starting up
     user.find("axis-xplus").trigger("mousedown")
     start = time.monotonic()
     await asyncio.sleep(1)

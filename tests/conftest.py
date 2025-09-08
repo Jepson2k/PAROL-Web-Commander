@@ -27,7 +27,9 @@ def headless_server() -> Iterator[subprocess.Popen]:
     Ensure proper cleanup.
     """
     repo_root = Path(__file__).resolve().parent.parent
-    server_script = repo_root / "PAROL6-python-API" / "parol6" / "server" / "headless_commander.py"
+    server_script = (
+        repo_root / "PAROL6-python-API" / "parol6" / "server" / "headless_commander.py"
+    )
     assert server_script.exists(), f"Missing headless server at {server_script}"
 
     env = os.environ.copy()
