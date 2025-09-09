@@ -418,25 +418,17 @@ class MovePage:
         from app.constants import HOST, PORT
 
         return f"""from parol6 import RobotClient
-import time
 
 # Connect to robot controller
 HOST, PORT = "{HOST}", {PORT}
-client = RobotClient(host=HOST, port=PORT, timeout=0.30, retries=1)
+rbt = RobotClient(host=HOST, port=PORT)
 
-if __name__ == "__main__":
-    # Enable robot and go to home position
-    print("Enabling robot...")
-    client.enable()
+print("Moving to home position...")
+rbt.home()
 
-    print("Moving to home position...")
-    client.home()
-
-    # Get status to confirm connection
-    status = client.get_status()
-    print(f"Robot status: {{status}}")
-
-    print("Script completed successfully")
+# Get status to confirm connection
+status = rbt.get_status()
+print(f"Robot status: {{status}}")
 """
 
     async def _start_script_process(self) -> None:
@@ -483,12 +475,42 @@ if __name__ == "__main__":
             self.script_handle = await run_script(config, on_stdout, on_stderr)
             self.script_running = True
 
+            # Launch monitor task to reset state when script finishes
+            h = self.script_handle  # capture
+            asyncio.create_task(self._monitor_script_completion(h, filename))
+
             ui.notify(f"Started script: {filename}", color="positive")
             logging.info("Started script: %s", filename)
 
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
             logging.error("Failed to start script: %s", e)
+
+    async def _monitor_script_completion(
+        self, handle: ScriptProcessHandle, filename: str
+    ) -> None:
+        """Monitor script subprocess completion and reset state when it finishes."""
+        try:
+            rc = await handle["proc"].wait()
+            # Let stream reader tasks finish
+            for t in (handle["stdout_task"], handle["stderr_task"]):
+                with contextlib.suppress(Exception):
+                    await t
+            # Only reset state if this handle is still the active one
+            if self.script_handle is handle:
+                self.script_handle = None
+                self.script_running = False
+                ui.notify(
+                    f"Script finished: {filename} (exit {rc})",
+                    color="positive" if rc == 0 else "warning",
+                )
+                logging.info("Script %s finished with code %s", filename, rc)
+        except Exception as e:
+            logging.error("Error monitoring script process: %s", e)
+            # Best-effort reset if still active
+            if self.script_handle is handle:
+                self.script_handle = None
+                self.script_running = False
 
     async def _stop_script_process(self) -> None:
         """Stop the running script process."""
@@ -499,9 +521,13 @@ if __name__ == "__main__":
         try:
             from app.services.script_runner import stop_script
 
-            await stop_script(self.script_handle)
+            handle = self.script_handle  # capture
+            # Clear UI state up-front; monitor will see this and stay silent
             self.script_handle = None
             self.script_running = False
+
+            if handle:
+                await stop_script(handle)
 
             ui.notify("Script stopped", color="warning")
             logging.info("Script stopped by user")
@@ -509,24 +535,22 @@ if __name__ == "__main__":
         except Exception as e:
             ui.notify(f"Error stopping script: {e}", color="negative")
             logging.error("Error stopping script: %s", e)
-            # Force reset state even if stop failed
-            self.script_handle = None
-            self.script_running = False
+            # State already cleared above
 
     def _insert_python_snippet(self, key: str) -> str:
         """Get Python code snippet for the given key."""
         snippets = {
-            "enable": "client.enable()",
-            "disable": "client.disable()",
-            "home": "client.home()",
-            "stop": "client.stop()",
-            "clear_error": "client.clear_error()",
+            "enable": "rbt.enable()",
+            "disable": "rbt.disable()",
+            "home": "rbt.home()",
+            "stop": "rbt.stop()",
+            "clear_error": "rbt.clear_error()",
             "delay": "time.sleep(1.0)",
-            "get_status": "status = client.get_status()\nprint(status)",
-            "get_angles": "angles = client.get_angles()\nprint(f'Joint angles: {angles}')",
-            "move_joint": "client.move_joint([0, 0, 0, 0, 0, 0])",
-            "jog_joint": "client.jog_joint(0, speed_percentage=50, duration=1.0)",
-            "set_speed": "client.set_speed(50)",
+            "get_status": "status = rbt.get_status()\nprint(status)",
+            "get_angles": "angles = rbt.get_angles()\nprint(f'Joint angles: {angles}')",
+            "move_joint": "rbt.move_joint([0, 0, 0, 0, 0, 0])",
+            "jog_joint": "rbt.jog_joint(0, speed_percentage=50, duration=1.0)",
+            "set_speed": "rbt.set_speed(50)",
             "comment": "# Add your robot commands here",
         }
         return snippets.get(key, f"# {key}")
@@ -991,7 +1015,7 @@ if __name__ == "__main__":
         """Inner content for the Jog panel (no outer card)."""
         with ui.row().classes("w-full items-center justify-between"):
             with ui.row().classes("items-center gap-4"):
-                with ui.tabs() as jog_mode_tabs:
+                with ui.tabs().props("dense") as jog_mode_tabs:
                     joint_tab = ui.tab("Joint jog")
                     cart_tab = ui.tab("Cartesian jog")
                 jog_mode_tabs.value = joint_tab
@@ -1004,7 +1028,7 @@ if __name__ == "__main__":
             self.drag_handle(pid, src_col)
 
         with ui.tab_panels(jog_mode_tabs, value=joint_tab).classes("w-full"):
-            with ui.tab_panel(joint_tab).classes("gap-2"):
+            with ui.tab_panel(joint_tab).classes("gap-1"):
                 joint_names = ["J1", "J2", "J3", "J4", "J5", "J6"]
 
                 def make_joint_row(idx: int, name: str):
@@ -1095,18 +1119,17 @@ if __name__ == "__main__":
     def build_command_palette_table(self, prefill_toggle) -> None:
         # Python snippet palette with useful robot commands
         rows = [
-            {"key": "enable", "title": "client.enable()"},
-            {"key": "home", "title": "client.home()"},
-            {"key": "move_joint", "title": "client.move_joint([...])"},
-            {"key": "jog_joint", "title": "client.jog_joint(...)"},
-            {"key": "get_status", "title": "Get status"},
-            {"key": "get_angles", "title": "Get joint angles"},
+            {"key": "enable", "title": "rbt.enable()"},
+            {"key": "home", "title": "rbt.home()"},
+            {"key": "move_joint", "title": "rbt.move_joint([...])"},
+            {"key": "jog_joint", "title": "rbt.jog_joint(...)"},
+            {"key": "get_status", "title": "rbt.get_status()"},
+            {"key": "get_angles", "title": "rbt.get_angles()"},
             {"key": "delay", "title": "time.sleep(...)"},
-            {"key": "disable", "title": "client.disable()"},
-            {"key": "stop", "title": "client.stop()"},
-            {"key": "clear_error", "title": "client.clear_error()"},
-            {"key": "set_speed", "title": "client.set_speed(...)"},
-            {"key": "comment", "title": "# Comment"},
+            {"key": "disable", "title": "rbt.disable()"},
+            {"key": "stop", "title": "rbt.stop()"},
+            {"key": "clear_error", "title": "rbt.clear_error()"},
+            {"key": "set_speed", "title": "rbt.set_speed(...)"},
         ]
 
         columns = [

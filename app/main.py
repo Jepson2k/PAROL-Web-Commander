@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -175,6 +176,33 @@ async def update_status_async() -> None:
                 if "Z" in move_page_instance.tool_labels:
                     move_page_instance.tool_labels["Z"].text = f"{z:.3f}"
 
+                # Compute Rx/Ry/Rz if full rotation matrix present
+                if len(pose) >= 16:
+                    r11 = pose[0]
+                    r21, r22, r23 = pose[4], pose[5], pose[6]
+                    r31, r32, r33 = pose[8], pose[9], pose[10]
+
+                    sy = math.sqrt(r11 * r11 + r21 * r21)
+                    if sy > 1e-6:  # Not at gimbal lock
+                        rx = math.atan2(r32, r33)
+                        ry = math.atan2(-r31, sy)
+                        rz = math.atan2(r21, r11)
+                    else:  # Gimbal lock case
+                        rx = math.atan2(-r23, r22)
+                        ry = math.atan2(-r31, sy)
+                        rz = 0.0
+
+                    rx_deg = math.degrees(rx)
+                    ry_deg = math.degrees(ry)
+                    rz_deg = math.degrees(rz)
+
+                    if "Rx" in move_page_instance.tool_labels:
+                        move_page_instance.tool_labels["Rx"].text = f"{rx_deg:.3f}"
+                    if "Ry" in move_page_instance.tool_labels:
+                        move_page_instance.tool_labels["Ry"].text = f"{ry_deg:.3f}"
+                    if "Rz" in move_page_instance.tool_labels:
+                        move_page_instance.tool_labels["Rz"].text = f"{rz_deg:.3f}"
+
         if len(io) >= 5:
             in1, in2, out1, out2, estop = io[:5]
             estop_text = "OK" if estop else "TRIGGERED"
@@ -253,8 +281,8 @@ async def update_status_async() -> None:
         calibrate_page_instance._update_go_to_limit_button()
 
         # success: speed up polling (but keep reasonable)
-        if status_timer and getattr(status_timer, "interval", None) != 0.2:
-            status_timer.interval = 0.2
+        if status_timer and getattr(status_timer, "interval", None) != 0.05:
+            status_timer.interval = 0.05
         consecutive_failures = 0
     else:
         robot_state.connected = False
@@ -272,7 +300,7 @@ async def update_status_async() -> None:
 def build_header_and_tabs() -> None:
     # Header with left navigation tabs, centered firmware text, right help + theme toggle
     with (
-        ui.header().classes("px-3 py-1"),
+        ui.header().classes("p-0"),
         ui.row().classes("w-full items-center justify-between"),
     ):
         # Left: navigation tabs (will be returned for tab_panels)
@@ -368,16 +396,17 @@ def compose_ui() -> None:
 
 
 status_timer = ui.timer(
-    interval=0.2, callback=update_status_async, active=False
+    interval=0.05, callback=update_status_async, active=False
 )  # status poll (gated)
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(
         title="PAROL6 NiceGUI Commander",
         port=UI_PORT,
-        reload=True,
+        reload=False,
         storage_secret="unnecessary_for_now",
         loop="uvloop",
         http="httptools",
         ws="wsproto",
+        binding_refresh_interval=0.05,
     )
