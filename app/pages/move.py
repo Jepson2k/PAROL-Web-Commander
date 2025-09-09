@@ -419,14 +419,11 @@ class MovePage:
 
         return f"""from parol6 import RobotClient
 
-# Connect to robot controller
-HOST, PORT = "{HOST}", {PORT}
-rbt = RobotClient(host=HOST, port=PORT)
+rbt = RobotClient(host={HOST!r}, port={PORT})
 
 print("Moving to home position...")
 rbt.home()
 
-# Get status to confirm connection
 status = rbt.get_status()
 print(f"Robot status: {{status}}")
 """
@@ -1143,7 +1140,7 @@ print(f"Robot status: {{status}}")
         ]
 
         # Scrollable container for the table
-        with ui.element("div").classes("overflow-y-auto w-full").style("height: 400px"):
+        with ui.element("div").classes("overflow-y-auto w-full").style("height: 260px"):
             table = ui.table(
                 columns=columns,
                 rows=rows,
@@ -1187,7 +1184,7 @@ print(f"Robot status: {{status}}")
                         line_wrapping=True,
                     )
                     .classes("w-full")
-                    .style("height: 360px")
+                    .style("height: 210px")
                 )
                 # Initialize CodeMirror theme based on theme/system
                 try:
@@ -1256,11 +1253,15 @@ print(f"Robot status: {{status}}")
                 pid,
                 src_col,
                 self.render_editor_content,
-                "min-h-[500px]",
+                "min-h-[350px]",
             )
         elif pid == "readouts":
             self.draggable_card(
-                "Readouts & Controls", pid, src_col, self.render_readouts_content
+                "Readouts & Controls",
+                pid,
+                src_col,
+                self.render_readouts_content,
+                "min-h-[350px]",
             )
         elif pid == "log":
             self.draggable_card("Response Log", pid, src_col, self.render_log_content)

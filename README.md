@@ -9,12 +9,14 @@ This project integrates:
 - UI: NiceGUI web frontend with live status and controls
 
 Upstream projects and docs:
-- PAROL6 hardware: https://github.com/PCrnjak/PAROL6-Desktop-robot-arm  
-- Commander software (GUI + docs): https://github.com/PCrnjak/PAROL-commander-software  
-- Python API (headless + UDP client): https://github.com/PCrnjak/PAROL6-python-API  
-- Official docs: https://source-robotics.github.io/PAROL-docs/  
+- PAROL6 hardware: https://github.com/PCrnjak/PAROL6-Desktop-robot-arm
+- Commander software (GUI + docs): https://github.com/PCrnjak/PAROL-commander-software
+- Python API (headless + UDP client): https://github.com/PCrnjak/PAROL6-python-API
+- Official docs: https://source-robotics.github.io/PAROL-docs/
 
 Note: To run a real robot, you must have a PAROL6 control board: https://source-robotics.com/products/parol6-control-board
+
+![PAROL Web Commander Interface](images/readme_screenshot.png)
 
 ## Features
 
