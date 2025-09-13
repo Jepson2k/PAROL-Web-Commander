@@ -84,29 +84,18 @@ py -3.11 -m venv .venv
 pip install -r app/requirements.txt
 ```
 
-4) Install the PAROL6 Python API (provides the `parol6` package used by this app):
-```bash
-pip install -e external/PAROL6-python-API
-```
-This provides `AsyncRobotClient` and `ServerManager` used by the app.
-
-Install URDF viewer package:
-```bash
-pip install -e external/urdf_scene_nicegui
-```
-
-5) Connect the robot via USB. Identify the port (examples):
+4) Connect the robot via USB. Identify the port (examples):
 - Windows: `COM5`
 - Linux: `/dev/ttyACM0`
 - macOS: `/dev/tty.usbmodemXXXX`
 
-6) Run the web UI:
+5) Run the web UI:
 ```bash
 python -m app.main
 ```
 Open the printed URL in your browser.
 
-7) In the footer, set the COM port and click “Set Port”. The app will start the headless controller and begin polling status. Use the Move, I/O, Calibrate, Gripper, and Settings tabs as needed.
+6) In the footer, set the COM port and click “Set Port”. The app will start the headless controller and begin polling status. Use the Move, I/O, Calibrate, Gripper, and Settings tabs as needed.
 
 ## Configuration
 
