@@ -50,7 +50,7 @@ Note: To run a real robot, you must have a PAROL6 control board: https://source-
 - OS:
   - Controller: 64-bit Linux recommended (e.g., Raspberry Pi OS 64-bit Bookworm). Other OSes can work if they meet timing targets.
   - UI: Any modern OS with Python 3.11.
-- Python: 3.11 (per `pyproject.toml`)
+- Python: 3.11+
 - Hardware: PAROL6 robot with PAROL6 control board connected via USB
 - Notes:
   - Ensure your user has permission to access the serial device (e.g., add to the `dialout` group or set udev rules on Linux).
@@ -63,6 +63,7 @@ Note: To run a real robot, you must have a PAROL6 control board: https://source-
 git clone --recurse-submodules https://github.com/Jepson2k/PAROL-Web-Commander.git
 cd PAROL-Web-Commander
 ```
+*Note: if you cloned without `--recurse-submodules` then in the repo root run: `git submodule update --init --recursive`.*
 
 2) Create and activate a virtual environment (examples):
 
@@ -89,7 +90,7 @@ pip install -e external/PAROL6-python-API
 ```
 This provides `AsyncRobotClient` and `ServerManager` used by the app.
 
-Optional (URDF viewer package; the app already adds this to `sys.path` so installation is optional):
+Install URDF viewer package:
 ```bash
 pip install -e external/urdf_scene_nicegui
 ```
