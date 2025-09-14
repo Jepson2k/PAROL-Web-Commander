@@ -57,7 +57,9 @@ class NiceGuiLogHandler(logging.Handler):
         super().__init__(level=level)
         # Basic, non-colored format for UI (timestamp + level + message)
         self.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+            logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S"
+            )
         )
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -72,7 +74,6 @@ class NiceGuiLogHandler(logging.Handler):
                     stale.append(ref)
                     continue
                 try:
-                    # push on UI thread if available; ui.run_javascript not needed for .push
                     widget.push(msg)
                 except Exception:
                     # If widget is gone or not available, mark as stale

@@ -645,7 +645,6 @@ print(f"Robot status: {{status}}")
         async def init_scene():
             try:
                 await self._initialize_urdf_scene()
-                logging.info("URDF scene initialized")
             except Exception as e:
                 logging.error("URDF initialization failed: %s", e)
 

@@ -404,6 +404,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         title="PAROL6 NiceGUI Commander",
         port=UI_PORT,
         reload=False,
+        show=False,
         storage_secret="unnecessary_for_now",
         loop="uvloop",
         http="httptools",
