@@ -8,7 +8,7 @@ from parol6.PAROL6_ROBOT import Joint_limits_degree
 
 # Repository root and controller path
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONTROLLER_PATH = (REPO_ROOT / "PAROL6-python-API" / "headless_commander.py").as_posix()
+CONTROLLER_PATH = (REPO_ROOT / "PAROL6-python-API" / "controller.py").as_posix()
 PAROL6_URDF_PATH = (
     REPO_ROOT
     / "external"

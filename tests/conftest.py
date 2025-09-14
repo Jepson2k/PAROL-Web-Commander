@@ -27,17 +27,34 @@ def headless_server() -> Iterator[subprocess.Popen]:
     Ensure proper cleanup.
     """
     repo_root = Path(__file__).resolve().parent.parent
-    server_script = (
-        repo_root / "PAROL6-python-API" / "parol6" / "server" / "headless_commander.py"
+
+    candidates = [
+        repo_root
+        / "external"
+        / "PAROL6-python-API"
+        / "parol6"
+        / "server"
+        / "controller.py",
+        repo_root
+        / "external"
+        / "PAROL6-python-API"
+        / "parol6"
+        / "server"
+        / "headless_commander.py",
+        repo_root / "PAROL6-python-API" / "parol6" / "server" / "controller.py",
+        repo_root / "PAROL6-python-API" / "parol6" / "server" / "headless_commander.py",
+    ]
+    server_script = next((p for p in candidates if p.exists()), None)
+    assert server_script is not None, (
+        "Missing headless server. Checked paths:\n"
+        + "\n".join(str(p) for p in candidates)
     )
-    assert server_script.exists(), f"Missing headless server at {server_script}"
 
     env = os.environ.copy()
     env["PAROL6_NOAUTOHOME"] = "1"
     env["PAROL_LOG_LEVEL"] = "WARNING"
     # Enable hardware-free simulation so IK commands can run end-to-end at 100 Hz
     env["PAROL6_FAKE_SERIAL"] = "1"
-
     proc = subprocess.Popen(
         [sys.executable, str(server_script)],
         cwd=str(server_script.parent),
