@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "parol-web-commander"
 version = "1.0.0"
-description = "Web interface for PAROL6 robot control"
+description = "Web interface for PAROL robot control"
 requires-python = ">=3.11"
 dependencies = [
   "nicegui>=2.0.0",
