@@ -24,7 +24,8 @@ from app.pages.move import MovePage
 from app.pages.settings import SettingsPage
 from app.services.robot_client import client
 from app.services.server_manager import server_manager
-from app.state import robot_state
+from app.state import robot_state, controller_state
+from parol6.protocol.wire import parse_server_state
 
 # Configure logging early so any startup issues are visible
 configure_logging(LOG_LEVEL)
@@ -36,6 +37,8 @@ ng_app.add_static_files("/static", (REPO_ROOT / "app" / "static").as_posix())
 
 fw_version = "1.0.0"
 estop_label: ui.label | None = None
+controller_status_label: ui.label | None = None
+robot_status_label: ui.label | None = None
 
 # Status polling control (gated, non-blocking)
 status_timer: ui.timer | None = None
@@ -63,6 +66,12 @@ async def start_controller(com_port: str | None) -> None:
         if status_timer:
             status_timer.active = True
         consecutive_failures = 0
+        controller_state.running = True
+        controller_state.com_port = com_port
+        if controller_status_label:
+            text = "CTRL: running" if com_port else "CTRL: running (no port)"
+            controller_status_label.text = text
+            controller_status_label.style("color: #21BA45")
         logging.info("Controller started")
     except Exception as e:
         logging.error("Start controller failed: %s", e)
@@ -76,6 +85,10 @@ async def stop_controller() -> None:
         if status_timer:
             status_timer.active = False
         consecutive_failures = 0
+        controller_state.running = False
+        if controller_status_label:
+            controller_status_label.text = "CTRL: stopped"
+            controller_status_label.style("color: #DB2828")
         logging.info("Controller stopped")
     except Exception as e:
         logging.error("Stop controller failed: %s", e)
@@ -131,6 +144,14 @@ async def update_status_async() -> None:
 
     # run potentially blocking UDP call
     s = await client.get_status()
+    # Determine hardware serial connectivity via server state
+    serial_ok = False
+    try:
+        resp_state = await client._request("GET_SERVER_STATE", bufsize=2048)
+        st = parse_server_state(resp_state) if resp_state else None
+        serial_ok = bool(st and st.get("serial_connected"))
+    except Exception:
+        serial_ok = False
     if s:
         angles = s.get("angles") or []
         io = s.get("io") or []
@@ -142,7 +163,14 @@ async def update_status_async() -> None:
         robot_state.pose = pose or robot_state.pose
         robot_state.io = io or robot_state.io
         robot_state.gripper = gr or robot_state.gripper
-        robot_state.connected = True
+        robot_state.connected = serial_ok
+        if robot_status_label:
+            robot_status_label.text = (
+                "ROBOT: connected" if serial_ok else "ROBOT: disconnected"
+            )
+            robot_status_label.style(
+                "color: #21BA45" if serial_ok else "color: #DB2828"
+            )
 
         # Update Move page UI labels
         if angles:
@@ -286,6 +314,9 @@ async def update_status_async() -> None:
         consecutive_failures = 0
     else:
         robot_state.connected = False
+        if robot_status_label:
+            robot_status_label.text = "ROBOT: disconnected"
+            robot_status_label.style("color: #DB2828")
         consecutive_failures += 1
         # slow down polling while offline to keep UI responsive
         if status_timer and getattr(status_timer, "interval", None) != 1.0:
@@ -340,7 +371,9 @@ def build_footer() -> None:
     # Footer: Simulator/Real, Connect/Disconnect, Clear error, E-stop
     with ui.footer().classes("justify-between items-center px-3 py-1"):
         with ui.row().classes("items-center gap-4"):
-            global estop_label
+            global estop_label, controller_status_label, robot_status_label
+            controller_status_label = ui.label("CTRL: unknown").classes("text-sm")
+            robot_status_label = ui.label("ROBOT: unknown").classes("text-sm")
             estop_label = ui.label("E-STOP: unknown").classes("text-sm")
         with ui.row().classes("items-center gap-2"):
             stored_port = ng_app.storage.user.get("com_port", DEFAULT_COM_PORT or "")
