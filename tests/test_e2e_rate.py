@@ -98,9 +98,6 @@ async def test_e2e_rate_joint_100hz(
     ), f"E2E joint emission too low: {hz:.2f} Hz (count={count}, duration={duration:.3f}s)"
 
 
-@pytest.mark.xfail(
-    reason="Expected to fail until jacobian twist differential solver is finished"
-)
 @pytest.mark.integration
 @pytest.mark.module_under_test(main)
 async def test_e2e_rate_cart_100hz(

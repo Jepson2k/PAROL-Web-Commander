@@ -25,7 +25,6 @@ from app.pages.settings import SettingsPage
 from app.services.robot_client import client
 from app.services.server_manager import server_manager
 from app.state import robot_state, controller_state
-from parol6.protocol.wire import parse_server_state
 
 # Configure logging early so any startup issues are visible
 configure_logging(LOG_LEVEL)
@@ -144,12 +143,30 @@ async def update_status_async() -> None:
 
     # run potentially blocking UDP call
     s = await client.get_status()
-    # Determine hardware serial connectivity via server state
+    # Determine hardware serial connectivity via PING (PONG|SERIAL=0/1)
     serial_ok = False
     try:
-        resp_state = await client._request("GET_SERVER_STATE", bufsize=2048)
-        st = parse_server_state(resp_state) if resp_state else None
-        serial_ok = bool(st and st.get("serial_connected"))
+        pong = await client.ping()
+        if isinstance(pong, str):
+            # Expected: "PONG|SERIAL=0/1"
+            if "SERIAL=" in pong:
+                serial_ok = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
+            else:
+                # Fallback: any PONG implies server reachable; serial unknown
+                serial_ok = False
+        elif isinstance(pong, dict):
+            # Handle possible structured payloads
+            payload = pong.get("payload")
+            if isinstance(payload, dict):
+                val = payload.get("serial") or payload.get("serial_connected")
+                if isinstance(val, (int, bool)):
+                    serial_ok = bool(val)
+            elif isinstance(payload, str) and "SERIAL=" in payload:
+                serial_ok = payload.split("SERIAL=", 1)[-1].strip().startswith("1")
+            else:
+                serial_ok = False
+        else:
+            serial_ok = False
     except Exception:
         serial_ok = False
     if s:
