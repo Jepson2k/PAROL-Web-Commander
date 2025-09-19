@@ -84,10 +84,10 @@ async def test_e2e_rate_joint_100hz(
     assert img is not None, "J1 right arrow image not found"
     img.mark("e2e-j1-right")
 
-    await asyncio.sleep(1)  # Backend might still be starting up
+    await asyncio.sleep(2)  # Backend might still be starting up
     user.find("e2e-j1-right").trigger("mousedown")
     start = time.monotonic()
-    await asyncio.sleep(1)
+    await asyncio.sleep(2)
     user.find("e2e-j1-right").trigger("mouseup")
     duration = time.monotonic() - start
 
@@ -122,10 +122,10 @@ async def test_e2e_rate_cart_100hz(
     assert axis_img is not None, "Cartesian X+ image not found"
     axis_img.mark("e2e-axis-xplus")
 
-    await asyncio.sleep(1)  # Backend might still be starting up
+    await asyncio.sleep(2)  # Backend might still be starting up
     user.find("e2e-axis-xplus").trigger("mousedown")
     start = time.monotonic()
-    await asyncio.sleep(1)
+    await asyncio.sleep(2)
     user.find("e2e-axis-xplus").trigger("mouseup")
     duration = time.monotonic() - start
 

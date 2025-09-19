@@ -414,12 +414,12 @@ class MovePage:
     # ---- New Python script execution ----
 
     def _default_python_snippet(self) -> str:
-        """Generate the initial pre-filled Python code with inlined HOST/PORT."""
-        from app.constants import HOST, PORT
+        """Generate the initial pre-filled Python code with inlined controller host/port."""
+        from app.constants import CONTROLLER_HOST, CONTROLLER_PORT
 
         return f"""from parol6 import RobotClient
 
-rbt = RobotClient(host={HOST!r}, port={PORT})
+rbt = RobotClient(host={CONTROLLER_HOST!r}, port={CONTROLLER_PORT})
 
 print("Moving to home position...")
 rbt.home()

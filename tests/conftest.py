@@ -11,11 +11,9 @@ import pytest
 
 pytest_plugins = ["nicegui.testing.user_plugin"]
 
-from tests.utils.udp_ack import ack_listener_start  # noqa: E402
 
 if TYPE_CHECKING:
-    import queue
-    from collections.abc import Callable, Iterator
+    from collections.abc import Iterator
 
 
 @pytest.fixture(scope="module")
@@ -80,15 +78,3 @@ def headless_server() -> Iterator[subprocess.Popen]:
                     proc.kill()
             except Exception:
                 pass
-
-
-@pytest.fixture(scope="function")
-def ack_listener() -> Iterator[tuple[Callable[[], None], queue.Queue]]:
-    """
-    Start a background UDP listener on 127.0.0.1:5002 and yield (stop_fn, queue).
-    """
-    stop, q = ack_listener_start(bind_host="127.0.0.1", bind_port=5002)
-    try:
-        yield stop, q
-    finally:
-        stop()

@@ -1,21 +1,26 @@
-from __future__ import annotations
-
 import asyncio
 import logging
 import math
+import time
+import contextlib
+import argparse
 
 from nicegui import app as ng_app
 from nicegui import ui
+from parol6 import ensure_server
 
 from app.common.logging_config import attach_ui_log, configure_logging
 from app.common.theme import apply_theme, get_theme, inject_layout_css
 from app.constants import (
     DEFAULT_COM_PORT,
     JOINT_LIMITS_DEG,
-    LOG_LEVEL,
     PAROL6_OFFICIAL_DOC_URL,
     REPO_ROOT,
-    UI_PORT,
+    SERVER_HOST,
+    SERVER_PORT,
+    CONTROLLER_HOST,
+    CONTROLLER_PORT,
+    AUTO_START,
 )
 from app.pages.calibrate import CalibratePage
 from app.pages.gripper import GripperPage
@@ -26,8 +31,12 @@ from app.services.robot_client import client
 from app.services.server_manager import server_manager
 from app.state import robot_state, controller_state
 
-# Configure logging early so any startup issues are visible
-configure_logging(LOG_LEVEL)
+# Runtime configuration (resolved later from CLI/env)
+RUNTIME_SERVER_HOST = SERVER_HOST
+RUNTIME_SERVER_PORT = SERVER_PORT
+RUNTIME_CONTROLLER_HOST = CONTROLLER_HOST
+RUNTIME_CONTROLLER_PORT = CONTROLLER_PORT
+RUNTIME_LOG_LEVEL = logging.WARNING
 
 # Register static files for optimized icons and other assets
 ng_app.add_static_files("/static", (REPO_ROOT / "app" / "static").as_posix())
@@ -42,7 +51,13 @@ robot_status_label: ui.label | None = None
 # Status polling control (gated, non-blocking)
 status_timer: ui.timer | None = None
 status_busy = False
-consecutive_failures = 0
+
+# Multicast-driven status consumer (runs once per app)
+status_consumer_task: asyncio.Task | None = None
+# Connectivity via ping (rate-limited)
+PING_PERIOD_S: float = 1.0
+last_ping_ts: float = 0.0
+last_ping_ok: bool = False
 
 # Page instances
 move_page_instance = MovePage()
@@ -59,12 +74,35 @@ main_tabs = None
 
 async def start_controller(com_port: str | None) -> None:
     try:
-        await server_manager.start_controller(com_port=com_port)
+        # If AUTO_START requested, ensure a server is running at the target tuple
+        if AUTO_START:
+            mgr = await ensure_server(
+                host=RUNTIME_CONTROLLER_HOST,
+                port=RUNTIME_CONTROLLER_PORT,
+                manage=True,
+                com_port=com_port,
+                extra_env=None,
+            )
+            # If a local server was spawned, update the shared server_manager reference
+            if mgr is not None:
+                from app.services import server_manager as sm
+
+                sm.server_manager = mgr
+        else:
+            # Manual start via ServerManager
+            await server_manager.start_controller(
+                com_port=com_port,
+                server_host=RUNTIME_CONTROLLER_HOST,
+                server_port=RUNTIME_CONTROLLER_PORT,
+            )
+
         # enable status polling now that we are connected
-        global status_timer, consecutive_failures
+        global status_timer, status_consumer_task
         if status_timer:
             status_timer.active = True
-        consecutive_failures = 0
+        # start multicast consumer
+        if status_consumer_task is None or status_consumer_task.done():
+            status_consumer_task = asyncio.create_task(_status_consumer())
         controller_state.running = True
         controller_state.com_port = com_port
         if controller_status_label:
@@ -79,12 +117,17 @@ async def start_controller(com_port: str | None) -> None:
 async def stop_controller() -> None:
     try:
         await server_manager.stop_controller()
-        # disable status polling on disconnect
-        global status_timer, consecutive_failures
+        # disable status polling on disconnect and stop consumer
+        global status_timer, status_consumer_task
         if status_timer:
             status_timer.active = False
-        consecutive_failures = 0
+        if status_consumer_task:
+            status_consumer_task.cancel()
+            with contextlib.suppress(Exception):
+                await status_consumer_task
+            status_consumer_task = None
         controller_state.running = False
+        robot_state.connected = False
         if controller_status_label:
             controller_status_label.text = "CTRL: stopped"
             controller_status_label.style("color: #DB2828")
@@ -136,213 +179,183 @@ def _normalize_joint_progress(
 
 
 async def update_status_async() -> None:
-    global status_busy, status_timer, consecutive_failures
+    global status_busy, status_timer
     if status_busy:
         return
     status_busy = True
 
-    # run potentially blocking UDP call
-    s = await client.get_status()
-    # Determine hardware serial connectivity via PING (PONG|SERIAL=0/1)
-    serial_ok = False
-    try:
-        pong = await client.ping()
-        if isinstance(pong, str):
-            # Expected: "PONG|SERIAL=0/1"
-            if "SERIAL=" in pong:
-                serial_ok = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
-            else:
-                # Fallback: any PONG implies server reachable; serial unknown
-                serial_ok = False
-        elif isinstance(pong, dict):
-            # Handle possible structured payloads
-            payload = pong.get("payload")
-            if isinstance(payload, dict):
-                val = payload.get("serial") or payload.get("serial_connected")
-                if isinstance(val, (int, bool)):
-                    serial_ok = bool(val)
-            elif isinstance(payload, str) and "SERIAL=" in payload:
-                serial_ok = payload.split("SERIAL=", 1)[-1].strip().startswith("1")
-            else:
-                serial_ok = False
-        else:
-            serial_ok = False
-    except Exception:
-        serial_ok = False
-    if s:
-        angles = s.get("angles") or []
-        io = s.get("io") or []
-        gr = s.get("gripper") or []
-        pose = s.get("pose") or []
+    # Rate-limited connectivity check via PING (provides SERIAL=0/1)
+    global last_ping_ts, last_ping_ok
+    _t = time.time()
+    if (_t - last_ping_ts) >= PING_PERIOD_S:
+        try:
+            pong = await client.ping()
+            serial = False
+            if isinstance(pong, str):
+                if "SERIAL=" in pong:
+                    serial = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
+            elif isinstance(pong, dict):
+                payload = pong.get("payload")
+                if isinstance(payload, dict):
+                    val = payload.get("serial") or payload.get("serial_connected")
+                    if isinstance(val, (int, bool)):
+                        serial = bool(val)
+            last_ping_ok = bool(serial)
+        except Exception:
+            last_ping_ok = False
 
-        # Update robot state
-        robot_state.angles = angles or robot_state.angles
-        robot_state.pose = pose or robot_state.pose
-        robot_state.io = io or robot_state.io
-        robot_state.gripper = gr or robot_state.gripper
-        robot_state.connected = serial_ok
-        if robot_status_label:
-            robot_status_label.text = (
-                "ROBOT: connected" if serial_ok else "ROBOT: disconnected"
+    # Apply latest multicast snapshot (no gating)
+    angles = robot_state.angles or []
+    pose = robot_state.pose or []
+    io = robot_state.io or []
+    gr = robot_state.gripper or []
+    serial_ok = bool(last_ping_ok)
+
+    # Update Move page UI labels (angles + progress bars)
+    if angles:
+        if move_page_instance.joint_labels and len(angles) >= 6:
+            for i, a in enumerate(angles[:6]):
+                if i < len(move_page_instance.joint_labels):
+                    move_page_instance.joint_labels[i].text = f"{a:.3f}"
+        if move_page_instance.joint_progress_bars and len(angles) >= 6:
+            for i, a in enumerate(angles[:6]):
+                if i < len(move_page_instance.joint_progress_bars):
+                    lim = (
+                        JOINT_LIMITS_DEG[i]
+                        if i < len(JOINT_LIMITS_DEG)
+                        else [-180, 180]
+                    )
+                    move_page_instance.joint_progress_bars[i].value = round(
+                        _normalize_joint_progress(a, lim[0], lim[1]), 3
+                    )
+        move_page_instance.update_urdf_angles(angles)
+
+    if pose and len(pose) >= 12:
+        # Pose matrix flattened; indices 3,7,11 as XYZ
+        x, y, z = pose[3], pose[7], pose[11]
+        if move_page_instance.tool_labels:
+            if "X" in move_page_instance.tool_labels:
+                move_page_instance.tool_labels["X"].text = f"{x:.3f}"
+            if "Y" in move_page_instance.tool_labels:
+                move_page_instance.tool_labels["Y"].text = f"{y:.3f}"
+            if "Z" in move_page_instance.tool_labels:
+                move_page_instance.tool_labels["Z"].text = f"{z:.3f}"
+
+            # Compute Rx/Ry/Rz if full rotation matrix present
+            if len(pose) >= 16:
+                r11 = pose[0]
+                r21, r22, r23 = pose[4], pose[5], pose[6]
+                r31, r32, r33 = pose[8], pose[9], pose[10]
+
+                sy = math.sqrt(r11 * r11 + r21 * r21)
+                if sy > 1e-6:  # Not at gimbal lock
+                    rx = math.atan2(r32, r33)
+                    ry = math.atan2(-r31, sy)
+                    rz = math.atan2(r21, r11)
+                else:  # Gimbal lock case
+                    rx = math.atan2(-r23, r22)
+                    ry = math.atan2(-r31, sy)
+                    rz = 0.0
+
+                rx_deg = math.degrees(rx)
+                ry_deg = math.degrees(ry)
+                rz_deg = math.degrees(rz)
+
+                if "Rx" in move_page_instance.tool_labels:
+                    move_page_instance.tool_labels["Rx"].text = f"{rx_deg:.3f}"
+                if "Ry" in move_page_instance.tool_labels:
+                    move_page_instance.tool_labels["Ry"].text = f"{ry_deg:.3f}"
+                if "Rz" in move_page_instance.tool_labels:
+                    move_page_instance.tool_labels["Rz"].text = f"{rz_deg:.3f}"
+
+    if len(io) >= 5:
+        in1, in2, out1, out2, estop = io[:5]
+        estop_text = "OK" if estop else "TRIGGERED"
+
+        # Update footer E-STOP
+        if estop_label:
+            estop_label.text = f"E-STOP: {estop_text}"
+            estop_label.style("color: #21BA45" if estop else "color: #DB2828")
+
+        # Update IO page labels
+        if io_page_instance.io_in1_label:
+            io_page_instance.io_in1_label.text = f"INPUT 1: {in1}"
+        if io_page_instance.io_in2_label:
+            io_page_instance.io_in2_label.text = f"INPUT 2: {in2}"
+        if io_page_instance.io_out1_label:
+            io_page_instance.io_out1_label.text = f"OUTPUT 1 is: {out1}"
+        if io_page_instance.io_out2_label:
+            io_page_instance.io_out2_label.text = f"OUTPUT 2 is: {out2}"
+        if io_page_instance.io_estop_label2:
+            io_page_instance.io_estop_label2.text = f"ESTOP: {estop_text}"
+
+        # Update Move page IO summary
+        if move_page_instance.io_summary_label:
+            move_page_instance.io_summary_label.text = (
+                f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2} ESTOP={estop_text}"
             )
-            robot_status_label.style(
-                "color: #21BA45" if serial_ok else "color: #DB2828"
-            )
-
-        # Update Move page UI labels
-        if angles:
-            if move_page_instance.joint_labels and len(angles) >= 6:
-                for i, a in enumerate(angles[:6]):
-                    if i < len(move_page_instance.joint_labels):
-                        move_page_instance.joint_labels[i].text = f"{a:.3f}"
-            if move_page_instance.joint_progress_bars and len(angles) >= 6:
-                for i, a in enumerate(angles[:6]):
-                    if i < len(move_page_instance.joint_progress_bars):
-                        lim = (
-                            JOINT_LIMITS_DEG[i]
-                            if i < len(JOINT_LIMITS_DEG)
-                            else [-180, 180]
-                        )
-                        move_page_instance.joint_progress_bars[i].value = round(
-                            _normalize_joint_progress(a, lim[0], lim[1]), 3
-                        )
-
-            # Update URDF viewer with live joint angles
-            move_page_instance.update_urdf_angles(angles)
-
-        if pose and len(pose) >= 12:
-            # Pose matrix flattened; indices 3,7,11 as XYZ
-            x, y, z = pose[3], pose[7], pose[11]
-            if move_page_instance.tool_labels:
-                if "X" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["X"].text = f"{x:.3f}"
-                if "Y" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Y"].text = f"{y:.3f}"
-                if "Z" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Z"].text = f"{z:.3f}"
-
-                # Compute Rx/Ry/Rz if full rotation matrix present
-                if len(pose) >= 16:
-                    r11 = pose[0]
-                    r21, r22, r23 = pose[4], pose[5], pose[6]
-                    r31, r32, r33 = pose[8], pose[9], pose[10]
-
-                    sy = math.sqrt(r11 * r11 + r21 * r21)
-                    if sy > 1e-6:  # Not at gimbal lock
-                        rx = math.atan2(r32, r33)
-                        ry = math.atan2(-r31, sy)
-                        rz = math.atan2(r21, r11)
-                    else:  # Gimbal lock case
-                        rx = math.atan2(-r23, r22)
-                        ry = math.atan2(-r31, sy)
-                        rz = 0.0
-
-                    rx_deg = math.degrees(rx)
-                    ry_deg = math.degrees(ry)
-                    rz_deg = math.degrees(rz)
-
-                    if "Rx" in move_page_instance.tool_labels:
-                        move_page_instance.tool_labels["Rx"].text = f"{rx_deg:.3f}"
-                    if "Ry" in move_page_instance.tool_labels:
-                        move_page_instance.tool_labels["Ry"].text = f"{ry_deg:.3f}"
-                    if "Rz" in move_page_instance.tool_labels:
-                        move_page_instance.tool_labels["Rz"].text = f"{rz_deg:.3f}"
-
-        if len(io) >= 5:
-            in1, in2, out1, out2, estop = io[:5]
-            estop_text = "OK" if estop else "TRIGGERED"
-
-            # Update footer E-STOP
-            if estop_label:
-                estop_label.text = f"E-STOP: {estop_text}"
-                estop_label.style("color: #21BA45" if estop else "color: #DB2828")
-
-            # Update IO page labels
-            if io_page_instance.io_in1_label:
-                io_page_instance.io_in1_label.text = f"INPUT 1: {in1}"
-            if io_page_instance.io_in2_label:
-                io_page_instance.io_in2_label.text = f"INPUT 2: {in2}"
-            if io_page_instance.io_out1_label:
-                io_page_instance.io_out1_label.text = f"OUTPUT 1 is: {out1}"
-            if io_page_instance.io_out2_label:
-                io_page_instance.io_out2_label.text = f"OUTPUT 2 is: {out2}"
-            if io_page_instance.io_estop_label2:
-                io_page_instance.io_estop_label2.text = f"ESTOP: {estop_text}"
-
-            # Update Move page IO summary
-            if move_page_instance.io_summary_label:
-                move_page_instance.io_summary_label.text = f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2} ESTOP={estop_text}"
-        else:
-            # Clear labels on failure
-            if estop_label:
-                estop_label.text = "E-STOP: unknown"
-                estop_label.style("color: inherit")
-            if io_page_instance.io_in1_label:
-                io_page_instance.io_in1_label.text = "INPUT 1: -"
-            if io_page_instance.io_in2_label:
-                io_page_instance.io_in2_label.text = "INPUT 2: -"
-            if io_page_instance.io_out1_label:
-                io_page_instance.io_out1_label.text = "OUTPUT 1 is: -"
-            if io_page_instance.io_out2_label:
-                io_page_instance.io_out2_label.text = "OUTPUT 2 is: -"
-            if io_page_instance.io_estop_label2:
-                io_page_instance.io_estop_label2.text = "ESTOP: unknown"
-            if move_page_instance.io_summary_label:
-                move_page_instance.io_summary_label.text = "IO: -"
-
-        if len(gr) >= 6:
-            gid, pos, spd, cur, status_b, obj = gr[:6]
-            if gripper_page_instance.grip_id_label:
-                gripper_page_instance.grip_id_label.text = f"Gripper ID is: {gid}"
-            if gripper_page_instance.grip_pos_feedback_label:
-                gripper_page_instance.grip_pos_feedback_label.text = (
-                    f"Gripper position feedback is: {pos}"
-                )
-            if gripper_page_instance.grip_current_feedback_label:
-                gripper_page_instance.grip_current_feedback_label.text = (
-                    f"Gripper current feedback is: {cur}"
-                )
-            if gripper_page_instance.grip_obj_detect_label:
-                gripper_page_instance.grip_obj_detect_label.text = (
-                    f"Gripper object detection is: {obj}"
-                )
-        else:
-            if gripper_page_instance.grip_id_label:
-                gripper_page_instance.grip_id_label.text = "Gripper ID is: -"
-            if gripper_page_instance.grip_pos_feedback_label:
-                gripper_page_instance.grip_pos_feedback_label.text = (
-                    "Gripper position feedback is: -"
-                )
-            if gripper_page_instance.grip_current_feedback_label:
-                gripper_page_instance.grip_current_feedback_label.text = (
-                    "Gripper current feedback is: -"
-                )
-            if gripper_page_instance.grip_obj_detect_label:
-                gripper_page_instance.grip_obj_detect_label.text = (
-                    "Gripper object detection is: -"
-                )
-
-        # Update calibrate page go-to-limit button based on connection
-        calibrate_page_instance._update_go_to_limit_button()
-
-        # success: speed up polling (but keep reasonable)
-        if status_timer and getattr(status_timer, "interval", None) != 0.05:
-            status_timer.interval = 0.05
-        consecutive_failures = 0
     else:
-        robot_state.connected = False
-        if robot_status_label:
-            robot_status_label.text = "ROBOT: disconnected"
-            robot_status_label.style("color: #DB2828")
-        consecutive_failures += 1
-        # slow down polling while offline to keep UI responsive
-        if status_timer and getattr(status_timer, "interval", None) != 1.0:
-            status_timer.interval = 1.0
+        # Clear labels on failure
+        if estop_label:
+            estop_label.text = "E-STOP: unknown"
+            estop_label.style("color: inherit")
+        if io_page_instance.io_in1_label:
+            io_page_instance.io_in1_label.text = "INPUT 1: -"
+        if io_page_instance.io_in2_label:
+            io_page_instance.io_in2_label.text = "INPUT 2: -"
+        if io_page_instance.io_out1_label:
+            io_page_instance.io_out1_label.text = "OUTPUT 1 is: -"
+        if io_page_instance.io_out2_label:
+            io_page_instance.io_out2_label.text = "OUTPUT 2 is: -"
+        if io_page_instance.io_estop_label2:
+            io_page_instance.io_estop_label2.text = "ESTOP: unknown"
+        if move_page_instance.io_summary_label:
+            move_page_instance.io_summary_label.text = "IO: -"
 
-        # Update calibrate page go-to-limit button based on disconnection
-        calibrate_page_instance._update_go_to_limit_button()
+    if len(gr) >= 6:
+        gid, pos, spd, cur, status_b, obj = gr[:6]
+        if gripper_page_instance.grip_id_label:
+            gripper_page_instance.grip_id_label.text = f"Gripper ID is: {gid}"
+        if gripper_page_instance.grip_pos_feedback_label:
+            gripper_page_instance.grip_pos_feedback_label.text = (
+                f"Gripper position feedback is: {pos}"
+            )
+        if gripper_page_instance.grip_current_feedback_label:
+            gripper_page_instance.grip_current_feedback_label.text = (
+                f"Gripper current feedback is: {cur}"
+            )
+        if gripper_page_instance.grip_obj_detect_label:
+            gripper_page_instance.grip_obj_detect_label.text = (
+                f"Gripper object detection is: {obj}"
+            )
+    else:
+        if gripper_page_instance.grip_id_label:
+            gripper_page_instance.grip_id_label.text = "Gripper ID is: -"
+        if gripper_page_instance.grip_pos_feedback_label:
+            gripper_page_instance.grip_pos_feedback_label.text = (
+                "Gripper position feedback is: -"
+            )
+        if gripper_page_instance.grip_current_feedback_label:
+            gripper_page_instance.grip_current_feedback_label.text = (
+                "Gripper current feedback is: -"
+            )
+        if gripper_page_instance.grip_obj_detect_label:
+            gripper_page_instance.grip_obj_detect_label.text = (
+                "Gripper object detection is: -"
+            )
 
+    # Footer robot connectivity
+    robot_state.connected = serial_ok
+    if robot_status_label:
+        robot_status_label.text = (
+            "ROBOT: connected" if serial_ok else "ROBOT: disconnected"
+        )
+        robot_status_label.style("color: #21BA45" if serial_ok else "color: #DB2828")
+
+    # Update calibrate page button state
+    calibrate_page_instance._update_go_to_limit_button()
     status_busy = False
+    return
 
 
 def build_header_and_tabs() -> None:
@@ -449,10 +462,115 @@ status_timer = ui.timer(
     interval=0.05, callback=update_status_async, active=False
 )  # status poll (gated)
 
+
+async def _status_consumer() -> None:
+    """Consume multicast status and update shared robot_state."""
+    try:
+        # Wait for server to be responsive
+        await client.wait_for_server_ready(timeout=5.0)
+        async for status in client.status_stream():
+            try:
+                angles = status.get("angles") or []
+                pose = status.get("pose") or []
+                io_val = status.get("io") or []
+                gr_val = status.get("gripper") or []
+
+                # Coerce to expected list[int]/list[float] types for RobotState
+                angles_list = angles if isinstance(angles, list) else robot_state.angles
+                pose_list = pose if isinstance(pose, list) else robot_state.pose
+
+                if isinstance(io_val, list) and all(
+                    isinstance(x, (int, bool)) for x in io_val
+                ):
+                    io_list = [int(x) for x in io_val]
+                else:
+                    io_list = robot_state.io
+
+                if isinstance(gr_val, list) and all(
+                    isinstance(x, (int, bool)) for x in gr_val
+                ):
+                    gr_list = [int(x) for x in gr_val]
+                else:
+                    gr_list = robot_state.gripper
+
+                robot_state.angles = angles_list or robot_state.angles
+                robot_state.pose = pose_list or robot_state.pose
+                robot_state.io = io_list
+                robot_state.gripper = gr_list
+                robot_state.last_update_ts = time.time()
+            except Exception as e:
+                logging.debug("Status consumer parse error: %s", e)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logging.error("Status consumer error: %s", e)
+
+
 if __name__ in {"__main__", "__mp_main__"}:
+    # CLI: web bind, controller target, and log level
+    parser = argparse.ArgumentParser(description="PAROL6 NiceGUI Webserver")
+    parser.add_argument("--host", default=SERVER_HOST, help="Webserver bind host")
+    parser.add_argument(
+        "--port", type=int, default=SERVER_PORT, help="Webserver bind port"
+    )
+    parser.add_argument(
+        "--controller-host",
+        default=CONTROLLER_HOST,
+        help="Controller host to connect to",
+    )
+    parser.add_argument(
+        "--controller-port",
+        type=int,
+        default=CONTROLLER_PORT,
+        help="Controller UDP port",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Set log level",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable DEBUG logging"
+    )
+    parser.add_argument(
+        "-q", "--quiet", action="store_true", help="Enable WARNING logging"
+    )
+    args, _ = parser.parse_known_args()
+
+    # Resolve runtime values
+    RUNTIME_SERVER_HOST = args.host
+    RUNTIME_SERVER_PORT = int(args.port)
+    RUNTIME_CONTROLLER_HOST = args.controller_host
+    RUNTIME_CONTROLLER_PORT = int(args.controller_port)
+
+    client.host = RUNTIME_SERVER_HOST
+    client.port = RUNTIME_SERVER_PORT
+
+    # Resolve log level priority: explicit --log-level > -v/-q > env default from constants
+    if args.log_level:
+        RUNTIME_LOG_LEVEL = getattr(logging, args.log_level)
+    elif args.verbose:
+        RUNTIME_LOG_LEVEL = logging.DEBUG
+    elif args.quiet:
+        RUNTIME_LOG_LEVEL = logging.WARNING
+    else:
+        from app.constants import LOG_LEVEL as _ENV_LOG_LEVEL
+
+        RUNTIME_LOG_LEVEL = _ENV_LOG_LEVEL
+
+    # Configure logging
+    configure_logging(RUNTIME_LOG_LEVEL)
+    logging.info(
+        f"Webserver bind: host={RUNTIME_SERVER_HOST} port={RUNTIME_SERVER_PORT}"
+    )
+    logging.info(
+        f"Controller target: host={RUNTIME_CONTROLLER_HOST} port={RUNTIME_CONTROLLER_PORT}"
+    )
+
     ui.run(
         title="PAROL6 NiceGUI Commander",
-        port=UI_PORT,
+        host=RUNTIME_SERVER_HOST,
+        port=RUNTIME_SERVER_PORT,
         reload=False,
         show=False,
         storage_secret="unnecessary_for_now",
