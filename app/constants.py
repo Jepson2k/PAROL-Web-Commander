@@ -23,7 +23,7 @@ PAROL6_URDF_PATH = (
 PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
 
 # Ensure PAROL6-python-API on path
-sys.path.append((REPO_ROOT / "PAROL6-python-API").as_posix())
+sys.path.append((REPO_ROOT / "PAROL-python-API").as_posix())
 
 # Ensure urdf_scene_nicegui on path
 sys.path.append((REPO_ROOT / "urdf_scene_nicegui" / "src").as_posix())
@@ -31,16 +31,16 @@ sys.path.append((REPO_ROOT / "urdf_scene_nicegui" / "src").as_posix())
 
 JOINT_LIMITS_DEG = Joint_limits_degree
 # Controller target (what the UI connects to)
-CONTROLLER_HOST: str = os.getenv("PAROL6_CONTROLLER_IP", "0.0.0.0")
-CONTROLLER_PORT: int = int(os.getenv("PAROL6_CONTROLLER_PORT", "5001"))
-AUTO_START: bool = os.getenv("PAROL6_AUTO_START", "1") in (
+CONTROLLER_HOST: str = os.getenv("PAROL_CONTROLLER_IP", "0.0.0.0")
+CONTROLLER_PORT: int = int(os.getenv("PAROL_CONTROLLER_PORT", "5001"))
+AUTO_START: bool = os.getenv("PAROL_AUTO_START", "1") in (
     "1",
     "true",
     "True",
     "yes",
     "YES",
 )
-DEFAULT_COM_PORT: str | None = os.getenv("PAROL6_COM_PORT") or None
+DEFAULT_COM_PORT: str | None = os.getenv("PAROL_COM_PORT") or None
 # Webserver bind (NiceGUI host/port)
 SERVER_HOST: str = os.getenv("PAROL_SERVER_IP", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("PAROL_SERVER_PORT", "8080"))

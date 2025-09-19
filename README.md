@@ -95,16 +95,50 @@ python -m app.main
 ```
 Open the printed URL in your browser.
 
+### CLI Options
+
+The web UI accepts several command-line arguments:
+
+```bash
+python -m app.main [options]
+```
+
+Options:
+- `--host HOST`: Webserver bind host (default: `0.0.0.0`)
+- `--port PORT`: Webserver bind port (default: `8080`)
+- `--controller-host HOST`: Controller host to connect to (default: `0.0.0.0`)
+- `--controller-port PORT`: Controller UDP port (default: `5001`)
+- `--auto-start` / `--no-auto-start`: Enable/disable automatic controller start (overrides `PAROL_AUTO_START`)
+- `--log-level LEVEL`: Set log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+- `-v`, `--verbose`: Enable DEBUG logging
+- `-q`, `--quiet`: Enable WARNING logging
+
+Examples:
+```bash
+# Disable automatic controller start
+python -m app.main --no-auto-start
+
+# Enable automatic controller start (overrides environment)
+python -m app.main --auto-start
+
+# Custom ports and verbose logging
+python -m app.main --port 8081 --controller-port 5002 -v
+
+# Disable auto-start via environment variable
+PAROL_AUTO_START=0 python -m app.main
+```
+
 6) In the footer, set the COM port and click “Set Port”. The app will start the headless controller and begin polling status. Use the Move, I/O, Calibrate, Gripper, and Settings tabs as needed.
 
 ## Configuration
 
 Environment variables (read in `app/constants.py`):
 
-- `PAROL6_SERVER_HOST`: UDP host for the controller (default: `127.0.0.1`)
-- `PAROL6_SERVER_PORT`: UDP port for the controller (default: `5001`)
-- `PAROL6_UI_PORT`: NiceGUI HTTP port (default: `8080`)
-- `PAROL6_COM_PORT`: Default serial port (optional, e.g. `COM5` or `/dev/ttyACM0`)
+- `PAROL_SERVER_HOST`: UDP host for the controller (default: `127.0.0.1`)
+- `PAROL_SERVER_PORT`: UDP port for the controller (default: `5001`)
+- `PAROL_UI_PORT`: NiceGUI HTTP port (default: `8080`)
+- `PAROL_COM_PORT`: Default serial port (optional, e.g. `COM5` or `/dev/ttyACM0`)
+- `PAROL_AUTO_START`: Enable automatic controller start on app launch (default: `1`/enabled, set to `0` to disable)
 - `PAROL_LOG_LEVEL`: `DEBUG` | `INFO` | `WARNING` | `ERROR` | `CRITICAL` (default: `WARNING`)
 
 Examples (macOS/Linux):

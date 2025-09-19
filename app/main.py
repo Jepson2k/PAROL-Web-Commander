@@ -37,6 +37,7 @@ RUNTIME_SERVER_PORT = SERVER_PORT
 RUNTIME_CONTROLLER_HOST = CONTROLLER_HOST
 RUNTIME_CONTROLLER_PORT = CONTROLLER_PORT
 RUNTIME_LOG_LEVEL = logging.WARNING
+RUNTIME_AUTO_START = AUTO_START
 
 # Register static files for optimized icons and other assets
 ng_app.add_static_files("/static", (REPO_ROOT / "app" / "static").as_posix())
@@ -75,7 +76,7 @@ main_tabs = None
 async def start_controller(com_port: str | None) -> None:
     try:
         # If AUTO_START requested, ensure a server is running at the target tuple
-        if AUTO_START:
+        if RUNTIME_AUTO_START:
             mgr = await ensure_server(
                 host=RUNTIME_CONTROLLER_HOST,
                 port=RUNTIME_CONTROLLER_PORT,
@@ -535,6 +536,12 @@ if __name__ in {"__main__", "__mp_main__"}:
     parser.add_argument(
         "-q", "--quiet", action="store_true", help="Enable WARNING logging"
     )
+    parser.add_argument(
+        "--auto-start",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable automatic controller start (overrides PAROL6_AUTO_START env var)",
+    )
     args, _ = parser.parse_known_args()
 
     # Resolve runtime values
@@ -542,6 +549,10 @@ if __name__ in {"__main__", "__mp_main__"}:
     RUNTIME_SERVER_PORT = int(args.port)
     RUNTIME_CONTROLLER_HOST = args.controller_host
     RUNTIME_CONTROLLER_PORT = int(args.controller_port)
+
+    # Resolve AUTO_START: CLI flag overrides environment variable
+    if args.auto_start is not None:
+        RUNTIME_AUTO_START = args.auto_start
 
     client.host = RUNTIME_SERVER_HOST
     client.port = RUNTIME_SERVER_PORT
