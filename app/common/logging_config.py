@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import logging
 import sys
+import os
 import threading
 import weakref
 
 from nicegui import ui
 
 _LEVEL_COLORS = {
+    "TRACE": "\033[32m",  # green
     "DEBUG": "\033[36m",  # cyan
     "INFO": "\033[37m",  # light gray
     "WARNING": "\033[33m",  # yellow
@@ -16,6 +18,22 @@ _LEVEL_COLORS = {
 }
 _RESET = "\033[0m"
 _DIM = "\033[2m"
+
+TRACE = 5
+logging.addLevelName(TRACE, "TRACE")
+
+# Add Logger.trace if missing
+if not hasattr(logging.Logger, "trace"):
+
+    def _trace(self, msg, *args, **kwargs):
+        if self.isEnabledFor(TRACE):
+            self._log(TRACE, msg, args, **kwargs)
+
+    logging.Logger.trace = _trace  # type: ignore[attr-defined]
+    logging.TRACE = TRACE  # type: ignore[attr-defined]
+
+# Environment guard to make hot-path trace zero-cost unless explicitly enabled
+TRACE_ENABLED = str(os.getenv("PAROL_TRACE", "0")).lower() in ("1", "true", "yes", "on")
 
 
 class AnsiColorFormatter(logging.Formatter):

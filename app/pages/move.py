@@ -6,7 +6,7 @@ import logging
 import math
 import time
 from functools import partial
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -15,7 +15,13 @@ from app.common.theme import get_theme
 from app.constants import PAROL6_URDF_PATH, REPO_ROOT
 from app.services.robot_client import client
 from urdf_scene_nicegui import UrdfScene  # type: ignore
-from app.services.script_runner import ScriptProcessHandle
+from app.services.script_runner import (
+    ScriptProcessHandle,
+    run_script,
+    create_default_config,
+    stop_script,
+)
+from parol6.protocol.types import Axis, Frame
 
 
 class MoveLayout(TypedDict):
@@ -59,7 +65,6 @@ class MovePage:
 
         # URDF viewer state
         self.urdf_scene = None  # UrdfScene instance
-        self.urdf_auto_sync: bool = True
         self.urdf_joint_names: list[str] | None = None
         self.urdf_index_mapping: list[int] = [0, 1, 2, 3, 4, 5]  # J1..J6 -> L1..L6
         self.urdf_config: dict = {
@@ -125,6 +130,35 @@ class MovePage:
         # Streaming watchdog timeout to use as "duration" while stream_mode is ON
         self.STREAM_TIMEOUT_S: float = 0.1
 
+        # Single-user runtime preferences and state (no per-client storage)
+        self.jog_speed: int = 50
+        self.jog_accel: int = 50
+        self.incremental_jog: bool = False
+        self.joint_step_deg: float = 1.0
+        self.frame: Frame = "TRF"
+
+        # Press/hold state for jog controls
+        self._jog_pressed_pos: list[bool] = [False] * 6
+        self._jog_pressed_neg: list[bool] = [False] * 6
+        self._cart_pressed_axes: dict[str, bool] = {
+            "X+": False,
+            "X-": False,
+            "Y+": False,
+            "Y-": False,
+            "Z+": False,
+            "Z-": False,
+            "RX+": False,
+            "RX-": False,
+            "RY+": False,
+            "RY-": False,
+            "RZ+": False,
+            "RZ-": False,
+        }
+
+        # Jog timers (assigned by main)
+        self.joint_jog_timer: ui.timer | None = None
+        self.cart_jog_timer: ui.timer | None = None
+
     # ---- Jog helpers ----
 
     def _apply_pressed_style(self, widget: ui.image | None, pressed: bool) -> None:
@@ -157,33 +191,24 @@ class MovePage:
 
     def _get_first_pressed_joint(self) -> tuple[int, str] | None:
         """Return (index, 'pos'|'neg') for the first pressed joint, else None."""
-        pos = ng_app.storage.client.get("jog_pressed_pos", [False] * 6)
-        neg = ng_app.storage.client.get("jog_pressed_neg", [False] * 6)
-        if isinstance(pos, list) and isinstance(neg, list):
-            for j in range(min(6, len(pos), len(neg))):
-                if pos[j]:
-                    return (j, "pos")
-                if neg[j]:
-                    return (j, "neg")
+        pos = self._jog_pressed_pos
+        neg = self._jog_pressed_neg
+        for j in range(6):
+            if j < len(pos) and pos[j]:
+                return (j, "pos")
+            if j < len(neg) and neg[j]:
+                return (j, "neg")
         return None
 
     def _get_first_pressed_axis(self) -> str | None:
         """Return the first pressed cartesian axis key like 'X+' if any."""
-        axes_any = ng_app.storage.client.get("cart_pressed_axes", {})
-        if isinstance(axes_any, dict):
-            for k, pressed in axes_any.items():
-                if bool(pressed):
-                    return str(k)
+        for k, pressed in self._cart_pressed_axes.items():
+            if pressed:
+                return k
         return None
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Press-and-hold jog; if incremental mode is ON, fire one-shot step."""
-        storage = ng_app.storage.client
-        storage.setdefault("jog_pressed_pos", [False] * 6)
-        storage.setdefault("jog_pressed_neg", [False] * 6)
-        storage.setdefault("incremental_jog", False)
-        storage.setdefault("jog_speed", 50)
-        storage.setdefault("joint_step_deg", 1.0)
 
         if direction == "pos":
             self._apply_pressed_style(self._joint_right_imgs.get(j), bool(is_pressed))
@@ -191,54 +216,39 @@ class MovePage:
             self._apply_pressed_style(self._joint_left_imgs.get(j), bool(is_pressed))
 
         if 0 <= j < 6:
-            if storage.get("incremental_jog", False) and is_pressed:
-                speed = max(1, min(100, int(storage.get("jog_speed", 50))))
-                step = abs(float(storage.get("joint_step_deg", 1.0)))
+            if self.incremental_jog and is_pressed:
+                speed = max(1, min(100, int(self.jog_speed)))
+                step = abs(float(self.joint_step_deg))
                 index = j if direction == "pos" else (j + 6)
                 await client.jog_joint(
                     index, speed_percentage=speed, duration=None, distance_deg=step
                 )
                 return
 
-            pos_pressed = storage.get("jog_pressed_pos", [False] * 6)
-            neg_pressed = storage.get("jog_pressed_neg", [False] * 6)
+            pos_pressed = self._jog_pressed_pos
+            neg_pressed = self._jog_pressed_neg
             if (
                 direction == "pos"
                 and isinstance(pos_pressed, list)
                 and len(pos_pressed) == 6
             ):
                 pos_pressed[j] = bool(is_pressed)
-                storage["jog_pressed_pos"] = pos_pressed
             elif (
                 direction == "neg"
                 and isinstance(neg_pressed, list)
                 and len(neg_pressed) == 6
             ):
                 neg_pressed[j] = bool(is_pressed)
-                storage["jog_pressed_neg"] = neg_pressed
 
             # Toggle per-client joint jog timer based on any pressed joint
-            t = storage.get("joint_jog_timer")
-            any_pressed = any(storage.get("jog_pressed_pos", [False] * 6)) or any(
-                storage.get("jog_pressed_neg", [False] * 6)
-            )
+            t = self.joint_jog_timer
+            any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
             if t:
                 t.active = bool(any_pressed)
 
-            if any_pressed:
-                await client.stream_on()
-            else:
-                await client.stream_off()
-
-    def set_jog_speed(self, v) -> None:
-        ng_app.storage.client["jog_speed"] = max(1, min(100, int(v)))
-
-    def set_jog_accel(self, v) -> None:
-        ng_app.storage.client["jog_accel"] = max(1, min(100, int(v)))
-
     async def jog_tick(self) -> None:
         """100 Hz: send/update joint streaming jog if any button is pressed."""
-        speed = max(1, min(100, int(ng_app.storage.client.get("jog_speed", 50))))
+        speed = max(1, min(100, int(self.jog_speed)))
         intent = self._get_first_pressed_joint()
         if intent is not None:
             j, d = intent
@@ -252,71 +262,34 @@ class MovePage:
     # ---- Cartesian jog helpers ----
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
-        storage = ng_app.storage.client
-        storage.setdefault(
-            "cart_pressed_axes",
-            {
-                "X+": False,
-                "X-": False,
-                "Y+": False,
-                "Y-": False,
-                "Z+": False,
-                "Z-": False,
-                "RX+": False,
-                "RX-": False,
-                "RY+": False,
-                "RY-": False,
-                "RZ+": False,
-                "RZ-": False,
-            },
-        )
-        storage.setdefault("incremental_jog", False)
-        storage.setdefault("jog_speed", 50)
-        storage.setdefault("joint_step_deg", 1.0)
-        storage.setdefault("frame", "TRF")
-
         self._apply_pressed_style(self._cart_axis_imgs.get(axis), bool(is_pressed))
-        axes = storage.get("cart_pressed_axes", {})
+        axes = self._cart_pressed_axes
         if isinstance(axes, dict) and axis in axes:
-            if storage.get("incremental_jog", False) and is_pressed:
-                speed = max(1, min(100, int(storage.get("jog_speed", 50))))
-                step = max(0.1, min(100.0, float(storage.get("joint_step_deg", 1.0))))
+            if self.incremental_jog and is_pressed:
+                speed = max(1, min(100, int(self.jog_speed)))
+                step = max(0.1, min(100.0, float(self.joint_step_deg)))
                 duration = max(0.02, min(0.5, step / 50.0))
-                frame = storage.get("frame", "TRF")
-                await client.jog_cartesian(frame, axis, speed, duration)
+                frame = self.frame
+                await client.jog_cartesian(frame, cast(Axis, axis), speed, duration)
                 return
             axes[axis] = bool(is_pressed)
-            storage["cart_pressed_axes"] = axes
 
             # Toggle per-client cartesian jog timer based on any pressed axis
-            t = storage.get("cart_jog_timer")
-            axes_now = storage.get("cart_pressed_axes", {})
-            any_pressed = (
-                any(bool(v) for v in axes_now.values())
-                if isinstance(axes_now, dict)
-                else False
-            )
+            t = self.cart_jog_timer
+            axes_now = self._cart_pressed_axes
+            any_pressed = any(bool(v) for v in axes_now.values())
             if t:
                 t.active = bool(any_pressed)
 
-            if any_pressed:
-                await client.stream_on()
-            else:
-                await client.stream_off()
-
-    def set_frame(self, frame: str) -> None:
-        storage = ng_app.storage.client
-        if frame in ("TRF", "WRF"):
-            storage["frame"] = frame
-
     async def cart_jog_tick(self) -> None:
         """100 Hz: send/update cartesian streaming jog if any axis is pressed."""
-        storage = ng_app.storage.client
-        speed = max(1, min(100, int(storage.get("jog_speed", 50))))
-        frame = storage.get("frame", "TRF")
+        speed = max(1, min(100, int(self.jog_speed)))
+        frame = self.frame
         axis = self._get_first_pressed_axis()
         if axis is not None:
-            await client.jog_cartesian(frame, axis, speed, self.STREAM_TIMEOUT_S)
+            await client.jog_cartesian(
+                frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
+            )
         # cadence monitor
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
@@ -324,41 +297,27 @@ class MovePage:
 
     async def send_enable(self) -> None:
         try:
-            resp = await client.enable()
-            ui.notify(resp, color="positive")
-            logging.info(resp)
+            _ = await client.enable()
+            ui.notify("Sent ENABLE", color="positive")
+            logging.info("ENABLE sent")
         except Exception as e:
             logging.error("ENABLE failed: %s", e)
 
     async def send_disable(self) -> None:
         try:
-            resp = await client.disable()
-            ui.notify(resp, color="warning")
-            logging.warning(resp)
+            _ = await client.disable()
+            ui.notify("Sent DISABLE", color="warning")
+            logging.warning("DISABLE sent")
         except Exception as e:
             logging.error("DISABLE failed: %s", e)
 
     async def send_home(self) -> None:
         try:
-            resp = await client.home()
-            ui.notify(resp, color="primary")
-            logging.info(resp)
+            _ = await client.home()
+            ui.notify("Sent HOME", color="primary")
+            logging.info("HOME sent")
         except Exception as e:
             logging.error("HOME failed: %s", e)
-
-    async def show_received_frame(self) -> None:
-        """Show raw GET_STATUS frame in the log if available."""
-        try:
-            # best-effort access to raw response
-            raw = None
-            if hasattr(client, "_request"):
-                raw = await client._request("GET_STATUS", bufsize=4096)
-            if raw:
-                logging.info("[FRAME] %s", raw)
-            else:
-                logging.warning("No frame received (GET_STATUS unsupported)")
-        except Exception as e:
-            logging.error("GET_STATUS raw failed: %s", e)
 
     # ---- Program execution ----
 
@@ -403,16 +362,6 @@ class MovePage:
             ui.notify(f"Save failed: {e}", color="negative")
             logging.error("Save failed: %s", e)
 
-    async def execute_program(self) -> None:
-        """Legacy method - now delegates to Python script execution."""
-        await self._start_script_process()
-
-    async def stop_program(self) -> None:
-        """Legacy method - now delegates to Python script stop."""
-        await self._stop_script_process()
-
-    # ---- New Python script execution ----
-
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
         from app.constants import CONTROLLER_HOST, CONTROLLER_PORT
@@ -455,9 +404,6 @@ print(f"Robot status: {{status}}")
             if self.program_filename_input:
                 self.program_filename_input.value = filename
 
-            # Create script configuration
-            from app.services.script_runner import run_script, create_default_config
-
             config = create_default_config(str(script_path), str(REPO_ROOT))
 
             # Start the script process with log callbacks
@@ -469,6 +415,7 @@ print(f"Robot status: {{status}}")
                 if self.response_log:
                     self.response_log.push(line)
 
+            await client.stream_off()
             self.script_handle = await run_script(config, on_stdout, on_stderr)
             self.script_running = True
 
@@ -502,6 +449,7 @@ print(f"Robot status: {{status}}")
                     color="positive" if rc == 0 else "warning",
                 )
                 logging.info("Script %s finished with code %s", filename, rc)
+                await client.stream_on()
         except Exception as e:
             logging.error("Error monitoring script process: %s", e)
             # Best-effort reset if still active
@@ -516,8 +464,6 @@ print(f"Robot status: {{status}}")
             return
 
         try:
-            from app.services.script_runner import stop_script
-
             handle = self.script_handle  # capture
             # Clear UI state up-front; monitor will see this and stay silent
             self.script_handle = None
@@ -525,6 +471,7 @@ print(f"Robot status: {{status}}")
 
             if handle:
                 await stop_script(handle)
+            await client.stream_on()
 
             ui.notify("Script stopped", color="warning")
             logging.info("Script stopped by user")
@@ -562,16 +509,16 @@ print(f"Robot status: {{status}}")
         )
 
     def _load_layout(self) -> MoveLayout:
-        data = ng_app.storage.user.get("move_layout")
+        data = ng_app.storage.general.get("move_layout")
         if self._valid_layout(data):
             return data  # type: ignore[return-value]
         layout = self.DEFAULT_LAYOUT.copy()
-        ng_app.storage.user["move_layout"] = layout
+        ng_app.storage.general["move_layout"] = layout
         return layout
 
     def _save_layout(self, layout: MoveLayout) -> None:
         try:
-            ng_app.storage.user["move_layout"] = layout
+            ng_app.storage.general["move_layout"] = layout
         except Exception as e:
             logging.error("Failed to persist layout to user storage: %s", e)
 
@@ -626,19 +573,7 @@ print(f"Robot status: {{status}}")
     def render_urdf_content(self, pid: str, src_col: str) -> None:
         """Inner content for the URDF Viewer panel"""
         with ui.row().classes("items-center justify-between w-full"):
-            with ui.row():
-                ui.label("URDF Viewer")
-                # Sync toggle
-                sync_switch = ui.switch("Auto Sync", value=self.urdf_auto_sync).classes(
-                    "p-0"
-                )
-
-                def update_sync():
-                    self.urdf_auto_sync = bool(sync_switch.value)
-                    self.urdf_config["auto_sync"] = self.urdf_auto_sync
-                    logging.info("URDF auto sync: %s", self.urdf_auto_sync)
-
-                sync_switch.on_value_change(lambda e: update_sync())
+            ui.label("URDF Viewer")
             self.drag_handle(pid, src_col)
 
         # Initialize URDF scene
@@ -760,7 +695,7 @@ print(f"Robot status: {{status}}")
 
     def update_urdf_angles(self, angles_deg: list[float]) -> None:
         """Update URDF scene with new joint angles (degrees -> radians)."""
-        if not self.urdf_scene or not self.urdf_auto_sync:
+        if not self.urdf_scene:
             return
 
         if not angles_deg or len(angles_deg) < 6:
@@ -903,7 +838,7 @@ print(f"Robot status: {{status}}")
                 for key in ["X", "Y", "Z", "Rx", "Ry", "Rz"]:
                     with ui.row().classes("items-center gap-2"):
                         ui.label(f"{key}:").classes(
-                            "text-xs text-[var(--ctk-muted)] w-6"
+                            "text-sm text-[var(--ctk-muted)] w-6"
                         )
                         self.tool_labels[key] = ui.label("-").classes("text-4xl")
             with ui.column().classes("readouts-col"):
@@ -912,75 +847,46 @@ print(f"Robot status: {{status}}")
                 for i in range(6):
                     with ui.row().classes("items-center gap-2"):
                         ui.label(f"θ{i + 1}:").classes(
-                            "text-xs text-[var(--ctk-muted)] w-6"
+                            "text-sm text-[var(--ctk-muted)] w-6"
                         )
                         self.joint_labels.append(ui.label("-").classes("text-4xl"))
             with ui.column().classes("readouts-controls"):
                 ui.label("Controls").classes("text-sm")
                 # Sliders
                 ui.label("Jog velocity %").classes("text-xs text-[var(--ctk-muted)]")
-                jog_speed_slider = (
-                    ui.slider(
-                        min=1,
-                        max=100,
-                        value=ng_app.storage.client.get("jog_speed", 50),
-                        step=1,
-                    )
-                    .classes("w-full")
-                    .style("width: 100%")
-                )
-                jog_speed_slider.on_value_change(
-                    lambda e: self.set_jog_speed(jog_speed_slider.value)
-                )
+                ui.slider(
+                    min=1,
+                    max=100,
+                    value=self.jog_speed,
+                    step=1,
+                    on_change=lambda e: setattr(self, "jog_speed", e.value),
+                ).classes("w-full").style("width: 100%")
                 ui.label("Jog accel %").classes("text-xs text-[var(--ctk-muted)]")
-                jog_accel_slider = (
-                    ui.slider(
-                        min=1,
-                        max=100,
-                        value=ng_app.storage.client.get("jog_accel", 50),
-                        step=1,
-                    )
-                    .classes("w-full")
-                    .style("width: 100%")
-                )
-                jog_accel_slider.on_value_change(
-                    lambda e: self.set_jog_accel(jog_accel_slider.value)
-                )
+                ui.slider(
+                    min=1,
+                    max=100,
+                    value=self.jog_accel,
+                    step=1,
+                    on_change=lambda e: setattr(self, "jog_accel", e.value),
+                ).classes("w-full").style("width: 100%")
                 # Incremental and step
                 with ui.row().classes("items-center gap-4 w-full"):
-                    self.incremental_jog_checkbox = ui.switch(
+                    ui.switch(
                         "Incremental jog",
-                        value=ng_app.storage.client.get("incremental_jog", False),
+                        value=self.incremental_jog,
+                        on_change=lambda e: setattr(
+                            self, "incremental_jog", bool(e.value)
+                        ),
                     )
-
-                    def update_incremental():
-                        if self.incremental_jog_checkbox:
-                            ng_app.storage.client["incremental_jog"] = bool(
-                                self.incremental_jog_checkbox.value
-                            )
-
-                    self.incremental_jog_checkbox.on_value_change(
-                        lambda e: update_incremental()
-                    )
-                    self.joint_step_input = ui.number(
+                    ui.number(
                         label="Step size (deg/mm)",
-                        value=ng_app.storage.client.get("joint_step_deg", 1.0),
+                        value=self.joint_step_deg,
                         min=0.1,
                         max=100.0,
                         step=0.1,
+                        on_change=lambda e: setattr(self, "joint_step_deg", e.value),
                     ).style("width: 120px")
 
-                    def update_step_size():
-                        if (
-                            self.joint_step_input
-                            and self.joint_step_input.value is not None
-                        ):
-                            val = max(
-                                0.1, min(100.0, float(self.joint_step_input.value))
-                            )
-                            ng_app.storage.client["joint_step_deg"] = val
-
-                    self.joint_step_input.on_value_change(lambda e: update_step_size())
                     # IO summary (live-updated)
                     self.io_summary_label = ui.label("IO: -").classes("text-sm")
                 # Buttons
@@ -1003,9 +909,6 @@ print(f"Robot status: {{status}}")
             .classes("w-full whitespace-pre-wrap break-words")
             .style("height: 190px")
         )
-        ui.button("Show received frame", on_click=self.show_received_frame).props(
-            "outline"
-        )
 
     def render_jog_content(self, pid: str, src_col: str) -> None:
         """Inner content for the Jog panel (no outer card)."""
@@ -1015,12 +918,11 @@ print(f"Robot status: {{status}}")
                     joint_tab = ui.tab("Joint jog")
                     cart_tab = ui.tab("Cartesian jog")
                 jog_mode_tabs.value = joint_tab
-                frame_radio = ui.toggle(options=["WRF", "TRF"], value="TRF").props(
-                    "dense"
-                )
-                frame_radio.on_value_change(
-                    lambda e: self.set_frame(str(frame_radio.value or "TRF"))
-                )
+                ui.toggle(
+                    options=["WRF", "TRF"],
+                    value=self.frame,
+                    on_change=lambda e: setattr(self, "frame", e.value),
+                ).props("dense")
             self.drag_handle(pid, src_col)
 
         with ui.tab_panels(jog_mode_tabs, value=joint_tab).classes("w-full"):

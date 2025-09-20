@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 from functools import partial
 
@@ -25,8 +23,10 @@ class IoPage:
         """Map Output 1/2 via pneumatic gripper actions through the UDP API."""
         try:
             action = "open" if state else "close"
-            resp = await client.control_pneumatic_gripper(action, port)
-            ui.notify(resp, color="primary")
+            _ = await client.control_pneumatic_gripper(action, port)
+            # Show SET_IO command format in notification
+            io_idx = 1 if port == 1 else 2  # OUTPUT 1 = index 1, OUTPUT 2 = index 2
+            ui.notify(f"Sent SET_IO|{io_idx}|{state}", color="primary")
             logging.info("OUTPUT%s -> %s", port, action.upper())
         except Exception as e:
             logging.error("Set output failed: %s", e)

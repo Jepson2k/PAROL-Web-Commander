@@ -4,15 +4,16 @@ import math
 import time
 import contextlib
 import argparse
+import os
 
 from nicegui import app as ng_app
 from nicegui import ui
-from parol6 import ensure_server
+from nicegui.elements.tooltip import Tooltip
+from parol6 import ensure_server, ServerManager
 
-from app.common.logging_config import attach_ui_log, configure_logging
+from app.common.logging_config import attach_ui_log, configure_logging, TRACE
 from app.common.theme import apply_theme, get_theme, inject_layout_css
 from app.constants import (
-    DEFAULT_COM_PORT,
     JOINT_LIMITS_DEG,
     PAROL6_OFFICIAL_DOC_URL,
     REPO_ROOT,
@@ -21,6 +22,7 @@ from app.constants import (
     CONTROLLER_HOST,
     CONTROLLER_PORT,
     AUTO_START,
+    LOG_LEVEL,
 )
 from app.pages.calibrate import CalibratePage
 from app.pages.gripper import GripperPage
@@ -28,7 +30,6 @@ from app.pages.io import IoPage
 from app.pages.move import MovePage
 from app.pages.settings import SettingsPage
 from app.services.robot_client import client
-from app.services.server_manager import server_manager
 from app.state import robot_state, controller_state
 
 # Runtime configuration (resolved later from CLI/env)
@@ -36,7 +37,6 @@ RUNTIME_SERVER_HOST = SERVER_HOST
 RUNTIME_SERVER_PORT = SERVER_PORT
 RUNTIME_CONTROLLER_HOST = CONTROLLER_HOST
 RUNTIME_CONTROLLER_PORT = CONTROLLER_PORT
-RUNTIME_LOG_LEVEL = logging.WARNING
 RUNTIME_AUTO_START = AUTO_START
 
 # Register static files for optimized icons and other assets
@@ -48,6 +48,11 @@ fw_version = "1.0.0"
 estop_label: ui.label | None = None
 controller_status_label: ui.label | None = None
 robot_status_label: ui.label | None = None
+
+ctrl_tooltip: Tooltip | None = None
+robot_tooltip: Tooltip | None = None
+estop_tooltip: Tooltip | None = None
+com_input_tooltip: Tooltip | None = None
 
 # Status polling control (gated, non-blocking)
 status_timer: ui.timer | None = None
@@ -69,32 +74,23 @@ gripper_page_instance = GripperPage()
 
 # Main tabs reference for tab_panels
 main_tabs = None
+server_manager: ServerManager | None = None
 
 # --------------- Controller controls ---------------
 
 
 async def start_controller(com_port: str | None) -> None:
+    global server_manager
     try:
         # If AUTO_START requested, ensure a server is running at the target tuple
         if RUNTIME_AUTO_START:
-            mgr = await ensure_server(
+            server_manager = await ensure_server(
                 host=RUNTIME_CONTROLLER_HOST,
                 port=RUNTIME_CONTROLLER_PORT,
                 manage=True,
                 com_port=com_port,
                 extra_env=None,
-            )
-            # If a local server was spawned, update the shared server_manager reference
-            if mgr is not None:
-                from app.services import server_manager as sm
-
-                sm.server_manager = mgr
-        else:
-            # Manual start via ServerManager
-            await server_manager.start_controller(
-                com_port=com_port,
-                server_host=RUNTIME_CONTROLLER_HOST,
-                server_port=RUNTIME_CONTROLLER_PORT,
+                normalize_logs=True,
             )
 
         # enable status polling now that we are connected
@@ -107,8 +103,10 @@ async def start_controller(com_port: str | None) -> None:
         controller_state.running = True
         controller_state.com_port = com_port
         if controller_status_label:
-            text = "CTRL: running" if com_port else "CTRL: running (no port)"
-            controller_status_label.text = text
+            tip = "running" if com_port else "running (no port)"
+            controller_status_label.text = "CTRL"
+            if ctrl_tooltip:
+                ctrl_tooltip.text = tip
             controller_status_label.style("color: #21BA45")
         logging.info("Controller started")
     except Exception as e:
@@ -116,8 +114,11 @@ async def start_controller(com_port: str | None) -> None:
 
 
 async def stop_controller() -> None:
+    global server_manager
     try:
-        await server_manager.stop_controller()
+        if server_manager:
+            await server_manager.stop_controller()
+        server_manager = None
         # disable status polling on disconnect and stop consumer
         global status_timer, status_consumer_task
         if status_timer:
@@ -130,7 +131,9 @@ async def stop_controller() -> None:
         controller_state.running = False
         robot_state.connected = False
         if controller_status_label:
-            controller_status_label.text = "CTRL: stopped"
+            controller_status_label.text = "CTRL"
+            if ctrl_tooltip:
+                ctrl_tooltip.text = "stopped"
             controller_status_label.style("color: #DB2828")
         logging.info("Controller stopped")
     except Exception as e:
@@ -139,18 +142,18 @@ async def stop_controller() -> None:
 
 async def send_clear_error() -> None:
     try:
-        resp = await client.clear_error()
-        ui.notify(resp, color="primary")
-        logging.info(resp)
+        _ = await client.clear_error()
+        ui.notify("Sent CLEAR_ERROR", color="primary")
+        logging.info("CLEAR_ERROR sent")
     except Exception as e:
         logging.error("CLEAR_ERROR failed: %s", e)
 
 
 async def send_stop_motion() -> None:
     try:
-        resp = await client.stop()
-        ui.notify(resp, color="warning")
-        logging.warning(resp)
+        _ = await client.stop()
+        ui.notify("Sent STOP", color="warning")
+        logging.warning("STOP sent")
     except Exception as e:
         logging.error("STOP failed: %s", e)
 
@@ -160,11 +163,32 @@ async def set_port(port_str: str) -> None:
         ui.notify("Provide a COM/tty port", color="warning")
         return
     try:
-        resp = await client.set_com_port(port_str)
-        ui.notify(resp, color="primary")
-        logging.info(resp)
+        _ = await client.set_serial_port(port_str)
+        ui.notify(f"Sent SET_PORT {port_str}", color="primary")
+        logging.info("SET_PORT sent")
     except Exception as e:
         logging.error("SET_PORT failed: %s", e)
+
+
+async def handle_sim_toggle(value: str):
+    try:
+        if value == "Simulator":
+            # Stop user's script if running (GUI safety)
+            if move_page_instance.script_running:
+                await move_page_instance._stop_script_process()
+            # Best effort: stop real robot motion before switching
+            with contextlib.suppress(Exception):
+                await client.stop()
+            await client.simulator_on()
+        else:
+            await client.simulator_off()
+        ui.notify("Toggled Simulator Mode", color="primary")
+    except Exception as ex:
+        ui.notify(f"Failed to toggle Simulator Mode: {ex}", color="negative")
+
+
+async def on_sim_toggle_change(e):
+    await handle_sim_toggle(e.value)
 
 
 # --------------- Status polling ---------------
@@ -269,13 +293,15 @@ async def update_status_async() -> None:
                 if "Rz" in move_page_instance.tool_labels:
                     move_page_instance.tool_labels["Rz"].text = f"{rz_deg:.3f}"
 
-    if len(io) >= 5:
+    if serial_ok and len(io) >= 5:
         in1, in2, out1, out2, estop = io[:5]
         estop_text = "OK" if estop else "TRIGGERED"
 
         # Update footer E-STOP
         if estop_label:
-            estop_label.text = f"E-STOP: {estop_text}"
+            estop_label.text = "E-STOP"
+            if estop_tooltip:
+                estop_tooltip.text = estop_text
             estop_label.style("color: #21BA45" if estop else "color: #DB2828")
 
         # Update IO page labels
@@ -293,13 +319,15 @@ async def update_status_async() -> None:
         # Update Move page IO summary
         if move_page_instance.io_summary_label:
             move_page_instance.io_summary_label.text = (
-                f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2} ESTOP={estop_text}"
+                f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2}"
             )
     else:
         # Clear labels on failure
         if estop_label:
-            estop_label.text = "E-STOP: unknown"
-            estop_label.style("color: inherit")
+            estop_label.text = "E-STOP"
+            if estop_tooltip:
+                estop_tooltip.text = "unknown"
+            estop_label.style("color: #9E9E9E")
         if io_page_instance.io_in1_label:
             io_page_instance.io_in1_label.text = "INPUT 1: -"
         if io_page_instance.io_in2_label:
@@ -348,9 +376,9 @@ async def update_status_async() -> None:
     # Footer robot connectivity
     robot_state.connected = serial_ok
     if robot_status_label:
-        robot_status_label.text = (
-            "ROBOT: connected" if serial_ok else "ROBOT: disconnected"
-        )
+        robot_status_label.text = "ROBOT"
+        if robot_tooltip:
+            robot_tooltip.text = "connected" if serial_ok else "disconnected"
         robot_status_label.style("color: #21BA45" if serial_ok else "color: #DB2828")
 
     # Update calibrate page button state
@@ -402,35 +430,53 @@ def build_footer() -> None:
     # Footer: Simulator/Real, Connect/Disconnect, Clear error, E-stop
     with ui.footer().classes("justify-between items-center px-3 py-1"):
         with ui.row().classes("items-center gap-4"):
-            global estop_label, controller_status_label, robot_status_label
-            controller_status_label = ui.label("CTRL: unknown").classes("text-sm")
-            robot_status_label = ui.label("ROBOT: unknown").classes("text-sm")
-            estop_label = ui.label("E-STOP: unknown").classes("text-sm")
+            global \
+                estop_label, \
+                controller_status_label, \
+                robot_status_label, \
+                ctrl_tooltip, \
+                robot_tooltip, \
+                estop_tooltip, \
+                com_input_tooltip
+            controller_status_label = ui.label("CTRL").classes("text-sm")
+            with controller_status_label:
+                ctrl_tooltip = ui.tooltip("unknown")
+            ui.label("|").classes("text-sm text-[var(--ctk-muted)]")
+            robot_status_label = ui.label("ROBOT").classes("text-sm")
+            with robot_status_label:
+                robot_tooltip = ui.tooltip("unknown")
+            ui.label("|").classes("text-sm text-[var(--ctk-muted)]")
+            estop_label = ui.label("E-STOP").classes("text-sm")
+            with estop_label:
+                estop_tooltip = ui.tooltip("unknown")
         with ui.row().classes("items-center gap-2"):
-            stored_port = ng_app.storage.user.get("com_port", DEFAULT_COM_PORT or "")
-            com_input = ui.input(
-                label="COM Port (COM5 / /dev/ttyACM0 / /dev/tty.usbmodem0)",
-                value=stored_port,
-            ).classes("w-80")
-
-            # Persist port on edits
-            com_input.on_value_change(
-                lambda e: ng_app.storage.user.__setitem__(
-                    "com_port", com_input.value or ""
+            stored_port = ng_app.storage.general.get("com_port", "")
+            com_input = ui.input(label="Serial Port", value=stored_port)
+            with com_input:
+                com_input_tooltip = ui.tooltip(
+                    "COM5 / /dev/ttyACM0 / /dev/tty.usbmodem0"
                 )
-            )
 
             async def handle_set_port():
-                ng_app.storage.user["com_port"] = com_input.value or ""
+                ng_app.storage.general["com_port"] = com_input.value or ""
                 await set_port(com_input.value or "")
+
+            # Enter-to-apply
+            com_input.on("keydown.enter", handle_set_port)
+
+            # Simulator toggle - default based on whether port is empty
+            ui.toggle(
+                options=["Robot", "Simulator"],
+                value="Simulator" if not stored_port else "Robot",
+                on_change=on_sim_toggle_change,
+            ).props("dense")
 
             ui.button("Set Port", on_click=handle_set_port)
             ui.button("Clear error", on_click=send_clear_error).props("color=warning")
             ui.button("Stop", on_click=send_stop_motion).props("color=negative")
 
 
-@ui.page("/")
-def compose_ui() -> None:
+async def _app_startup() -> None:
     apply_theme(get_theme())
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
@@ -438,10 +484,10 @@ def compose_ui() -> None:
     # Build header and tabs with panels
     build_header_and_tabs()
     # 100hz control loop
-    ng_app.storage.client["joint_jog_timer"] = ui.timer(
+    move_page_instance.joint_jog_timer = ui.timer(
         interval=0.01, callback=move_page_instance.jog_tick, active=False
     )
-    ng_app.storage.client["cart_jog_timer"] = ui.timer(
+    move_page_instance.cart_jog_timer = ui.timer(
         interval=0.01, callback=move_page_instance.cart_jog_tick, active=False
     )
 
@@ -451,13 +497,20 @@ def compose_ui() -> None:
 
     build_footer()
 
-    # Auto-connect using stored COM port
     try:
-        port = ng_app.storage.user.get("com_port", DEFAULT_COM_PORT or "")
+        port = ng_app.storage.general.get("com_port", "")
     except Exception:
-        port = DEFAULT_COM_PORT or ""
-    asyncio.create_task(start_controller(port))
+        port = ""
+    await start_controller(port)
+    # Default to simulator when no port is configured
+    if not port:
+        await client.simulator_on()
+    # Ensure streaming mode is ON during UI operation
+    await client.wait_for_server_ready(timeout=3.0)
+    await client.stream_on()
 
+
+ng_app.on_startup(_app_startup)
 
 status_timer = ui.timer(
     interval=0.05, callback=update_status_async, active=False
@@ -527,20 +580,24 @@ if __name__ in {"__main__", "__mp_main__"}:
     )
     parser.add_argument(
         "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Set log level",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable DEBUG logging"
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity; -v=INFO, -vv=DEBUG",
     )
     parser.add_argument(
         "-q", "--quiet", action="store_true", help="Enable WARNING logging"
     )
     parser.add_argument(
-        "--auto-start",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Enable/disable automatic controller start (overrides PAROL6_AUTO_START env var)",
+        "--disable-auto-start",
+        action="store_false",
+        default=True,
+        help="Disable automatic controller start (overrides PAROL_AUTO_START env var)",
     )
     args, _ = parser.parse_known_args()
 
@@ -551,23 +608,30 @@ if __name__ in {"__main__", "__mp_main__"}:
     RUNTIME_CONTROLLER_PORT = int(args.controller_port)
 
     # Resolve AUTO_START: CLI flag overrides environment variable
-    if args.auto_start is not None:
-        RUNTIME_AUTO_START = args.auto_start
+    if args.disable_auto_start is not None:
+        RUNTIME_AUTO_START = args.disable_auto_start
 
-    client.host = RUNTIME_SERVER_HOST
-    client.port = RUNTIME_SERVER_PORT
+    client.host = RUNTIME_CONTROLLER_HOST
+    client.port = RUNTIME_CONTROLLER_PORT
 
     # Resolve log level priority: explicit --log-level > -v/-q > env default from constants
     if args.log_level:
-        RUNTIME_LOG_LEVEL = getattr(logging, args.log_level)
-    elif args.verbose:
+        # Include TRACE support via imported TRACE level constant
+        if args.log_level == "TRACE":
+            RUNTIME_LOG_LEVEL = TRACE
+        else:
+            RUNTIME_LOG_LEVEL = getattr(logging, args.log_level)
+    elif args.verbose >= 3:
+        os.environ["PAROL_TRACE"] = "1"
+        RUNTIME_LOG_LEVEL = TRACE
+    elif args.verbose >= 2:
         RUNTIME_LOG_LEVEL = logging.DEBUG
+    elif args.verbose == 1:
+        RUNTIME_LOG_LEVEL = logging.INFO
     elif args.quiet:
         RUNTIME_LOG_LEVEL = logging.WARNING
     else:
-        from app.constants import LOG_LEVEL as _ENV_LOG_LEVEL
-
-        RUNTIME_LOG_LEVEL = _ENV_LOG_LEVEL
+        RUNTIME_LOG_LEVEL = LOG_LEVEL
 
     # Configure logging
     configure_logging(RUNTIME_LOG_LEVEL)
@@ -584,7 +648,6 @@ if __name__ in {"__main__", "__mp_main__"}:
         port=RUNTIME_SERVER_PORT,
         reload=False,
         show=False,
-        storage_secret="unnecessary_for_now",
         loop="uvloop",
         http="httptools",
         ws="wsproto",

@@ -148,14 +148,14 @@ def apply_theme(mode: ThemeMode) -> None:
 def set_theme(mode: ThemeMode) -> ThemeMode:
     """Persist, set and apply theme mode."""
     # persist selection
-    app.storage.user["theme_mode"] = mode
+    app.storage.general["theme_mode"] = mode
     apply_theme(mode)
     return mode
 
 
 def get_theme() -> ThemeMode:
     """Return current requested mode ('light'/'dark'/'system')."""
-    mode = app.storage.user.get("theme_mode", "system")
+    mode = app.storage.general.get("theme_mode", "system")
     if isinstance(mode, str) and mode in get_args(ThemeMode):
         return cast("ThemeMode", mode)
     return cast("ThemeMode", "system")
@@ -276,7 +276,7 @@ body.body--light .drag-handle-btn:hover {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  min-width: 120px;
+  min-width: 12rem;
   flex: 0 0 auto;
 }
 

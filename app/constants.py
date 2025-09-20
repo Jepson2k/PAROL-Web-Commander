@@ -40,7 +40,6 @@ AUTO_START: bool = os.getenv("PAROL_AUTO_START", "1") in (
     "yes",
     "YES",
 )
-DEFAULT_COM_PORT: str | None = os.getenv("PAROL_COM_PORT") or None
 # Webserver bind (NiceGUI host/port)
 SERVER_HOST: str = os.getenv("PAROL_SERVER_IP", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("PAROL_SERVER_PORT", "8080"))

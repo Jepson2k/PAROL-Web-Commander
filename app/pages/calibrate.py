@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import asyncio
 import logging
 
 from nicegui import ui
@@ -22,18 +19,18 @@ class CalibratePage:
 
     async def _send_enable(self) -> None:
         try:
-            resp = await client.enable()
-            ui.notify(resp, color="positive")
-            logging.info(resp)
+            _ = await client.enable()
+            ui.notify("Sent ENABLE", color="positive")
+            logging.info("ENABLE sent")
         except Exception as e:
             logging.error("ENABLE failed: %s", e)
             ui.notify(f"ENABLE failed: {e}", color="negative")
 
     async def _send_disable(self) -> None:
         try:
-            resp = await client.disable()
-            ui.notify(resp, color="warning")
-            logging.warning(resp)
+            _ = await client.disable()
+            ui.notify("Sent DISABLE", color="warning")
+            logging.warning("DISABLE sent")
         except Exception as e:
             logging.error("DISABLE failed: %s", e)
             ui.notify(f"DISABLE failed: {e}", color="negative")
@@ -126,16 +123,16 @@ class CalibratePage:
         with ui.card().classes("w-full"):
             ui.label("Calibrate").classes("text-md font-medium")
             with ui.row().classes("items-center gap-2"):
-                ui.button(
-                    "Enable", on_click=lambda: asyncio.create_task(self._send_enable())
-                ).props("unelevated color=positive")
+                ui.button("Enable", on_click=self._send_enable).props(
+                    "unelevated color=positive"
+                )
                 ui.button(
                     "Disable",
-                    on_click=lambda: asyncio.create_task(self._send_disable()),
+                    on_click=self._send_disable,
                 ).props("unelevated color=negative")
                 self.go_to_limit_button = ui.button(
                     "Go to limit",
-                    on_click=lambda: asyncio.create_task(self.go_to_limit()),
+                    on_click=self.go_to_limit,
                 ).props("unelevated disable")
 
             with ui.row().classes("items-center gap-2"):
@@ -151,11 +148,7 @@ class CalibratePage:
                 ).props("dense")
 
             # Enable/disable Go-to-limit button when selections or connection change
-            self.joint_selector.on_value_change(
-                lambda: self._update_go_to_limit_button()
-            )
-            self.limit_selector.on_value_change(
-                lambda: self._update_go_to_limit_button()
-            )
+            self.joint_selector.on_value_change(self._update_go_to_limit_button)
+            self.limit_selector.on_value_change(self._update_go_to_limit_button)
             # Initial state
             self._update_go_to_limit_button()
