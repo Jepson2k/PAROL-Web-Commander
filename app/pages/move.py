@@ -244,6 +244,9 @@ class MovePage:
             t = self.joint_jog_timer
             any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
             if t:
+                if any_pressed and not t.active:
+                    # Reset cadence stats on (re)activation to avoid first-window warning
+                    self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
                 t.active = bool(any_pressed)
 
     async def jog_tick(self) -> None:
@@ -279,6 +282,9 @@ class MovePage:
             axes_now = self._cart_pressed_axes
             any_pressed = any(bool(v) for v in axes_now.values())
             if t:
+                if any_pressed and not t.active:
+                    # Reset cadence stats on (re)activation to avoid first-window warning
+                    self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
                 t.active = bool(any_pressed)
 
     async def cart_jog_tick(self) -> None:

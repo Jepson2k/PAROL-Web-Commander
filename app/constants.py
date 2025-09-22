@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from parol6.PAROL6_ROBOT import Joint_limits_degree
+from parol6.PAROL6_ROBOT import joint
 
 # Repository root and controller path
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,9 +29,10 @@ sys.path.append((REPO_ROOT / "PAROL-python-API").as_posix())
 sys.path.append((REPO_ROOT / "urdf_scene_nicegui" / "src").as_posix())
 
 
-JOINT_LIMITS_DEG = Joint_limits_degree
+# Expose as plain Python lists for UI/serialization friendliness
+JOINT_LIMITS_DEG = joint.limits.deg.tolist()
 # Controller target (what the UI connects to)
-CONTROLLER_HOST: str = os.getenv("PAROL_CONTROLLER_IP", "0.0.0.0")
+CONTROLLER_HOST: str = os.getenv("PAROL_CONTROLLER_IP", "127.0.0.1")
 CONTROLLER_PORT: int = int(os.getenv("PAROL_CONTROLLER_PORT", "5001"))
 AUTO_START: bool = os.getenv("PAROL_AUTO_START", "1") in (
     "1",

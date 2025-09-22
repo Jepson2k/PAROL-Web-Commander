@@ -54,15 +54,10 @@ robot_tooltip: Tooltip | None = None
 estop_tooltip: Tooltip | None = None
 com_input_tooltip: Tooltip | None = None
 
-# Status polling control (gated, non-blocking)
-status_timer: ui.timer | None = None
-status_busy = False
-
 # Multicast-driven status consumer (runs once per app)
 status_consumer_task: asyncio.Task | None = None
-# Connectivity via ping (rate-limited)
-PING_PERIOD_S: float = 1.0
-last_ping_ts: float = 0.0
+# Connectivity ping timer (1Hz)
+ping_timer: ui.timer | None = None
 last_ping_ok: bool = False
 
 # Page instances
@@ -93,10 +88,10 @@ async def start_controller(com_port: str | None) -> None:
                 normalize_logs=True,
             )
 
-        # enable status polling now that we are connected
-        global status_timer, status_consumer_task
-        if status_timer:
-            status_timer.active = True
+        # enable ping timer now that we are connected
+        global ping_timer, status_consumer_task
+        if ping_timer:
+            ping_timer.active = True
         # start multicast consumer
         if status_consumer_task is None or status_consumer_task.done():
             status_consumer_task = asyncio.create_task(_status_consumer())
@@ -119,10 +114,10 @@ async def stop_controller() -> None:
         if server_manager:
             await server_manager.stop_controller()
         server_manager = None
-        # disable status polling on disconnect and stop consumer
-        global status_timer, status_consumer_task
-        if status_timer:
-            status_timer.active = False
+        # disable ping timer on disconnect and stop consumer
+        global ping_timer, status_consumer_task
+        if ping_timer:
+            ping_timer.active = False
         if status_consumer_task:
             status_consumer_task.cancel()
             with contextlib.suppress(Exception):
@@ -191,7 +186,38 @@ async def on_sim_toggle_change(e):
     await handle_sim_toggle(e.value)
 
 
-# --------------- Status polling ---------------
+# --------------- Connectivity Check ---------------
+
+
+async def check_ping() -> None:
+    """Check connectivity via PING (1Hz)"""
+    global last_ping_ok
+    try:
+        pong = await client.ping()
+        serial = False
+        if isinstance(pong, str):
+            if "SERIAL=" in pong:
+                serial = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
+        elif isinstance(pong, dict):
+            payload = pong.get("payload")
+            if isinstance(payload, dict):
+                val = payload.get("serial") or payload.get("serial_connected")
+                if isinstance(val, (int, bool)):
+                    serial = bool(val)
+        last_ping_ok = bool(serial)
+    except Exception:
+        last_ping_ok = False
+
+    # Update robot connectivity status
+    robot_state.connected = last_ping_ok
+    if robot_status_label:
+        robot_status_label.text = "ROBOT"
+        if robot_tooltip:
+            robot_tooltip.text = "connected" if last_ping_ok else "disconnected"
+        robot_status_label.style("color: #21BA45" if last_ping_ok else "color: #DB2828")
+
+
+# --------------- UI Update Functions ---------------
 
 
 def _normalize_joint_progress(
@@ -203,38 +229,12 @@ def _normalize_joint_progress(
     return max(0.0, min(1.0, val))
 
 
-async def update_status_async() -> None:
-    global status_busy, status_timer
-    if status_busy:
-        return
-    status_busy = True
-
-    # Rate-limited connectivity check via PING (provides SERIAL=0/1)
-    global last_ping_ts, last_ping_ok
-    _t = time.time()
-    if (_t - last_ping_ts) >= PING_PERIOD_S:
-        try:
-            pong = await client.ping()
-            serial = False
-            if isinstance(pong, str):
-                if "SERIAL=" in pong:
-                    serial = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
-            elif isinstance(pong, dict):
-                payload = pong.get("payload")
-                if isinstance(payload, dict):
-                    val = payload.get("serial") or payload.get("serial_connected")
-                    if isinstance(val, (int, bool)):
-                        serial = bool(val)
-            last_ping_ok = bool(serial)
-        except Exception:
-            last_ping_ok = False
-
-    # Apply latest multicast snapshot (no gating)
+def update_ui_from_status() -> None:
+    """Update UI elements from robot_state (called from multicast consumer)"""
     angles = robot_state.angles or []
     pose = robot_state.pose or []
     io = robot_state.io or []
     gr = robot_state.gripper or []
-    serial_ok = bool(last_ping_ok)
 
     # Update Move page UI labels (angles + progress bars)
     if angles:
@@ -293,7 +293,7 @@ async def update_status_async() -> None:
                 if "Rz" in move_page_instance.tool_labels:
                     move_page_instance.tool_labels["Rz"].text = f"{rz_deg:.3f}"
 
-    if serial_ok and len(io) >= 5:
+    if len(io) >= 5:
         in1, in2, out1, out2, estop = io[:5]
         estop_text = "OK" if estop else "TRIGGERED"
 
@@ -373,18 +373,8 @@ async def update_status_async() -> None:
                 "Gripper object detection is: -"
             )
 
-    # Footer robot connectivity
-    robot_state.connected = serial_ok
-    if robot_status_label:
-        robot_status_label.text = "ROBOT"
-        if robot_tooltip:
-            robot_tooltip.text = "connected" if serial_ok else "disconnected"
-        robot_status_label.style("color: #21BA45" if serial_ok else "color: #DB2828")
-
     # Update calibrate page button state
     calibrate_page_instance._update_go_to_limit_button()
-    status_busy = False
-    return
 
 
 def build_header_and_tabs() -> None:
@@ -483,12 +473,12 @@ async def _app_startup() -> None:
 
     # Build header and tabs with panels
     build_header_and_tabs()
-    # 100hz control loop
+    # 50hz Webgui to controller loop
     move_page_instance.joint_jog_timer = ui.timer(
-        interval=0.01, callback=move_page_instance.jog_tick, active=False
+        interval=0.05, callback=move_page_instance.jog_tick, active=False
     )
     move_page_instance.cart_jog_timer = ui.timer(
-        interval=0.01, callback=move_page_instance.cart_jog_tick, active=False
+        interval=0.05, callback=move_page_instance.cart_jog_tick, active=False
     )
 
     # Attach logging handler to move page response log
@@ -512,9 +502,8 @@ async def _app_startup() -> None:
 
 ng_app.on_startup(_app_startup)
 
-status_timer = ui.timer(
-    interval=0.05, callback=update_status_async, active=False
-)  # status poll (gated)
+# Create ping timer (1Hz) for connectivity checks only
+ping_timer = ui.timer(interval=1.0, callback=check_ping, active=False)
 
 
 async def _status_consumer() -> None:
@@ -552,6 +541,9 @@ async def _status_consumer() -> None:
                 robot_state.io = io_list
                 robot_state.gripper = gr_list
                 robot_state.last_update_ts = time.time()
+
+                # Update UI directly from multicast consumer
+                update_ui_from_status()
             except Exception as e:
                 logging.debug("Status consumer parse error: %s", e)
     except asyncio.CancelledError:
