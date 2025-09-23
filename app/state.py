@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
+from nicegui import binding
 
 
 @dataclass
@@ -47,7 +46,7 @@ class StatusSnapshot:
 
 
 # Extended shared state singletons for cross-module access
-@dataclass
+@binding.bindable_dataclass
 class RobotState:
     angles: list[float] = field(default_factory=list)  # len=6 in degrees
     pose: list[float] = field(
@@ -57,6 +56,23 @@ class RobotState:
     gripper: list[int] = field(default_factory=list)  # [id,pos,spd,cur,status,obj]
     connected: bool = False
     last_update_ts: float = 0.0
+    # Derived scalars for convenient, high-performance UI bindings
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    rx: float = 0.0
+    ry: float = 0.0
+    rz: float = 0.0
+    io_in1: int = 0
+    io_in2: int = 0
+    io_out1: int = 0
+    io_out2: int = 0
+    io_estop: int = 1
+    grip_id: int = 0
+    grip_pos: int = 0
+    grip_speed: int = 0
+    grip_current: int = 0
+    grip_obj: int = 0
 
 
 @dataclass

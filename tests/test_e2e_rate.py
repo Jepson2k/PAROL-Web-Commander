@@ -9,6 +9,7 @@ import pytest
 import app.pages.move as move_mod
 from app import main
 from app.services.robot_client import client as real_client
+from app.constants import WEBAPP_CONTROL_RATE_HZ
 
 if TYPE_CHECKING:
     from nicegui.testing import User
@@ -60,9 +61,7 @@ class ForwardingRecorderClient:
 
 @pytest.mark.integration
 @pytest.mark.module_under_test(main)
-async def test_e2e_rate_joint_100hz(
-    user: User, headless_server, monkeypatch: MonkeyPatch
-):
+async def test_e2e_rate_joint(user: User, headless_server, monkeypatch: MonkeyPatch):
     """
     E2E acceptance: Drive real UI with user fixture, forward UDP to real headless server,
     measure emission cadence on the client side; assert ~100 Hz.
@@ -73,6 +72,8 @@ async def test_e2e_rate_joint_100hz(
         return None
 
     monkeypatch.setattr(main, "start_controller", _noop_start_controller, raising=True)
+    # Ensure webapp does not attempt its own simulator toggling in e2e
+    monkeypatch.setenv("PAROL_WEBAPP_AUTO_SIMULATOR", "0")
 
     # Forwarder records sends and forwards to server
     fwd = ForwardingRecorderClient(real_client)
@@ -94,15 +95,13 @@ async def test_e2e_rate_joint_100hz(
     count = len(fwd.joint_ts)
     hz = count / max(1e-9, duration)
     assert (
-        hz >= 95.0
+        hz >= 0.9 * WEBAPP_CONTROL_RATE_HZ
     ), f"E2E joint emission too low: {hz:.2f} Hz (count={count}, duration={duration:.3f}s)"
 
 
 @pytest.mark.integration
 @pytest.mark.module_under_test(main)
-async def test_e2e_rate_cart_100hz(
-    user: User, headless_server, monkeypatch: MonkeyPatch
-):
+async def test_e2e_rate_cart(user: User, headless_server, monkeypatch: MonkeyPatch):
     """
     E2E acceptance: Drive real UI for cartesian jog with user fixture, forward UDP to server,
     and assert ~100 Hz emission cadence.
@@ -112,6 +111,8 @@ async def test_e2e_rate_cart_100hz(
         return None
 
     monkeypatch.setattr(main, "start_controller", _noop_start_controller, raising=True)
+    # Ensure webapp does not attempt its own simulator toggling in e2e
+    monkeypatch.setenv("PAROL_WEBAPP_AUTO_SIMULATOR", "0")
 
     fwd = ForwardingRecorderClient(real_client)
     monkeypatch.setattr(move_mod, "client", fwd, raising=True)
@@ -132,5 +133,5 @@ async def test_e2e_rate_cart_100hz(
     count = len(fwd.cart_ts)
     hz = count / max(1e-9, duration)
     assert (
-        hz >= 95.0
+        hz >= 0.9 * WEBAPP_CONTROL_RATE_HZ
     ), f"E2E cart emission too low: {hz:.2f} Hz (count={count}, duration={duration:.3f}s)"

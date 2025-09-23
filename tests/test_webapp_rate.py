@@ -8,6 +8,7 @@ import pytest
 
 import app.pages.move as move_mod
 from app import main
+from app.constants import WEBAPP_CONTROL_RATE_HZ
 
 if TYPE_CHECKING:
     from nicegui.testing import User
@@ -65,7 +66,7 @@ class RecorderClient:
 
 @pytest.mark.unit
 @pytest.mark.module_under_test(main)
-async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
+async def test_webapp_rate_joint(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold J1+ with user fixture, assert ~100 Hz emission."""
 
     # Prevent controller auto-start so tests remain hardware-free
@@ -76,6 +77,9 @@ async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
 
     recorder = RecorderClient()
     monkeypatch.setattr(move_mod, "client", recorder, raising=True)
+    # Ensure webapp does not attempt simulator or readiness waits in unit tests
+    monkeypatch.setenv("PAROL_WEBAPP_AUTO_SIMULATOR", "0")
+    monkeypatch.setenv("PAROL_WEBAPP_REQUIRE_READY", "0")
 
     # Open the real page
     await user.open("/")
@@ -98,13 +102,13 @@ async def test_webapp_rate_joint_100hz(user: User, monkeypatch: MonkeyPatch):
     count = len(recorder.joint_ts)
     hz = count / max(1e-9, duration)
     assert (
-        hz >= 95.0
+        hz >= 0.9 * WEBAPP_CONTROL_RATE_HZ
     ), f"Joint jog emission too low: {hz:.2f} Hz (count={count}, duration={duration:.3f}s)"
 
 
 @pytest.mark.unit
 @pytest.mark.module_under_test(main)
-async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
+async def test_webapp_rate_cart(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold X+ with user fixture, assert ~100 Hz emission."""
 
     async def _noop_start_controller(port: str | None) -> None:
@@ -114,6 +118,9 @@ async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
 
     recorder = RecorderClient()
     monkeypatch.setattr(move_mod, "client", recorder, raising=True)
+    # Ensure webapp does not attempt simulator or readiness waits in unit tests
+    monkeypatch.setenv("PAROL_WEBAPP_AUTO_SIMULATOR", "0")
+    monkeypatch.setenv("PAROL_WEBAPP_REQUIRE_READY", "0")
 
     await user.open("/")
 
@@ -133,5 +140,5 @@ async def test_webapp_rate_cart_100hz(user: User, monkeypatch: MonkeyPatch):
     count = len(recorder.cart_ts)
     hz = count / max(1e-9, duration)
     assert (
-        hz >= 95.0
+        hz >= 0.9 * WEBAPP_CONTROL_RATE_HZ
     ), f"Cartesian jog emission too low: {hz:.2f} Hz (count={count}, duration={duration:.3f}s)"

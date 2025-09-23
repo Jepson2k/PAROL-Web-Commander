@@ -5,6 +5,7 @@ import time
 import contextlib
 import argparse
 import os
+import sys
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -14,7 +15,6 @@ from parol6 import ensure_server, ServerManager
 from app.common.logging_config import attach_ui_log, configure_logging, TRACE
 from app.common.theme import apply_theme, get_theme, inject_layout_css
 from app.constants import (
-    JOINT_LIMITS_DEG,
     PAROL6_OFFICIAL_DOC_URL,
     REPO_ROOT,
     SERVER_HOST,
@@ -23,6 +23,7 @@ from app.constants import (
     CONTROLLER_PORT,
     AUTO_START,
     LOG_LEVEL,
+    WEBAPP_CONTROL_INTERVAL_S,
 )
 from app.pages.calibrate import CalibratePage
 from app.pages.gripper import GripperPage
@@ -238,60 +239,34 @@ def update_ui_from_status() -> None:
 
     # Update Move page UI labels (angles + progress bars)
     if angles:
-        if move_page_instance.joint_labels and len(angles) >= 6:
-            for i, a in enumerate(angles[:6]):
-                if i < len(move_page_instance.joint_labels):
-                    move_page_instance.joint_labels[i].text = f"{a:.3f}"
-        if move_page_instance.joint_progress_bars and len(angles) >= 6:
-            for i, a in enumerate(angles[:6]):
-                if i < len(move_page_instance.joint_progress_bars):
-                    lim = (
-                        JOINT_LIMITS_DEG[i]
-                        if i < len(JOINT_LIMITS_DEG)
-                        else [-180, 180]
-                    )
-                    move_page_instance.joint_progress_bars[i].value = round(
-                        _normalize_joint_progress(a, lim[0], lim[1]), 3
-                    )
         move_page_instance.update_urdf_angles(angles)
 
     if pose and len(pose) >= 12:
         # Pose matrix flattened; indices 3,7,11 as XYZ
         x, y, z = pose[3], pose[7], pose[11]
-        if move_page_instance.tool_labels:
-            if "X" in move_page_instance.tool_labels:
-                move_page_instance.tool_labels["X"].text = f"{x:.3f}"
-            if "Y" in move_page_instance.tool_labels:
-                move_page_instance.tool_labels["Y"].text = f"{y:.3f}"
-            if "Z" in move_page_instance.tool_labels:
-                move_page_instance.tool_labels["Z"].text = f"{z:.3f}"
+        robot_state.x = float(x)
+        robot_state.y = float(y)
+        robot_state.z = float(z)
 
-            # Compute Rx/Ry/Rz if full rotation matrix present
-            if len(pose) >= 16:
-                r11 = pose[0]
-                r21, r22, r23 = pose[4], pose[5], pose[6]
-                r31, r32, r33 = pose[8], pose[9], pose[10]
+        # Compute Rx/Ry/Rz if full rotation matrix present
+        if len(pose) >= 16:
+            r11 = pose[0]
+            r21, r22, r23 = pose[4], pose[5], pose[6]
+            r31, r32, r33 = pose[8], pose[9], pose[10]
 
-                sy = math.sqrt(r11 * r11 + r21 * r21)
-                if sy > 1e-6:  # Not at gimbal lock
-                    rx = math.atan2(r32, r33)
-                    ry = math.atan2(-r31, sy)
-                    rz = math.atan2(r21, r11)
-                else:  # Gimbal lock case
-                    rx = math.atan2(-r23, r22)
-                    ry = math.atan2(-r31, sy)
-                    rz = 0.0
+            sy = math.sqrt(r11 * r11 + r21 * r21)
+            if sy > 1e-6:  # Not at gimbal lock
+                rx = math.atan2(r32, r33)
+                ry = math.atan2(-r31, sy)
+                rz = math.atan2(r21, r11)
+            else:  # Gimbal lock case
+                rx = math.atan2(-r23, r22)
+                ry = math.atan2(-r31, sy)
+                rz = 0.0
 
-                rx_deg = math.degrees(rx)
-                ry_deg = math.degrees(ry)
-                rz_deg = math.degrees(rz)
-
-                if "Rx" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Rx"].text = f"{rx_deg:.3f}"
-                if "Ry" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Ry"].text = f"{ry_deg:.3f}"
-                if "Rz" in move_page_instance.tool_labels:
-                    move_page_instance.tool_labels["Rz"].text = f"{rz_deg:.3f}"
+            robot_state.rx = math.degrees(rx)
+            robot_state.ry = math.degrees(ry)
+            robot_state.rz = math.degrees(rz)
 
     if len(io) >= 5:
         in1, in2, out1, out2, estop = io[:5]
@@ -304,74 +279,28 @@ def update_ui_from_status() -> None:
                 estop_tooltip.text = estop_text
             estop_label.style("color: #21BA45" if estop else "color: #DB2828")
 
-        # Update IO page labels
-        if io_page_instance.io_in1_label:
-            io_page_instance.io_in1_label.text = f"INPUT 1: {in1}"
-        if io_page_instance.io_in2_label:
-            io_page_instance.io_in2_label.text = f"INPUT 2: {in2}"
-        if io_page_instance.io_out1_label:
-            io_page_instance.io_out1_label.text = f"OUTPUT 1 is: {out1}"
-        if io_page_instance.io_out2_label:
-            io_page_instance.io_out2_label.text = f"OUTPUT 2 is: {out2}"
-        if io_page_instance.io_estop_label2:
-            io_page_instance.io_estop_label2.text = f"ESTOP: {estop_text}"
-
-        # Update Move page IO summary
-        if move_page_instance.io_summary_label:
-            move_page_instance.io_summary_label.text = (
-                f"IO: IN1={in1} IN2={in2} OUT1={out1} OUT2={out2}"
-            )
+        # Push IO derived fields into bindable RobotState
+        robot_state.io_in1 = int(in1)
+        robot_state.io_in2 = int(in2)
+        robot_state.io_out1 = int(out1)
+        robot_state.io_out2 = int(out2)
+        robot_state.io_estop = int(estop)
     else:
-        # Clear labels on failure
+        # Footer fallback on failure
         if estop_label:
             estop_label.text = "E-STOP"
             if estop_tooltip:
                 estop_tooltip.text = "unknown"
             estop_label.style("color: #9E9E9E")
-        if io_page_instance.io_in1_label:
-            io_page_instance.io_in1_label.text = "INPUT 1: -"
-        if io_page_instance.io_in2_label:
-            io_page_instance.io_in2_label.text = "INPUT 2: -"
-        if io_page_instance.io_out1_label:
-            io_page_instance.io_out1_label.text = "OUTPUT 1 is: -"
-        if io_page_instance.io_out2_label:
-            io_page_instance.io_out2_label.text = "OUTPUT 2 is: -"
-        if io_page_instance.io_estop_label2:
-            io_page_instance.io_estop_label2.text = "ESTOP: unknown"
-        if move_page_instance.io_summary_label:
-            move_page_instance.io_summary_label.text = "IO: -"
 
     if len(gr) >= 6:
         gid, pos, spd, cur, status_b, obj = gr[:6]
-        if gripper_page_instance.grip_id_label:
-            gripper_page_instance.grip_id_label.text = f"Gripper ID is: {gid}"
-        if gripper_page_instance.grip_pos_feedback_label:
-            gripper_page_instance.grip_pos_feedback_label.text = (
-                f"Gripper position feedback is: {pos}"
-            )
-        if gripper_page_instance.grip_current_feedback_label:
-            gripper_page_instance.grip_current_feedback_label.text = (
-                f"Gripper current feedback is: {cur}"
-            )
-        if gripper_page_instance.grip_obj_detect_label:
-            gripper_page_instance.grip_obj_detect_label.text = (
-                f"Gripper object detection is: {obj}"
-            )
-    else:
-        if gripper_page_instance.grip_id_label:
-            gripper_page_instance.grip_id_label.text = "Gripper ID is: -"
-        if gripper_page_instance.grip_pos_feedback_label:
-            gripper_page_instance.grip_pos_feedback_label.text = (
-                "Gripper position feedback is: -"
-            )
-        if gripper_page_instance.grip_current_feedback_label:
-            gripper_page_instance.grip_current_feedback_label.text = (
-                "Gripper current feedback is: -"
-            )
-        if gripper_page_instance.grip_obj_detect_label:
-            gripper_page_instance.grip_obj_detect_label.text = (
-                "Gripper object detection is: -"
-            )
+        # Push gripper derived fields into bindable RobotState
+        robot_state.grip_id = int(gid)
+        robot_state.grip_pos = int(pos)
+        robot_state.grip_speed = int(spd)
+        robot_state.grip_current = int(cur)
+        robot_state.grip_obj = int(obj)
 
     # Update calibrate page button state
     calibrate_page_instance._update_go_to_limit_button()
@@ -473,12 +402,16 @@ async def _app_startup() -> None:
 
     # Build header and tabs with panels
     build_header_and_tabs()
-    # 50hz Webgui to controller loop
+    # 50 Hz Web GUI to controller loop (configurable via PAROL_WEBAPP_CONTROL_RATE_HZ)
     move_page_instance.joint_jog_timer = ui.timer(
-        interval=0.05, callback=move_page_instance.jog_tick, active=False
+        interval=WEBAPP_CONTROL_INTERVAL_S,
+        callback=move_page_instance.jog_tick,
+        active=False,
     )
     move_page_instance.cart_jog_timer = ui.timer(
-        interval=0.05, callback=move_page_instance.cart_jog_tick, active=False
+        interval=WEBAPP_CONTROL_INTERVAL_S,
+        callback=move_page_instance.cart_jog_tick,
+        active=False,
     )
 
     # Attach logging handler to move page response log
@@ -492,12 +425,28 @@ async def _app_startup() -> None:
     except Exception:
         port = ""
     await start_controller(port)
-    # Default to simulator when no port is configured
-    if not port:
+    # Evaluate runtime env flags (allow overriding constants at test/runtime)
+    auto_sim = os.getenv("PAROL_WEBAPP_AUTO_SIMULATOR", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    require_ready = os.getenv("PAROL_WEBAPP_REQUIRE_READY", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+    # Default to simulator when no port is configured (opt-in)
+    if not port and auto_sim:
         await client.simulator_on()
-    # Ensure streaming mode is ON during UI operation
-    await client.wait_for_server_ready(timeout=3.0)
-    await client.stream_on()
+
+    # Ensure streaming mode is ON during UI operation (opt-in)
+    if require_ready:
+        await client.wait_for_server_ready(timeout=3.0)
+        await client.stream_on()
 
 
 ng_app.on_startup(_app_startup)
@@ -640,7 +589,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         port=RUNTIME_SERVER_PORT,
         reload=False,
         show=False,
-        loop="uvloop",
+        loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",
         ws="wsproto",
         binding_refresh_interval=0.05,

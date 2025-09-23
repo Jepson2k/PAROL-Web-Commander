@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import logging
 
 from nicegui import ui
 
 from app.services.robot_client import client
+from app.state import robot_state
 
 
 class GripperPage:
@@ -75,7 +74,13 @@ class GripperPage:
 
             # Device info
             with ui.row().classes("items-center gap-4"):
-                self.grip_id_label = ui.label("Gripper ID is: -").classes("text-sm")
+                self.grip_id_label = (
+                    ui.label("Gripper ID is: -")
+                    .bind_text_from(
+                        robot_state, "grip_id", backward=lambda v: f"Gripper ID is: {v}"
+                    )
+                    .classes("text-sm")
+                )
                 self.grip_cal_status_label = ui.label(
                     "Calibration status is: -"
                 ).classes("text-sm")
@@ -121,12 +126,30 @@ class GripperPage:
             # Feedback
             ui.label("Gripper feedback").classes("text-sm mt-2")
             with ui.column().classes("gap-1"):
-                self.grip_pos_feedback_label = ui.label(
-                    "Gripper position feedback is: -"
-                ).classes("text-sm")
-                self.grip_current_feedback_label = ui.label(
-                    "Gripper current feedback is: -"
-                ).classes("text-sm")
-                self.grip_obj_detect_label = ui.label(
-                    "Gripper object detection is: -"
-                ).classes("text-sm")
+                self.grip_pos_feedback_label = (
+                    ui.label("Gripper position feedback is: -")
+                    .bind_text_from(
+                        robot_state,
+                        "grip_pos",
+                        backward=lambda v: f"Gripper position feedback is: {v}",
+                    )
+                    .classes("text-sm")
+                )
+                self.grip_current_feedback_label = (
+                    ui.label("Gripper current feedback is: -")
+                    .bind_text_from(
+                        robot_state,
+                        "grip_current",
+                        backward=lambda v: f"Gripper current feedback is: {v}",
+                    )
+                    .classes("text-sm")
+                )
+                self.grip_obj_detect_label = (
+                    ui.label("Gripper object detection is: -")
+                    .bind_text_from(
+                        robot_state,
+                        "grip_obj",
+                        backward=lambda v: f"Gripper object detection is: {('no' if int(v)==0 else ('closing' if int(v)==1 else ('opening' if int(v)==2 else int(v))))}",
+                    )
+                    .classes("text-sm")
+                )

@@ -10,9 +10,17 @@ from typing import TypedDict, cast
 
 from nicegui import app as ng_app
 from nicegui import ui
+from nicegui import binding
 
 from app.common.theme import get_theme
-from app.constants import PAROL6_URDF_PATH, REPO_ROOT
+from app.constants import (
+    PAROL6_URDF_PATH,
+    REPO_ROOT,
+    JOINT_LIMITS_DEG,
+    WEBAPP_CONTROL_INTERVAL_S,
+    WEBAPP_CONTROL_RATE_HZ,
+)
+from app.state import robot_state
 from app.services.robot_client import client
 from urdf_scene_nicegui import UrdfScene  # type: ignore
 from app.services.script_runner import (
@@ -31,6 +39,13 @@ class MoveLayout(TypedDict):
 
 class MovePage:
     """Move tab page with drag-and-drop layout."""
+
+    # Bindable control properties
+    jog_speed = binding.BindableProperty()
+    jog_accel = binding.BindableProperty()
+    incremental_jog = binding.BindableProperty()
+    joint_step_deg = binding.BindableProperty()
+    frame = binding.BindableProperty()
 
     def __init__(self) -> None:
         # UI refs for status polling
@@ -123,19 +138,19 @@ class MovePage:
         self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
         self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
 
-        # Jog cadence constants (100 Hz)
-        self.JOG_TICK_S: float = 0.01
-        self.CADENCE_WARN_WINDOW: int = 100
+        # Jog cadence constants (derived from webapp config; default 50 Hz)
+        self.JOG_TICK_S: float = WEBAPP_CONTROL_INTERVAL_S
+        self.CADENCE_WARN_WINDOW: int = max(1, int(WEBAPP_CONTROL_RATE_HZ))
         self.CADENCE_TOLERANCE: float = 0.002
         # Streaming watchdog timeout to use as "duration" while stream_mode is ON
         self.STREAM_TIMEOUT_S: float = 0.1
 
         # Single-user runtime preferences and state (no per-client storage)
-        self.jog_speed: int = 50
-        self.jog_accel: int = 50
-        self.incremental_jog: bool = False
-        self.joint_step_deg: float = 1.0
-        self.frame: Frame = "TRF"
+        self.jog_speed = 50
+        self.jog_accel = 50
+        self.incremental_jog = False
+        self.joint_step_deg = 1.0
+        self.frame = "TRF"
 
         # Press/hold state for jog controls
         self._jog_pressed_pos: list[bool] = [False] * 6
@@ -272,7 +287,7 @@ class MovePage:
                 speed = max(1, min(100, int(self.jog_speed)))
                 step = max(0.1, min(100.0, float(self.joint_step_deg)))
                 duration = max(0.02, min(0.5, step / 50.0))
-                frame = self.frame
+                frame = cast(Frame, self.frame)
                 await client.jog_cartesian(frame, cast(Axis, axis), speed, duration)
                 return
             axes[axis] = bool(is_pressed)
@@ -290,7 +305,7 @@ class MovePage:
     async def cart_jog_tick(self) -> None:
         """100 Hz: send/update cartesian streaming jog if any axis is pressed."""
         speed = max(1, min(100, int(self.jog_speed)))
-        frame = self.frame
+        frame = cast(Frame, self.frame)
         axis = self._get_first_pressed_axis()
         if axis is not None:
             await client.jog_cartesian(
@@ -846,7 +861,22 @@ print(f"Robot status: {{status}}")
                         ui.label(f"{key}:").classes(
                             "text-sm text-[var(--ctk-muted)] w-6"
                         )
-                        self.tool_labels[key] = ui.label("-").classes("text-4xl")
+                        self.tool_labels[key] = (
+                            ui.label("-")
+                            .bind_text_from(
+                                robot_state,
+                                {
+                                    "X": "x",
+                                    "Y": "y",
+                                    "Z": "z",
+                                    "Rx": "rx",
+                                    "Ry": "ry",
+                                    "Rz": "rz",
+                                }[key],
+                                backward=lambda v: f"{v:.3f}",
+                            )
+                            .classes("text-4xl")
+                        )
             with ui.column().classes("readouts-col"):
                 ui.label("Joint positions").classes("text-sm")
                 self.joint_labels.clear()
@@ -855,7 +885,22 @@ print(f"Robot status: {{status}}")
                         ui.label(f"θ{i + 1}:").classes(
                             "text-sm text-[var(--ctk-muted)] w-6"
                         )
-                        self.joint_labels.append(ui.label("-").classes("text-4xl"))
+                        self.joint_labels.append(
+                            ui.label("-")
+                            .bind_text_from(
+                                robot_state,
+                                "angles",
+                                backward=lambda a, i=i: (  # type: ignore
+                                    f"{float(a[i]):.3f}"
+                                    if isinstance(a, list)
+                                    and len(a) > i
+                                    and isinstance(a[i], (int, float))
+                                    and math.isfinite(float(a[i]))
+                                    else "-"
+                                ),
+                            )
+                            .classes("text-4xl")
+                        )
             with ui.column().classes("readouts-controls"):
                 ui.label("Controls").classes("text-sm")
                 # Sliders
@@ -865,36 +910,43 @@ print(f"Robot status: {{status}}")
                     max=100,
                     value=self.jog_speed,
                     step=1,
-                    on_change=lambda e: setattr(self, "jog_speed", e.value),
-                ).classes("w-full").style("width: 100%")
+                ).bind_value(self, "jog_speed").classes("w-full").style("width: 100%")
                 ui.label("Jog accel %").classes("text-xs text-[var(--ctk-muted)]")
                 ui.slider(
                     min=1,
                     max=100,
                     value=self.jog_accel,
                     step=1,
-                    on_change=lambda e: setattr(self, "jog_accel", e.value),
-                ).classes("w-full").style("width: 100%")
+                ).bind_value(self, "jog_accel").classes("w-full").style("width: 100%")
                 # Incremental and step
                 with ui.row().classes("items-center gap-4 w-full"):
                     ui.switch(
                         "Incremental jog",
                         value=self.incremental_jog,
-                        on_change=lambda e: setattr(
-                            self, "incremental_jog", bool(e.value)
-                        ),
-                    )
+                    ).bind_value(self, "incremental_jog")
                     ui.number(
                         label="Step size (deg/mm)",
                         value=self.joint_step_deg,
                         min=0.1,
                         max=100.0,
                         step=0.1,
-                        on_change=lambda e: setattr(self, "joint_step_deg", e.value),
-                    ).style("width: 120px")
+                    ).bind_value(self, "joint_step_deg").style("width: 120px")
 
-                    # IO summary (live-updated)
-                    self.io_summary_label = ui.label("IO: -").classes("text-sm")
+                    # IO summary (live-updated via binding to robot_state.io)
+                    self.io_summary_label = (
+                        ui.label("IO: -")
+                        .bind_text_from(
+                            robot_state,
+                            "io",
+                            backward=lambda io: (
+                                f"IO: IN1={io[0] if len(io) > 0 else '-'} "
+                                f"IN2={io[1] if len(io) > 1 else '-'} "
+                                f"OUT1={io[2] if len(io) > 2 else '-'} "
+                                f"OUT2={io[3] if len(io) > 3 else '-'}"
+                            ),
+                        )
+                        .classes("text-sm")
+                    )
                 # Buttons
                 with ui.row().classes("gap-2 w-full"):
                     ui.button("Enable", on_click=self.send_enable).props(
@@ -927,8 +979,7 @@ print(f"Robot status: {{status}}")
                 ui.toggle(
                     options=["WRF", "TRF"],
                     value=self.frame,
-                    on_change=lambda e: setattr(self, "frame", e.value),
-                ).props("dense")
+                ).bind_value(self, "frame").props("dense")
             self.drag_handle(pid, src_col)
 
         with ui.tab_panels(jog_mode_tabs, value=joint_tab).classes("w-full"):
@@ -945,6 +996,33 @@ print(f"Robot status: {{status}}")
                             ui.linear_progress(value=0.5)
                             .props("rounded")
                             .classes("joint-progress-bar")
+                            .bind_value_from(
+                                robot_state,
+                                "angles",
+                                backward=lambda a, i=idx: round(  # type: ignore
+                                    0.0
+                                    if not (
+                                        isinstance(a, list)
+                                        and len(a) > i
+                                        and isinstance(a[i], (int, float))
+                                    )
+                                    or (
+                                        JOINT_LIMITS_DEG[i][1] <= JOINT_LIMITS_DEG[i][0]
+                                    )
+                                    else max(
+                                        0.0,
+                                        min(
+                                            1.0,
+                                            (float(a[i]) - JOINT_LIMITS_DEG[i][0])
+                                            / (
+                                                JOINT_LIMITS_DEG[i][1]
+                                                - JOINT_LIMITS_DEG[i][0]
+                                            ),
+                                        ),
+                                    ),
+                                    3,
+                                ),
+                            )
                         )
                         right = ui.image("/static/icons/button_arrow_1.webp").style(
                             "width:60px;height:60px;object-fit:contain;transform:rotate(90deg);cursor:pointer;"

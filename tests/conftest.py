@@ -78,3 +78,15 @@ def headless_server() -> Iterator[subprocess.Popen]:
                     proc.kill()
             except Exception:
                 pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def webapp_env_session() -> None:
+    """
+    Global test defaults for the NiceGUI webapp (set at session start via os.environ):
+      - Disable auto simulator toggle at startup (webapp should not call SIMULATOR|ON)
+      - Disable readiness/stream_on waits in tests (prevents timeouts when server not running yet)
+    These can still be overridden per-test with monkeypatch.setenv if needed.
+    """
+    os.environ["PAROL_WEBAPP_AUTO_SIMULATOR"] = "0"
+    os.environ["PAROL_WEBAPP_REQUIRE_READY"] = "0"

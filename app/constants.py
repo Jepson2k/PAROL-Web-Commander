@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from pathlib import Path
 from parol6.PAROL6_ROBOT import joint
 
-# Repository root and controller path
+# Repository root
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CONTROLLER_PATH = (REPO_ROOT / "PAROL6-python-API" / "controller.py").as_posix()
 PAROL6_URDF_PATH = (
     REPO_ROOT
     / "external"
@@ -23,10 +21,8 @@ PAROL6_URDF_PATH = (
 PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
 
 # Ensure PAROL6-python-API on path
-sys.path.append((REPO_ROOT / "PAROL-python-API").as_posix())
 
 # Ensure urdf_scene_nicegui on path
-sys.path.append((REPO_ROOT / "urdf_scene_nicegui" / "src").as_posix())
 
 
 # Expose as plain Python lists for UI/serialization friendliness
@@ -63,3 +59,26 @@ def _resolve_log_level() -> int:
 
 
 LOG_LEVEL: int = _resolve_log_level()
+
+
+# Webapp control emission cadence (client -> controller)
+WEBAPP_CONTROL_RATE_HZ: float = float(os.getenv("PAROL_WEBAPP_CONTROL_RATE_HZ", "50"))
+WEBAPP_CONTROL_INTERVAL_S: float = 1.0 / max(WEBAPP_CONTROL_RATE_HZ, 1.0)
+
+# Auto-toggle simulator on startup when no serial port is set
+WEBAPP_AUTO_SIMULATOR: bool = os.getenv("PAROL_WEBAPP_AUTO_SIMULATOR", "1") in (
+    "1",
+    "true",
+    "True",
+    "yes",
+    "YES",
+)
+
+# Require server ready/stream_on at startup (can be disabled in tests)
+WEBAPP_REQUIRE_READY: bool = os.getenv("PAROL_WEBAPP_REQUIRE_READY", "1") in (
+    "1",
+    "true",
+    "True",
+    "yes",
+    "YES",
+)
