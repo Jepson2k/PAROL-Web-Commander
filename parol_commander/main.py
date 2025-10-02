@@ -12,11 +12,14 @@ from nicegui import ui
 from nicegui.elements.tooltip import Tooltip
 from parol6 import ensure_server, ServerManager
 
-from app.common.logging_config import attach_ui_log, configure_logging, TRACE
-from app.common.theme import apply_theme, get_theme, inject_layout_css
-from app.constants import (
+from parol_commander.common.logging_config import (
+    attach_ui_log,
+    configure_logging,
+    TRACE,
+)
+from parol_commander.common.theme import apply_theme, get_theme, inject_layout_css
+from parol_commander.constants import (
     PAROL6_OFFICIAL_DOC_URL,
-    REPO_ROOT,
     SERVER_HOST,
     SERVER_PORT,
     CONTROLLER_HOST,
@@ -25,13 +28,15 @@ from app.constants import (
     LOG_LEVEL,
     WEBAPP_CONTROL_INTERVAL_S,
 )
-from app.pages.calibrate import CalibratePage
-from app.pages.gripper import GripperPage
-from app.pages.io import IoPage
-from app.pages.move import MovePage
-from app.pages.settings import SettingsPage
-from app.services.robot_client import client
-from app.state import robot_state, controller_state
+from parol_commander.pages.calibrate import CalibratePage
+from parol_commander.pages.gripper import GripperPage
+from parol_commander.pages.io import IoPage
+from parol_commander.pages.move import MovePage
+from parol_commander.pages.settings import SettingsPage
+from parol_commander.services.robot_client import client
+from parol_commander.state import robot_state, controller_state
+from importlib.resources import files as pkg_files
+
 
 # Runtime configuration (resolved later from CLI/env)
 RUNTIME_SERVER_HOST = SERVER_HOST
@@ -40,8 +45,8 @@ RUNTIME_CONTROLLER_HOST = CONTROLLER_HOST
 RUNTIME_CONTROLLER_PORT = CONTROLLER_PORT
 RUNTIME_AUTO_START = AUTO_START
 
-# Register static files for optimized icons and other assets
-ng_app.add_static_files("/static", (REPO_ROOT / "app" / "static").as_posix())
+STATIC_DIR = pkg_files("parol_commander").joinpath("static")
+ng_app.add_static_files("/static", str(STATIC_DIR))
 
 # ------------------------ Global UI/state ------------------------
 
@@ -501,7 +506,14 @@ async def _status_consumer() -> None:
         logging.error("Status consumer error: %s", e)
 
 
-if __name__ in {"__main__", "__mp_main__"}:
+def main():
+    global \
+        RUNTIME_SERVER_HOST, \
+        RUNTIME_SERVER_PORT, \
+        RUNTIME_CONTROLLER_HOST, \
+        RUNTIME_CONTROLLER_PORT, \
+        RUNTIME_AUTO_START, \
+        RUNTIME_LOG_LEVEL
     # CLI: web bind, controller target, and log level
     parser = argparse.ArgumentParser(description="PAROL6 NiceGUI Webserver")
     parser.add_argument("--host", default=SERVER_HOST, help="Webserver bind host")
@@ -594,3 +606,7 @@ if __name__ in {"__main__", "__mp_main__"}:
         ws="wsproto",
         binding_refresh_interval=0.05,
     )
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    main()

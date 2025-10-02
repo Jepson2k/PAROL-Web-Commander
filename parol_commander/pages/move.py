@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import logging
@@ -12,18 +10,18 @@ from nicegui import app as ng_app
 from nicegui import ui
 from nicegui import binding
 
-from app.common.theme import get_theme
-from app.constants import (
+from parol_commander.common.theme import get_theme
+from parol_commander.constants import (
     PAROL6_URDF_PATH,
     REPO_ROOT,
     JOINT_LIMITS_DEG,
     WEBAPP_CONTROL_INTERVAL_S,
     WEBAPP_CONTROL_RATE_HZ,
 )
-from app.state import robot_state
-from app.services.robot_client import client
+from parol_commander.state import robot_state
+from parol_commander.services.robot_client import client
 from urdf_scene_nicegui import UrdfScene  # type: ignore
-from app.services.script_runner import (
+from parol_commander.services.script_runner import (
     ScriptProcessHandle,
     run_script,
     create_default_config,
@@ -385,7 +383,7 @@ class MovePage:
 
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
-        from app.constants import CONTROLLER_HOST, CONTROLLER_PORT
+        from parol_commander.constants import CONTROLLER_HOST, CONTROLLER_PORT
 
         return f"""from parol6 import RobotClient
 

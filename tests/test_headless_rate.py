@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import json
 import socket
 import time
 
 import pytest
+from parol_commander.constants import WEBAPP_CONTROL_RATE_HZ
 
 
 def _request_loop_stats(
@@ -61,7 +60,7 @@ def test_headless_movejoint_loop_frequency(headless_server):
     delta_loops = int(stats1.get("loop_count", 0)) - int(stats0.get("loop_count", 0))
     hz = delta_loops / dt if dt > 0 else 0.0
     assert (
-        hz >= 95.0
+        hz >= 0.9 * WEBAPP_CONTROL_RATE_HZ
     ), f"Effective loop rate too low: {hz:.2f} Hz (dt={dt:.3f}s, Δloops={delta_loops})"
 
 
@@ -93,5 +92,5 @@ def test_headless_cartjog_loop_frequency(headless_server):
     delta_loops = int(stats1.get("loop_count", 0)) - int(stats0.get("loop_count", 0))
     hz = delta_loops / dt if dt > 0 else 0.0
     assert (
-        hz >= 95.0
+        hz >= 0.9 * WEBAPP_CONTROL_RATE_HZ
     ), f"IK (CARTJOG) effective loop rate too low: {hz:.2f} Hz (dt={dt:.3f}s, Δloops={delta_loops})"

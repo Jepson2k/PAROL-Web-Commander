@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import app.pages.move as move_mod
-from app import main
-from app.constants import WEBAPP_CONTROL_RATE_HZ
+import parol_commander.pages.move as move_mod
+from parol_commander import main
+from parol_commander.constants import WEBAPP_CONTROL_RATE_HZ
 
 if TYPE_CHECKING:
     from nicegui.testing import User

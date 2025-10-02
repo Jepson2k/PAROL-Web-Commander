@@ -1,7 +1,5 @@
-from __future__ import annotations
-
 from parol6 import AsyncRobotClient
-from app.constants import CONTROLLER_HOST, CONTROLLER_PORT
+from parol_commander.constants import CONTROLLER_HOST, CONTROLLER_PORT
 
 # Module-level singleton instance
 client = AsyncRobotClient(

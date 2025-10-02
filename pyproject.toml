@@ -3,20 +3,32 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parol-web-commander"
+name = "parol-commander"
 version = "1.0.0"
 description = "Web interface for PAROL robot control"
 requires-python = ">=3.11"
 dependencies = [
+  "parol6 @ file:external/PAROL6-python-API",
+  "urdf_scene_nicegui @ file:external/urdf_scene_nicegui",
   "nicegui>=2.0.0",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
-  "numpy>=1.24",
+  "numpy==1.26.4",
   "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
 dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pre-commit"]
+
+[project.scripts]
+parol-commander = "parol_commander.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["parol_commander*"]
+
+[tool.setuptools.package-data]
+parol_commander = ["static/**/*"]
 
 [tool.ruff]
 extend-exclude = [

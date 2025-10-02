@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-import app.pages.move as move_mod
-from app import main
-from app.services.robot_client import client as real_client
-from app.constants import WEBAPP_CONTROL_RATE_HZ
+import parol_commander.pages.move as move_mod
+from parol_commander import main
+from parol_commander.services.robot_client import client as real_client
+from parol_commander.constants import WEBAPP_CONTROL_RATE_HZ
 
 if TYPE_CHECKING:
     from nicegui.testing import User
     from pytest import MonkeyPatch
 
-    from app.services.robot_client import AsyncRobotClient
+    from parol_commander.services.robot_client import AsyncRobotClient
     from parol6.protocol.types import Frame, Axis
 
 

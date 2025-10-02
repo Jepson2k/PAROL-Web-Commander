@@ -3,8 +3,8 @@ from functools import partial
 
 from nicegui import ui
 
-from app.services.robot_client import client
-from app.state import robot_state
+from parol_commander.services.robot_client import client
+from parol_commander.state import robot_state
 
 
 class IoPage:

@@ -2,9 +2,9 @@ import logging
 
 from nicegui import ui
 
-from app.constants import JOINT_LIMITS_DEG
-from app.services.robot_client import client
-from app.state import robot_state
+from parol_commander.constants import JOINT_LIMITS_DEG
+from parol_commander.services.robot_client import client
+from parol_commander.state import robot_state
 
 
 class CalibratePage:

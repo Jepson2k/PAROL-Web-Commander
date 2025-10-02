@@ -3,7 +3,7 @@ import logging
 from nicegui import app as ng_app
 from nicegui import ui
 
-from app.common.theme import ThemeMode, get_theme, set_theme
+from parol_commander.common.theme import ThemeMode, get_theme, set_theme
 
 
 class SettingsPage:
