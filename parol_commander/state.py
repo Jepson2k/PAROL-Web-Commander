@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any
 from nicegui import binding
 
 
@@ -73,6 +74,10 @@ class RobotState:
     grip_speed: int = 0
     grip_current: int = 0
     grip_obj: int = 0
+    simulator_active: bool = False
+    action_current: str = ""
+    action_state: str = ""
+    action_queue: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -89,7 +94,42 @@ class ProgramState:
     last_speed_pct: int | None = None
 
 
+@binding.bindable_dataclass
+class UiState:
+    # URDF configuration
+    urdf_config: dict = field(
+        default_factory=lambda: {
+            "material": "#888",
+            "background_color": "#eee",
+            "auto_sync": True,
+            "joint_name_order": ["L1", "L2", "L3", "L4", "L5", "L6"],
+            "deg_to_rad": True,
+        }
+    )
+    # URDF state
+    urdf_scene: Any = None
+    urdf_joint_names: list[str] | None = None
+    urdf_index_mapping: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
+    current_tool_stls: list[Any] = field(default_factory=list)
+
+    # Control panel UI state
+    jog_speed: int = 50
+    jog_accel: int = 50
+    incremental_jog: bool = False
+    joint_step_deg: float = 1.0
+    frame: str = "TRF"
+    gizmo_visible: bool = True
+
+    # Timers (set post-build)
+    joint_jog_timer: Any = None
+    cart_jog_timer: Any = None
+
+    # NiceGUI client context for background tasks
+    client: Any = None
+
+
 # Module-level singletons
 robot_state = RobotState()
 controller_state = ControllerState()
 program_state = ProgramState()
+ui_state = UiState()

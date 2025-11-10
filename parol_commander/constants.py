@@ -5,23 +5,9 @@ from parol6.PAROL6_ROBOT import joint
 
 # Repository root
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PAROL6_URDF_PATH = (
-    REPO_ROOT
-    / "external"
-    / "PAROL6-Desktop-robot-arm"
-    / "PAROL6_URDF"
-    / "PAROL6"
-    / "urdf"
-    / "PAROL6.urdf"
-)
 
 # Official PAROL6 documentation URL
 PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
-
-# Ensure PAROL6-python-API on path
-
-# Ensure urdf_scene_nicegui on path
-
 
 # Expose as plain Python lists for UI/serialization friendliness
 JOINT_LIMITS_DEG = joint.limits.deg.tolist()

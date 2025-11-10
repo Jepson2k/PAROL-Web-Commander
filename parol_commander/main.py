@@ -6,11 +6,16 @@ import contextlib
 import argparse
 import os
 import sys
+from typing import Any, cast
+from spatialmath import SO3
+import numpy as np
 
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.elements.tooltip import Tooltip
 from parol6 import ensure_server, ServerManager
+from parol6.tools import TOOL_CONFIGS
+from importlib.resources import files, as_file
 
 from parol_commander.common.logging_config import (
     attach_ui_log,
@@ -28,13 +33,22 @@ from parol_commander.constants import (
     LOG_LEVEL,
     WEBAPP_CONTROL_INTERVAL_S,
 )
-from parol_commander.pages.calibrate import CalibratePage
-from parol_commander.pages.gripper import GripperPage
-from parol_commander.pages.io import IoPage
-from parol_commander.pages.move import MovePage
-from parol_commander.pages.settings import SettingsPage
 from parol_commander.services.robot_client import client
-from parol_commander.state import robot_state, controller_state
+from parol_commander.state import robot_state, controller_state, ui_state
+from parol_commander.components.io import IoPage
+from parol_commander.components.gripper import GripperPage
+from parol_commander.components.settings import SettingsPage
+from parol_commander.components.control import ControlPanel
+from parol_commander.components.readout import ReadoutPanel
+from parol_commander.components.editor import EditorPanel
+from parol_commander.services.script_runner import ScriptProcessHandle
+from parol_commander.services.urdf_scene import (
+    UrdfScene,
+    UrdfSceneConfig,
+    ToolPose,
+    GizmoEvent,
+    GizmoEventKind,
+)
 from importlib.resources import files as pkg_files
 
 
@@ -51,14 +65,11 @@ ng_app.add_static_files("/static", str(STATIC_DIR))
 # ------------------------ Global UI/state ------------------------
 
 fw_version = "1.0.0"
-estop_label: ui.label | None = None
 controller_status_label: ui.label | None = None
 robot_status_label: ui.label | None = None
 
 ctrl_tooltip: Tooltip | None = None
 robot_tooltip: Tooltip | None = None
-estop_tooltip: Tooltip | None = None
-com_input_tooltip: Tooltip | None = None
 
 # Multicast-driven status consumer (runs once per app)
 status_consumer_task: asyncio.Task | None = None
@@ -66,16 +77,332 @@ status_consumer_task: asyncio.Task | None = None
 ping_timer: ui.timer | None = None
 last_ping_ok: bool = False
 
-# Page instances
-move_page_instance = MovePage()
-io_page_instance = IoPage()
-settings_page_instance = SettingsPage()
-calibrate_page_instance = CalibratePage()
-gripper_page_instance = GripperPage()
+# Component instances
+control_panel = ControlPanel()
+readout_panel = ReadoutPanel()
+editor_panel = EditorPanel()
+io_page: IoPage | None = None
+gripper_page: GripperPage | None = None
+settings_page: SettingsPage | None = None
+
+# UI state
+urdf_scene = None
+response_log: ui.log | None = None
+joint_jog_timer: ui.timer | None = None
+cart_jog_timer: ui.timer | None = None
+script_handle: ScriptProcessHandle | None = None
+script_running: bool = False
+bottom_log_drawer: ui.element | None = None
 
 # Main tabs reference for tab_panels
 main_tabs = None
 server_manager: ServerManager | None = None
+
+# --------------- URDF Scene Functions ---------------
+
+
+async def initialize_urdf_scene(container=None) -> None:
+    """Initialize the URDF scene with error handling."""
+    # Resolve URDF from installed parol6 package and clear container if provided
+    urdf_res = files("parol6") / "urdf_model" / "urdf" / "PAROL6.urdf"
+    if container:
+        container.clear()
+
+    with as_file(urdf_res) as urdf_path:
+        assert urdf_path
+        # Detect theme and set appropriate colors
+        mode = get_theme()
+        is_dark = mode != "light"
+        bg_color = "#212121" if is_dark else "#eeeeee"
+        material_color = "#9ca3af" if is_dark else "#666666"
+
+        # Update config with theme-aware colors
+        ui_state.urdf_config["background_color"] = bg_color
+        ui_state.urdf_config["material"] = material_color
+
+        # Create tool pose resolver to bridge PAROL6 TOOL_CONFIGS
+        def tool_pose_resolver(tool: str) -> ToolPose | None:
+            """Convert PAROL6 tool config to ToolPose format."""
+            if not tool or tool.upper() == "NONE":
+                return None
+            cfg = TOOL_CONFIGS.get(tool, {})
+            if not isinstance(cfg, dict):
+                return None
+            # Prefer nested 'tcp' dict if available
+            origin = [0.0, 0.0, 0.0]
+            rpy = [0.0, 0.0, 0.0]
+            if isinstance(cfg.get("tcp"), dict):
+                o_val = cfg["tcp"].get("origin", origin)
+                r_val = cfg["tcp"].get("rpy", rpy)
+                origin = cast(list[float], o_val)
+                rpy = cast(list[float], r_val)
+            else:
+                # Fallback to top-level keys if present
+                origin = cast(
+                    list[float], cfg.get("tcp_origin", cfg.get("origin", origin))
+                )
+                rpy = cast(list[float], cfg.get("tcp_rpy", cfg.get("rpy", rpy)))
+            return ToolPose(origin=origin, rpy=rpy)
+
+        # Create UrdfScene config with tool pose resolver and larger gizmo scale
+        urdf_config = UrdfSceneConfig(
+            tool_pose_resolver=tool_pose_resolver,
+            gizmo_scale=1.35,  # Make gizmo larger (1.0 = default STL scale)
+        )
+
+        # Create new scene with config
+        ui_state.urdf_scene = UrdfScene(urdf_path, config=urdf_config)
+        # Render the scene inside the provided container if available
+        if container:
+            with container:
+                ui_state.urdf_scene.show(
+                    material=ui_state.urdf_config.get("material"),
+                    background_color=ui_state.urdf_config.get(
+                        "background_color", "#eee"
+                    ),
+                )
+        else:
+            ui_state.urdf_scene.show(
+                material=ui_state.urdf_config.get("material"),
+                background_color=ui_state.urdf_config.get("background_color", "#eee"),
+            )
+
+        ui_state.urdf_scene.set_control_frame(ui_state.frame)
+        ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
+
+        # Hook gizmo events
+        def _handle_gizmo_event(event: GizmoEvent) -> None:
+            # Bridge to control panel directly with client context
+            is_pressed = event.kind == GizmoEventKind.PRESS
+            if ui_state.client:
+                with ui_state.client:
+                    asyncio.create_task(
+                        control_panel.set_axis_pressed(event.handle, is_pressed)
+                    )
+
+        ui_state.urdf_scene.on_gizmo_event(_handle_gizmo_event)
+
+        # Align TCP to current tool from controller
+        try:
+            result = await client.get_tool()
+            tool_val = result.get("tool") if isinstance(result, dict) else None
+            if tool_val:
+                ui_state.urdf_scene.update_tcp_pose_from_tool(tool_val)
+        except Exception as _e:
+            logging.error("Failed to sync TCP tool pose: %s", _e)
+
+        # Override the scene height and set closer camera position
+        if ui_state.urdf_scene.scene:
+            scene: ui.scene = ui_state.urdf_scene.scene
+            scene._props["grid"] = (10, 100)
+            # Fill parent container (absolute canvas): width/height 100%
+            scene.classes(remove="h-[66vh]").style(
+                "width: 100%; height: 100%; margin: 0; display: block;"
+            )
+            # Set camera closer to the robot arm with proper look-at positioning
+            scene.move_camera(
+                x=0.3,
+                y=0.3,
+                z=0.22,  # Camera position
+                look_at_z=0.22,
+                duration=0.0,  # Instant movement
+            )
+
+            # Add large world coordinate frame at origin (fixed)
+            world_axes_size = 0.30
+            scene.line([0, 0, 0], [world_axes_size, 0, 0]).material("#ff0000")  # X
+            scene.line([0, 0, 0], [0, world_axes_size, 0]).material("#00ff00")  # Y
+            scene.line([0, 0, 0], [0, 0, world_axes_size]).material("#0000ff")  # Z
+
+    # Cache joint names for mapping
+    if hasattr(ui_state.urdf_scene, "get_joint_names"):
+        ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
+    else:
+        # Fallback to expected joint names
+        ui_state.urdf_joint_names = ui_state.urdf_config.get(
+            "joint_name_order", ["L1", "L2", "L3", "L4", "L5", "L6"]
+        )
+
+    logging.info("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
+
+    # Sync gizmo settings to URDF scene now that it's ready
+    control_panel.sync_gizmo_to_urdf()
+
+
+def update_urdf_angles(angles_deg: list[float]) -> None:
+    """Update URDF scene with new joint angles (degrees -> radians)."""
+    if not ui_state.urdf_scene:
+        return
+
+    if not angles_deg or len(angles_deg) < 6:
+        return
+
+    try:
+        # Validate that all angles are numeric (not strings like "-")
+        valid_angles = []
+        for angle in angles_deg[:6]:  # Take only first 6 angles
+            if isinstance(angle, int | float) and not isinstance(angle, bool):
+                if math.isfinite(angle):
+                    valid_angles.append(float(angle))
+                else:
+                    return  # Skip update for NaN or infinite values
+            else:
+                return  # Skip update for any non-numeric data
+
+        if len(valid_angles) != 6:
+            return  # Need all 6 angles
+
+        # Convert degrees to radians, apply sign correction and index mapping
+        angles_rad = []
+        angle_signs = ui_state.urdf_config.get("angle_signs", [1, 1, 1, 1, 1, 1])
+        for i in range(6):
+            if i < len(ui_state.urdf_index_mapping) and ui_state.urdf_index_mapping[
+                i
+            ] < len(valid_angles):
+                controller_idx = ui_state.urdf_index_mapping[i]
+                angle_deg = valid_angles[controller_idx]
+                # Apply sign correction and offset
+                sign = (
+                    1
+                    if controller_idx >= len(angle_signs)
+                    else (1 if angle_signs[controller_idx] >= 0 else -1)
+                )
+                angle_offsets = ui_state.urdf_config.get(
+                    "angle_offsets", [0, 0, 0, 0, 0, 0]
+                )
+                offset = (
+                    angle_offsets[controller_idx]
+                    if controller_idx < len(angle_offsets)
+                    else 0
+                )
+                angle_deg_corrected = angle_deg * sign + offset
+                angle_rad = (
+                    math.radians(angle_deg_corrected)
+                    if ui_state.urdf_config.get("deg_to_rad", True)
+                    else angle_deg_corrected
+                )
+                angles_rad.append(angle_rad)
+            else:
+                angles_rad.append(0.0)
+
+        # Create ordered list of angles based on URDF joint names
+        if hasattr(ui_state.urdf_scene, "set_axis_values") and hasattr(
+            ui_state.urdf_scene, "joint_names"
+        ):
+            urdf_joint_names = list(ui_state.urdf_scene.joint_names)
+            angles_ordered = []
+
+            for joint_name in urdf_joint_names:
+                # Map URDF joint name back to our controller index
+                try:
+                    urdf_idx = ui_state.urdf_config["joint_name_order"].index(
+                        joint_name
+                    )
+                    if urdf_idx < len(angles_rad):
+                        angles_ordered.append(angles_rad[urdf_idx])
+                    else:
+                        angles_ordered.append(0.0)
+                except (ValueError, KeyError):
+                    angles_ordered.append(0.0)
+
+            # Pass list of float values in the order expected by the library
+            ui_state.urdf_scene.set_axis_values(angles_ordered)
+
+    except Exception as e:
+        logging.error("Failed to update URDF angles: %s", e)
+
+
+async def on_tool_changed(new_tool: str) -> None:
+    """Handle tool selection change."""
+    try:
+        # Send command to server to update tool
+        await client.set_tool(new_tool)
+
+        # Update visualization
+        await update_tool_visualization(new_tool)
+
+        # Align TCP markers to the new tool (if supported by scene)
+        try:
+            if ui_state.urdf_scene and hasattr(
+                ui_state.urdf_scene, "update_tcp_pose_from_tool"
+            ):
+                ui_state.urdf_scene.update_tcp_pose_from_tool(new_tool)
+        except Exception as _e:
+            logging.error("Failed to update TCP pose after tool change: %s", _e)
+
+        ui.notify(f"Tool changed to: {new_tool}", color="positive")
+        logging.info(f"Tool changed to: {new_tool}")
+    except Exception as e:
+        ui.notify(f"Tool change failed: {e}", color="negative")
+        logging.error(f"Tool change failed: {e}")
+
+
+async def update_tool_visualization(tool_name: str) -> None:
+    """Dynamically swap tool STLs in 3D scene when supported."""
+    if not ui_state.urdf_scene:
+        return
+    # If using a standalone Three.js viewer, skip STL swapping for now
+    if not hasattr(ui_state.urdf_scene, "scene") or not hasattr(
+        ui_state.urdf_scene, "joint_groups"
+    ):
+        logging.info(
+            "Custom URDF viewer active; skipping tool STL swap for %s", tool_name
+        )
+        return
+
+    try:
+        # Remove existing tool STLs
+        for stl in ui_state.current_tool_stls:
+            try:
+                stl.delete()
+            except Exception as e:
+                logging.warning("Failed to delete STL: %s", e)
+        ui_state.current_tool_stls.clear()
+
+        # Get tool configuration
+        tool_config = TOOL_CONFIGS.get(tool_name, {})
+        stl_files = tool_config.get("stl_files", [])
+
+        if not stl_files:
+            logging.info(f"No STLs for tool: {tool_name}")
+            return
+
+        # Get L6 group (last joint group where tools attach) - only for NiceGUI scene backend
+        l6_group = getattr(ui_state.urdf_scene, "joint_groups", {}).get("L6")
+
+        if not l6_group:
+            logging.warning("Could not find L6 joint group for tool attachment")
+            return
+
+        # Add new tool STLs (NiceGUI scene backend only)
+        scene = cast(Any, getattr(ui_state.urdf_scene, "scene", None))
+        if scene is None:
+            logging.warning("NiceGUI scene missing; skipping STL tool add")
+            return
+        material_color = ui_state.urdf_config.get("material", "#888")
+
+        for stl_info in stl_files:
+            with l6_group:
+                stl = scene.stl(f"/meshes/parol6/{stl_info['file']}").scale(
+                    ui_state.urdf_config.get("scale_stls", 1.0)
+                )
+
+                # Apply material color
+                stl.material(material_color)
+
+                # Apply origin and rotation if specified
+                origin = stl_info.get("origin", [0, 0, 0])
+                rpy = stl_info.get("rpy", [0, 0, 0])
+                stl.move(*origin).rotate(*rpy)
+
+                ui_state.current_tool_stls.append(stl)
+
+        logging.info(
+            f"Tool visualization updated: {tool_name} ({len(ui_state.current_tool_stls)} STLs)"
+        )
+    except Exception as e:
+        logging.error(f"Failed to update tool visualization: {e}")
+
 
 # --------------- Controller controls ---------------
 
@@ -141,15 +468,6 @@ async def stop_controller() -> None:
         logging.error("Stop controller failed: %s", e)
 
 
-async def send_clear_error() -> None:
-    try:
-        _ = await client.clear_error()
-        ui.notify("Sent CLEAR_ERROR", color="primary")
-        logging.info("CLEAR_ERROR sent")
-    except Exception as e:
-        logging.error("CLEAR_ERROR failed: %s", e)
-
-
 async def send_stop_motion() -> None:
     try:
         _ = await client.stop()
@@ -172,17 +490,34 @@ async def set_port(port_str: str) -> None:
 
 
 async def handle_sim_toggle(value: str):
+    global script_handle, script_running
     try:
         if value == "Simulator":
             # Stop user's script if running (GUI safety)
-            if move_page_instance.script_running:
-                await move_page_instance._stop_script_process()
-            # Best effort: stop real robot motion before switching
-            with contextlib.suppress(Exception):
-                await client.stop()
+            if script_running and script_handle:
+                script_handle["proc"].terminate()
+                script_handle = None
+                script_running = False
             await client.simulator_on()
+            robot_state.simulator_active = True
+            control_panel._show_sim_banner()
+            # Enable after switching to simulator
+            with contextlib.suppress(Exception):
+                await asyncio.sleep(0.05)  # Brief delay for transport swap
+                await client.enable()
         else:
             await client.simulator_off()
+            robot_state.simulator_active = False
+            control_panel._hide_sim_banner()
+            # Enable after switching back to robot mode
+            with contextlib.suppress(Exception):
+                await asyncio.sleep(0.05)  # Brief delay for transport swap
+                await client.enable()
+
+        # Update button visuals to match mode
+        if callable(getattr(control_panel, "_update_robot_btn_visual", None)):
+            control_panel._update_robot_btn_visual()
+
         ui.notify("Toggled Simulator Mode", color="primary")
     except Exception as ex:
         ui.notify(f"Failed to toggle Simulator Mode: {ex}", color="negative")
@@ -201,15 +536,21 @@ async def check_ping() -> None:
     try:
         pong = await client.ping()
         serial = False
+
         if isinstance(pong, str):
+            # Parse format: PONG|SERIAL={0|1}
             if "SERIAL=" in pong:
-                serial = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
+                serial_part = pong.split("SERIAL=", 1)[-1].split("|")[0].strip()
+                serial = serial_part.startswith("1")
         elif isinstance(pong, dict):
             payload = pong.get("payload")
             if isinstance(payload, dict):
                 val = payload.get("serial") or payload.get("serial_connected")
                 if isinstance(val, (int, bool)):
                     serial = bool(val)
+
+        # Robot connected = physical hardware connected (SERIAL=1)
+        # Note: SERIAL=0 in simulator mode, so connected will be False
         last_ping_ok = bool(serial)
     except Exception:
         last_ping_ok = False
@@ -224,17 +565,6 @@ async def check_ping() -> None:
 
 
 # --------------- UI Update Functions ---------------
-
-
-def _normalize_joint_progress(
-    angle_deg: float, min_deg: float, max_deg: float
-) -> float:
-    if max_deg <= min_deg:
-        return 0.0
-    val = (angle_deg - min_deg) / (max_deg - min_deg)
-    return max(0.0, min(1.0, val))
-
-
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
     angles = robot_state.angles or []
@@ -242,47 +572,66 @@ def update_ui_from_status() -> None:
     io = robot_state.io or []
     gr = robot_state.gripper or []
 
-    # Update Move page UI labels (angles + progress bars)
+    # Update URDF scene with new angles using proper update function with mapping/signs
     if angles:
-        move_page_instance.update_urdf_angles(angles)
+        update_urdf_angles(angles)
 
     if pose and len(pose) >= 12:
-        # Pose matrix flattened; indices 3,7,11 as XYZ
-        x, y, z = pose[3], pose[7], pose[11]
-        robot_state.x = float(x)
-        robot_state.y = float(y)
-        robot_state.z = float(z)
-
-        # Compute Rx/Ry/Rz if full rotation matrix present
+        # Pose matrix flattened; indices 3,7,11 as XYZ (always from multicast as WRF)
+        # If TRF mode, transform to tool frame representation
         if len(pose) >= 16:
-            r11 = pose[0]
-            r21, r22, r23 = pose[4], pose[5], pose[6]
-            r31, r32, r33 = pose[8], pose[9], pose[10]
+            try:
+                # Extract rotation matrix (row-major: rows are [0,1,2], [4,5,6], [8,9,10])
+                R = np.array(
+                    [
+                        [pose[0], pose[1], pose[2]],
+                        [pose[4], pose[5], pose[6]],
+                        [pose[8], pose[9], pose[10]],
+                    ]
+                )
 
-            sy = math.sqrt(r11 * r11 + r21 * r21)
-            if sy > 1e-6:  # Not at gimbal lock
-                rx = math.atan2(r32, r33)
-                ry = math.atan2(-r31, sy)
-                rz = math.atan2(r21, r11)
-            else:  # Gimbal lock case
-                rx = math.atan2(-r23, r22)
-                ry = math.atan2(-r31, sy)
-                rz = 0.0
+                # Extract translation (mm)
+                t_mm = np.array([pose[3], pose[7], pose[11]])
 
-            robot_state.rx = math.degrees(rx)
-            robot_state.ry = math.degrees(ry)
-            robot_state.rz = math.degrees(rz)
+                # Check frame mode
+                if ui_state.frame == "TRF":
+                    # Compute inverse transform: T_inv = [R^T | -R^T * t]
+                    R_inv = R.T
+                    t_m = t_mm / 1000.0  # Convert to meters for computation
+                    t_inv_m = -(R_inv @ t_m)
+                    t_inv_mm = t_inv_m * 1000.0  # Back to mm
+
+                    # Update state with TRF values
+                    robot_state.x = float(t_inv_mm[0])
+                    robot_state.y = float(t_inv_mm[1])
+                    robot_state.z = float(t_inv_mm[2])
+                    robot_state.rx, robot_state.ry, robot_state.rz = SO3(R_inv).rpy(
+                        order="xyz", unit="deg"
+                    )
+                else:
+                    # WRF: use original values
+                    robot_state.x = float(t_mm[0])
+                    robot_state.y = float(t_mm[1])
+                    robot_state.z = float(t_mm[2])
+                    robot_state.rx, robot_state.ry, robot_state.rz = SO3(R).rpy(
+                        order="xyz", unit="deg"
+                    )
+            except Exception:
+                # Fallback to zeros on extraction error
+                robot_state.x = 0.0
+                robot_state.y = 0.0
+                robot_state.z = 0.0
+                robot_state.rx = 0.0
+                robot_state.ry = 0.0
+                robot_state.rz = 0.0
+        else:
+            # Partial pose data, extract translation only
+            robot_state.x = float(pose[3])
+            robot_state.y = float(pose[7])
+            robot_state.z = float(pose[11])
 
     if len(io) >= 5:
         in1, in2, out1, out2, estop = io[:5]
-        estop_text = "OK" if estop else "TRIGGERED"
-
-        # Update footer E-STOP
-        if estop_label:
-            estop_label.text = "E-STOP"
-            if estop_tooltip:
-                estop_tooltip.text = estop_text
-            estop_label.style("color: #21BA45" if estop else "color: #DB2828")
 
         # Push IO derived fields into bindable RobotState
         robot_state.io_in1 = int(in1)
@@ -290,13 +639,6 @@ def update_ui_from_status() -> None:
         robot_state.io_out1 = int(out1)
         robot_state.io_out2 = int(out2)
         robot_state.io_estop = int(estop)
-    else:
-        # Footer fallback on failure
-        if estop_label:
-            estop_label.text = "E-STOP"
-            if estop_tooltip:
-                estop_tooltip.text = "unknown"
-            estop_label.style("color: #9E9E9E")
 
     if len(gr) >= 6:
         gid, pos, spd, cur, status_b, obj = gr[:6]
@@ -307,157 +649,365 @@ def update_ui_from_status() -> None:
         robot_state.grip_current = int(cur)
         robot_state.grip_obj = int(obj)
 
-    # Update calibrate page button state
-    calibrate_page_instance._update_go_to_limit_button()
+    # Monitor E-STOP state changes and show/hide dialog as needed
+    control_panel.check_estop_state_change()
 
 
-def build_header_and_tabs() -> None:
-    # Header with left navigation tabs, centered firmware text, right help + theme toggle
-    with (
-        ui.header().classes("p-0"),
-        ui.row().classes("w-full items-center justify-between"),
-    ):
-        # Left: navigation tabs (will be returned for tab_panels)
-        global main_tabs
-        with ui.tabs() as main_tabs:
-            move_tab = ui.tab("Move")
-            io_tab = ui.tab("I/O")
-            calibrate_tab = ui.tab("Calibrate")
-            gripper_tab = ui.tab("Gripper")
-            settings_tab = ui.tab("Settings")
-        # Center: firmware label
-        ui.label(f"FW version: {fw_version}").classes("text-sm text-center")
-        # Right: theme toggle and help
-        with ui.row().classes("items-center gap-2"):
-            ui.button(
-                "?",
-                on_click=lambda: ui.run_javascript(
-                    f"window.open('{PAROL6_OFFICIAL_DOC_URL}', '_blank')"
-                ),
-            ).props("round unelevated")
-
-    # Tab panels
-    with ui.tab_panels(main_tabs, value=move_tab).classes("w-full"):
-        with ui.tab_panel(move_tab):
-            move_page_instance.build()
-        with ui.tab_panel(io_tab):
-            io_page_instance.build()
-        with ui.tab_panel(calibrate_tab):
-            calibrate_page_instance.build()
-        with ui.tab_panel(gripper_tab):
-            gripper_page_instance.build()
-        with ui.tab_panel(settings_tab):
-            settings_page_instance.build()
+def toggle_bottom_log() -> None:
+    """Toggle bottom log panel visibility."""
+    global bottom_log_drawer, root_container
+    drawer = bottom_log_drawer
+    if isinstance(drawer, ui.element):
+        is_open = "open" in drawer._classes
+        if is_open:
+            drawer.classes(remove="open")
+        else:
+            drawer.classes(add="open")
 
 
-def build_footer() -> None:
-    # Footer: Simulator/Real, Connect/Disconnect, Clear error, E-stop
-    with ui.footer().classes("justify-between items-center px-3 py-1"):
-        with ui.row().classes("items-center gap-4"):
-            global \
-                estop_label, \
-                controller_status_label, \
-                robot_status_label, \
-                ctrl_tooltip, \
-                robot_tooltip, \
-                estop_tooltip, \
-                com_input_tooltip
-            controller_status_label = ui.label("CTRL").classes("text-sm")
-            with controller_status_label:
-                ctrl_tooltip = ui.tooltip("unknown")
-            ui.label("|").classes("text-sm text-[var(--ctk-muted)]")
-            robot_status_label = ui.label("ROBOT").classes("text-sm")
-            with robot_status_label:
-                robot_tooltip = ui.tooltip("unknown")
-            ui.label("|").classes("text-sm text-[var(--ctk-muted)]")
-            estop_label = ui.label("E-STOP").classes("text-sm")
-            with estop_label:
-                estop_tooltip = ui.tooltip("unknown")
-        with ui.row().classes("items-center gap-2"):
-            stored_port = ng_app.storage.general.get("com_port", "")
-            com_input = ui.input(label="Serial Port", value=stored_port)
-            with com_input:
-                com_input_tooltip = ui.tooltip(
-                    "COM5 / /dev/ttyACM0 / /dev/tty.usbmodem0"
-                )
+def build_page_content() -> None:
+    """Build the Move page UI inline"""
+    global \
+        urdf_scene, \
+        response_log, \
+        bottom_log_drawer, \
+        io_page, \
+        gripper_page, \
+        settings_page
 
-            async def handle_set_port():
-                ng_app.storage.general["com_port"] = com_input.value or ""
-                await set_port(com_input.value or "")
-
-            # Enter-to-apply
-            com_input.on("keydown.enter", handle_set_port)
-
-            # Simulator toggle - default based on whether port is empty
-            ui.toggle(
-                options=["Robot", "Simulator"],
-                value="Simulator" if not stored_port else "Robot",
-                on_change=on_sim_toggle_change,
-            ).props("dense")
-
-            ui.button("Set Port", on_click=handle_set_port)
-            ui.button("Clear error", on_click=send_clear_error).props("color=warning")
-            ui.button("Stop", on_click=send_stop_motion).props("color=negative")
-
-
-async def _app_startup() -> None:
-    apply_theme(get_theme())
-    ui.query(".nicegui-content").classes("p-0")
-    inject_layout_css()
-
-    # Build header and tabs with panels
-    build_header_and_tabs()
-    # 50 Hz Web GUI to controller loop (configurable via PAROL_WEBAPP_CONTROL_RATE_HZ)
-    move_page_instance.joint_jog_timer = ui.timer(
-        interval=WEBAPP_CONTROL_INTERVAL_S,
-        callback=move_page_instance.jog_tick,
-        active=False,
-    )
-    move_page_instance.cart_jog_timer = ui.timer(
-        interval=WEBAPP_CONTROL_INTERVAL_S,
-        callback=move_page_instance.cart_jog_tick,
-        active=False,
+    # Add Lottie player script for E-STOP dialog animations (load in HEAD early)
+    ui.add_head_html(
+        '<script type="module" defer src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>'
     )
 
-    # Attach logging handler to move page response log
-    if move_page_instance.response_log:
-        attach_ui_log(move_page_instance.response_log)
+    with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
+        with ui.column().classes("absolute inset-0 z-0"):
+            # Initialize URDF scene
+            async def _init():
+                global urdf_scene
+                try:
+                    await initialize_urdf_scene()
+                    urdf_scene = ui_state.urdf_scene
+                except Exception as e:
+                    logging.error("URDF init failed: %s", e)
 
-    build_footer()
+            ui.timer(0.05, _init, once=True)
 
+        # Main content area - flex column to share space between left and bottom panels
+        with (
+            ui.column()
+            .classes("absolute inset-0 z-10 flex flex-col")
+            .style("pointer-events: none;")
+        ):
+            # Left-side vertical tabs and panels - grows to fill available space
+            with (
+                ui.row()
+                .classes("flex-1 min-h-0 relative")
+                .style("pointer-events: none;")
+            ):
+                with ui.tabs().props("vertical").style(
+                    "background: transparent !important; pointer-events: auto;"
+                ).classes("absolute left-0 top-0 bottom-0 w-[72px] z-30") as side_tabs:
+                    ui.tab(name="program", label="", icon="code")
+                    ui.tab(name="io", label="", icon="settings_input_component")
+                    ui.tab(name="settings", label="", icon="settings")
+                    ui.tab(name="gripper", label="", icon="pan_tool_alt")
+                    ui.element(tag="q-route-tab").props(
+                        f"icon='help' href='{PAROL6_OFFICIAL_DOC_URL}'"
+                    ).tooltip("Open PAROL6 documentation")
+
+                # Left content wrapper: reserve space for tabs (72px) and fill remaining area
+                with ui.column().classes(
+                    "pl-[72px] w-full h-full overflow-hidden"
+                ).style("pointer-events: none;") as left_wrap:
+                    with ui.tab_panels(side_tabs, value=None).props(
+                        "vertical animated transition-prev=slide-up transition-next=slide-down"
+                    ).classes("left-panels h-auto max-h-full overflow-auto").style(
+                        "pointer-events: none;"
+                    ) as left_panels:
+
+                        def close_left_panels():
+                            side_tabs.value = None
+                            left_panels.value = None
+
+                        with ui.tab_panel("program").classes(
+                            "overlay-card overflow-hidden"
+                        ):
+                            with ui.row().classes("w-full"):
+                                ui.label("Program").classes("text-lg font-medium")
+                                ui.space()
+                                ui.button(
+                                    icon="close", on_click=close_left_panels
+                                ).props("flat round dense color=white")
+                            with (
+                                ui.element("div")
+                                .classes("overflow-y-auto")
+                                .style("max-height: calc(100vh - 120px);")
+                            ):
+                                editor_panel.build()
+
+                        with ui.tab_panel("io").classes("overlay-card overflow-hidden"):
+                            with ui.row().classes("w-full"):
+                                ui.label("I/O").classes("text-lg font-medium")
+                                ui.space()
+                                ui.button(
+                                    icon="close", on_click=close_left_panels
+                                ).props("flat round dense color=white")
+                            with (
+                                ui.element("div")
+                                .classes("overflow-y-auto")
+                                .style("max-height: calc(100vh - 120px);")
+                            ):
+                                io_page = io_page or IoPage()
+                                io_page.build()
+
+                        with ui.tab_panel("settings").classes(
+                            "overlay-card overflow-hidden"
+                        ):
+                            with ui.row().classes("w-full"):
+                                ui.label("Settings").classes("text-lg font-medium")
+                                ui.space()
+                                ui.button(
+                                    icon="close", on_click=close_left_panels
+                                ).props("flat round dense color=white")
+                            with (
+                                ui.element("div")
+                                .classes("overflow-y-auto")
+                                .style("max-height: calc(100vh - 120px);")
+                            ):
+                                settings_page = settings_page or SettingsPage()
+                                settings_page.build()
+
+                        with ui.tab_panel("gripper").classes(
+                            "overlay-card overflow-hidden"
+                        ):
+                            with ui.row().classes("w-full"):
+                                ui.label("Gripper").classes("text-lg font-medium")
+                                ui.space()
+                                ui.button(
+                                    icon="close", on_click=close_left_panels
+                                ).props("flat round dense color=white")
+                            with (
+                                ui.element("div")
+                                .classes("overflow-y-auto")
+                                .style("max-height: calc(100vh - 120px);")
+                            ):
+                                gripper_page = gripper_page or GripperPage()
+                                gripper_page.build()
+
+                        # Bind left tab changes to enable only when a left panel is open
+                        def update_left_layout():
+                            has_left = bool(side_tabs.value)
+                            if has_left:
+                                # Enable interactions inside the left panels area
+                                left_wrap.style("pointer-events: auto;")
+                                left_panels.style("pointer-events: auto;")
+                            else:
+                                # Disable the entire left content area so clicks pass through to the scene
+                                left_wrap.style("pointer-events: none;")
+                                left_panels.style("pointer-events: none;")
+
+                        side_tabs.on(
+                            "update:model-value", lambda e: update_left_layout()
+                        )
+                        side_tabs.on(
+                            "update:modelValue", lambda e: update_left_layout()
+                        )
+                        # Initial sync to avoid invisible overlay blocking scene
+                        update_left_layout()
+
+            # Bottom vertical tabs and panels - anchored at bottom-left
+            with ui.column().classes("absolute bottom-0 left-0 z-40"):
+                # Tabs stay at bottom corner
+                with ui.row().classes(
+                    "absolute bottom-0 left-0 z-50 pointer-events-auto"
+                ):
+                    with ui.tabs().props("vertical").style(
+                        "background: transparent !important"
+                    ) as bottom_tabs:
+                        ui.tab(name="response", label="", icon="article").tooltip("Log")
+
+                # Panels positioned above tabs, offset to right of tab column
+                with ui.tab_panels(bottom_tabs, value=None).props(
+                    "vertical animated transition-prev=slide-up transition-next=slide-down"
+                ).classes("bottom-panels").style(
+                    "position: absolute; bottom: 12px; left: 72px; height: 50vh; width: calc(50vw - 72px); pointer-events: none;"
+                ) as bottom_panels:
+
+                    def close_bottom_panels():
+                        bottom_tabs.value = None
+                        bottom_panels.value = None
+                        # Ensure top panels restore to full height and bottom panel stops intercepting
+                        left_wrap.style("height: 100%;")
+                        bottom_panels.style("pointer-events: none;")
+                        # Re-run layout sync to be extra sure state is consistent
+                        if "update_bottom_layout" in locals():
+                            update_bottom_layout()
+
+                    with ui.tab_panel("response").classes("overlay-card h-full w-full"):
+                        with ui.row().classes("w-full"):
+                            ui.label("Log").classes("text-lg font-medium")
+                            ui.space()
+                            ui.button(icon="close", on_click=close_bottom_panels).props(
+                                "flat round dense color=white"
+                            )
+                        response_log = ui.log(max_lines=1000).classes(
+                            "w-full whitespace-pre-wrap break-words h-full"
+                        )
+
+                        # Bind bottom tab changes to adjust layout and interactivity
+                        def update_bottom_layout():
+                            is_open = bool(bottom_tabs.value)
+                            if is_open:
+                                left_wrap.style("height: calc(100% - 50vh - 12px);")
+                                bottom_panels.style("pointer-events: auto;")
+                            else:
+                                left_wrap.style("height: 100%;")
+                                bottom_panels.style("pointer-events: none;")
+
+                        # Bind to both event casings to ensure compatibility
+                        bottom_tabs.on(
+                            "update:model-value", lambda e: update_bottom_layout()
+                        )
+                        bottom_tabs.on(
+                            "update:modelValue", lambda e: update_bottom_layout()
+                        )
+
+                        # Initial sync on load to avoid stale half-height state
+                        update_bottom_layout()
+
+        # Top-right HUD: Pose readouts
+        readout_panel.build("tr")
+
+        # Bottom-right HUD: control panel
+        control_panel.build("br")
+
+
+@ng_app.on_startup
+async def _on_startup() -> None:
+    # Start controller and streaming on server startup
     try:
         port = ng_app.storage.general.get("com_port", "")
     except Exception:
         port = ""
-    await start_controller(port)
-    # Evaluate runtime env flags (allow overriding constants at test/runtime)
-    auto_sim = os.getenv("PAROL_WEBAPP_AUTO_SIMULATOR", "1").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    try:
+        if not controller_state.running:
+            await start_controller(port)
+
+        # Honor runtime flags on startup
+        auto_sim = os.getenv("PAROL_WEBAPP_AUTO_SIMULATOR", "1").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        require_ready = os.getenv("PAROL_WEBAPP_REQUIRE_READY", "1").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if require_ready:
+            with contextlib.suppress(Exception):
+                await client.wait_for_server_ready(timeout=3.0)
+                await client.stream_on()
+
+        if not port and auto_sim:
+            with contextlib.suppress(Exception):
+                await client.simulator_on()
+                robot_state.simulator_active = True
+                await asyncio.sleep(0.05)
+                await client.enable()
+
+    except Exception as e:
+        logging.error("App startup init failed: %s", e)
+
+
+@ng_app.on_shutdown
+async def _on_shutdown() -> None:
+    # Clean shutdown of controller when server stops
+    with contextlib.suppress(Exception):
+        await stop_controller()
+
+
+@ui.page("/")
+async def index_page():
+    global ping_timer, joint_jog_timer, cart_jog_timer
+    # Theme and layout
+    apply_theme(get_theme())
+    ui.query(".nicegui-content").classes("p-0")
+    inject_layout_css()
+
+    # Build UI
+    build_page_content()
+
+    # Store client context for background tasks
+    ui_state.client = ui.context.client
+
+    # Determine initial mode based on connectivity
+    try:
+        # Quick ping to check if robot is connected
+        pong = await client.ping()
+        serial = False
+        if isinstance(pong, str):
+            if "SERIAL=" in pong:
+                serial = pong.split("SERIAL=", 1)[-1].strip().startswith("1")
+        elif isinstance(pong, dict):
+            payload = pong.get("payload")
+            if isinstance(payload, dict):
+                val = payload.get("serial") or payload.get("serial_connected")
+                if isinstance(val, (int, bool)):
+                    serial = bool(val)
+
+        robot_state.connected = bool(serial)
+
+        # Default to Simulator mode if not connected
+        if not serial:
+            robot_state.simulator_active = True
+            with contextlib.suppress(Exception):
+                await client.simulator_on()
+            control_panel._show_sim_banner()
+        else:
+            robot_state.simulator_active = False
+            control_panel._hide_sim_banner()
+
+        # Update button visuals to match mode
+        if callable(getattr(control_panel, "_update_robot_btn_visual", None)):
+            control_panel._update_robot_btn_visual()
+    except Exception as e:
+        logging.warning(
+            "Initial connectivity check failed: %s - defaulting to Simulator mode", e
+        )
+        robot_state.connected = False
+        robot_state.simulator_active = True
+        with contextlib.suppress(Exception):
+            await client.simulator_on()
+        control_panel._show_sim_banner()
+        if callable(getattr(control_panel, "_update_robot_btn_visual", None)):
+            control_panel._update_robot_btn_visual()
+
+    # Create jog timers
+    joint_jog_timer = ui.timer(
+        interval=WEBAPP_CONTROL_INTERVAL_S,
+        callback=control_panel.jog_tick,
+        active=False,
     )
-    require_ready = os.getenv("PAROL_WEBAPP_REQUIRE_READY", "1").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    cart_jog_timer = ui.timer(
+        interval=WEBAPP_CONTROL_INTERVAL_S,
+        callback=control_panel.cart_jog_tick,
+        active=False,
     )
 
-    # Default to simulator when no port is configured (opt-in)
-    if not port and auto_sim:
-        await client.simulator_on()
+    # Wire timers to ui_state so control panel can access them
+    ui_state.joint_jog_timer = joint_jog_timer
+    ui_state.cart_jog_timer = cart_jog_timer
 
-    # Ensure streaming mode is ON during UI operation (opt-in)
-    if require_ready:
-        await client.wait_for_server_ready(timeout=3.0)
-        await client.stream_on()
+    # Attach logging handler to response log
+    if response_log:
+        attach_ui_log(response_log)
 
-
-ng_app.on_startup(_app_startup)
-
-# Create ping timer (1Hz) for connectivity checks only
-ping_timer = ui.timer(interval=1.0, callback=check_ping, active=False)
+    # Page-scoped connectivity check (1 Hz)
+    ping_timer = ui.timer(interval=1.0, callback=check_ping, active=True)
 
 
 async def _status_consumer() -> None:
@@ -494,6 +1044,10 @@ async def _status_consumer() -> None:
                 robot_state.pose = pose_list or robot_state.pose
                 robot_state.io = io_list
                 robot_state.gripper = gr_list
+
+                # Propagate task fields from STATUS if present
+                robot_state.action_current = status.get("action_current") or ""
+                robot_state.action_state = status.get("action_state") or "IDLE"
                 robot_state.last_update_ts = time.time()
 
                 # Update UI directly from multicast consumer
@@ -599,11 +1153,10 @@ def main():
         title="PAROL6 NiceGUI Commander",
         host=RUNTIME_SERVER_HOST,
         port=RUNTIME_SERVER_PORT,
-        reload=False,
+        reload=True,
         show=False,
         loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",
-        ws="wsproto",
         binding_refresh_interval=0.05,
     )
 

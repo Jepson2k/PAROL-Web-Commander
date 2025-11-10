@@ -9,11 +9,9 @@ description = "Web interface for PAROL robot control"
 requires-python = ">=3.11"
 dependencies = [
   "parol6 @ file:external/PAROL6-python-API",
-  "urdf_scene_nicegui @ file:external/urdf_scene_nicegui",
-  "nicegui>=2.0.0",
+  "nicegui<=4.0.0",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
-  "numpy==1.26.4",
   "scipy>=1.10",
 ]
 
@@ -38,6 +36,7 @@ extend-exclude = [
 
 [tool.mypy]
 exclude = '(?x)(^external/|PAROL.*/)$'
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["parol6", "parol6.*", "roboticstoolbox", "roboticstoolbox.*", "spatialmath", "spatialmath.*"]

@@ -33,14 +33,7 @@ def headless_server() -> Iterator[subprocess.Popen]:
         / "parol6"
         / "server"
         / "controller.py",
-        repo_root
-        / "external"
-        / "PAROL6-python-API"
-        / "parol6"
-        / "server"
-        / "headless_commander.py",
         repo_root / "PAROL6-python-API" / "parol6" / "server" / "controller.py",
-        repo_root / "PAROL6-python-API" / "parol6" / "server" / "headless_commander.py",
     ]
     server_script = next((p for p in candidates if p.exists()), None)
     assert server_script is not None, (
