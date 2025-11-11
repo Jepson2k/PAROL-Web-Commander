@@ -20,7 +20,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional, Callable, Dict, Sequence, Union
+from typing import Any, List, Tuple, Optional, Callable, Dict, Sequence, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -143,19 +143,15 @@ class UrdfScene:
             app.add_static_files(self.meshes_url, str(self.meshes_dir))
 
         # Scene-related state
-        self.joint_groups: dict[str, ui.scene.group] = {}
+        self.joint_groups: dict[str, Any] = {}
         self.joint_pos_limits: dict = {}
         self.joint_trafos: dict = {}
-        self.scene: ui.scene | None = None
+        self.scene: Any | None = None
 
         # Cartesian gizmo
-        self.gizmo_group: ui.scene.group | None = None  # root group for gizmo parts
-        self.gizmo_translate_group: ui.scene.group | None = (
-            None  # subgroup for translation arrows
-        )
-        self.gizmo_rotate_group: ui.scene.group | None = (
-            None  # subgroup for rotation rings
-        )
+        self.gizmo_group: Any | None = None  # root group for gizmo parts
+        self.gizmo_translate_group: Any | None = None  # subgroup for translation arrows
+        self.gizmo_rotate_group: Any | None = None  # subgroup for rotation rings
         self._gizmo_handles: Dict[str, List] = {}  # axis_key -> list of Object3D
         self._gizmo_callbacks: List[Callable[[GizmoEvent], None]] = []
         self._active_axis: Optional[str] = None
@@ -167,10 +163,10 @@ class UrdfScene:
         self._stl_scale: float = 1.0
 
         # TCP anchoring: created on end-link under last joint
-        self.tcp_anchor: ui.scene.group | None = (
+        self.tcp_anchor: Any | None = (
             None  # attached under last joint transform (flange)
         )
-        self.tcp_offset: ui.scene.group | None = (
+        self.tcp_offset: Any | None = (
             None  # child of tcp_anchor for tool-specific offset/orientation
         )
 
@@ -529,6 +525,7 @@ class UrdfScene:
         self._gizmo_handles.clear()
 
         # Create subgroups for translation and rotation
+        assert self.gizmo_group is not None
         with self.gizmo_group:
             self.gizmo_translate_group = ui.scene.group().with_name("gizmo:translate")  # type: ignore[assignment,attr-defined]
             self.gizmo_rotate_group = ui.scene.group().with_name("gizmo:rotate")  # type: ignore[assignment,attr-defined]
@@ -993,7 +990,7 @@ class UrdfScene:
 
         if not package_names:
             # No package URIs, load directly
-            return URDF.load(path, lazy_load_meshes=lazy)
+            return URDF.load(str(path), lazy_load_meshes=lazy)
 
         # Replace package:// URIs
         modified_content = content
@@ -1017,7 +1014,7 @@ class UrdfScene:
         with tempfile.TemporaryDirectory() as tmpdirname:
             tmp_file_path = Path(tmpdirname) / path.name
             tmp_file_path.write_text(modified_content, encoding="utf-8")
-            return URDF.load(tmp_file_path, lazy_load_meshes=lazy)
+            return URDF.load(str(tmp_file_path), lazy_load_meshes=lazy)
 
     @classmethod
     def get_transl_and_rpy(cls, mat) -> Tuple[np.ndarray, np.ndarray]:
