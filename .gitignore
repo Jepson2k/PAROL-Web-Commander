@@ -1,4 +1,5 @@
 .*/
+!.github/
 *.pyc
 *.log
 *.out
