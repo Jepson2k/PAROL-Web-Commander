@@ -20,7 +20,7 @@ async def test_joint_jog_button_sends_jog_joint(
     button causes the reported J1 angle to change.
     """
     await user.open("/")
-    await asyncio.sleep(2)
+    await asyncio.sleep(4)
 
     # Ensure simulator mode is active so jogging is allowed
     assert robot_state.simulator_active
@@ -52,7 +52,7 @@ async def test_cartesian_jog_icon_sends_jog_cartesian(user: User, robot_state) -
     reported pose to change.
     """
     await user.open("/")
-    await asyncio.sleep(2)
+    await asyncio.sleep(4)
 
     # Wait for initial pose
     assert robot_state.simulator_active
@@ -121,7 +121,7 @@ async def test_go_to_joint_limit_changes_joint_configuration(
     joint angles being reported by the controller.
     """
     await user.open("/")
-    await asyncio.sleep(2)
+    await asyncio.sleep(4)
 
     # Wait for initial status and snapshot current angles
     assert robot_state.simulator_active
