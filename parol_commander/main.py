@@ -13,7 +13,7 @@ import numpy as np
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.elements.tooltip import Tooltip
-from parol6 import ensure_server, ServerManager
+from parol6 import AsyncRobotClient, ServerManager, is_server_running, manage_server
 from parol6.tools import TOOL_CONFIGS
 from importlib.resources import files, as_file
 
@@ -29,11 +29,11 @@ from parol_commander.constants import (
     SERVER_PORT,
     CONTROLLER_HOST,
     CONTROLLER_PORT,
-    AUTO_START,
+    EXCLUSIVE_START,
     LOG_LEVEL,
     WEBAPP_CONTROL_INTERVAL_S,
 )
-from parol_commander.services.robot_client import client
+
 from parol_commander.state import robot_state, controller_state, ui_state
 from parol_commander.components.io import IoPage
 from parol_commander.components.gripper import GripperPage
@@ -57,14 +57,16 @@ RUNTIME_SERVER_HOST = SERVER_HOST
 RUNTIME_SERVER_PORT = SERVER_PORT
 RUNTIME_CONTROLLER_HOST = CONTROLLER_HOST
 RUNTIME_CONTROLLER_PORT = CONTROLLER_PORT
-RUNTIME_AUTO_START = AUTO_START
+RUNTIME_EXCLUSIVE_START = EXCLUSIVE_START
 
 STATIC_DIR = pkg_files("parol_commander").joinpath("static")
 ng_app.add_static_files("/static", str(STATIC_DIR))
 
 # ------------------------ Global UI/state ------------------------
 
-fw_version = "1.0.0"
+# Global client instance - initialized in main() after CLI parsing
+client: AsyncRobotClient
+
 controller_status_label: ui.label | None = None
 robot_status_label: ui.label | None = None
 
@@ -78,9 +80,9 @@ ping_timer: ui.timer | None = None
 last_ping_ok: bool = False
 
 # Component instances
-control_panel = ControlPanel()
-readout_panel = ReadoutPanel()
-editor_panel = EditorPanel()
+control_panel: ControlPanel
+readout_panel: ReadoutPanel
+editor_panel: EditorPanel
 io_page: IoPage | None = None
 gripper_page: GripperPage | None = None
 settings_page: SettingsPage | None = None
@@ -95,7 +97,6 @@ script_running: bool = False
 bottom_log_drawer: ui.element | None = None
 
 # Main tabs reference for tab_panels
-main_tabs = None
 server_manager: ServerManager | None = None
 
 # --------------- URDF Scene Functions ---------------
@@ -408,18 +409,34 @@ async def update_tool_visualization(tool_name: str) -> None:
 
 
 async def start_controller(com_port: str | None) -> None:
+    """Start the PAROL6 controller or attach to an existing one.
+
+    In EXCLUSIVE_START mode this will *fail hard* if a controller is already
+    running at the configured host/port instead of silently reusing it.
+    """
     global server_manager
     try:
         # If AUTO_START requested, ensure a server is running at the target tuple
-        if RUNTIME_AUTO_START:
-            server_manager = await ensure_server(
+        if RUNTIME_EXCLUSIVE_START:
+            server_manager = manage_server(
                 host=RUNTIME_CONTROLLER_HOST,
                 port=RUNTIME_CONTROLLER_PORT,
-                manage=True,
                 com_port=com_port,
                 extra_env=None,
                 normalize_logs=True,
             )
+        else:
+            # If a controller is already running, reuse it; otherwise start our own
+            if is_server_running(
+                host=RUNTIME_CONTROLLER_HOST,
+                port=RUNTIME_CONTROLLER_PORT,
+            ):
+                logging.info(
+                    "Controller already running at %s:%s; reusing external server",
+                    RUNTIME_CONTROLLER_HOST,
+                    RUNTIME_CONTROLLER_PORT,
+                )
+                server_manager = None
 
         # enable ping timer now that we are connected
         global ping_timer, status_consumer_task
@@ -441,28 +458,22 @@ async def start_controller(com_port: str | None) -> None:
         logging.error("Start controller failed: %s", e)
 
 
-async def stop_controller() -> None:
-    global server_manager
+def stop_controller() -> None:
+    global server_manager, ping_timer, status_consumer_task
     try:
         if server_manager:
-            await server_manager.stop_controller()
+            logging.info("Stopping controller...")
+            server_manager.stop_controller()
         server_manager = None
-        # disable ping timer on disconnect and stop consumer
-        global ping_timer, status_consumer_task
-        if ping_timer:
+
+        # Disable ping timer and stop multicast consumer on disconnect
+        if ping_timer is not None:
             ping_timer.active = False
-        if status_consumer_task:
+        if status_consumer_task is not None and not status_consumer_task.done():
             status_consumer_task.cancel()
-            with contextlib.suppress(Exception):
-                await status_consumer_task
-            status_consumer_task = None
+
         controller_state.running = False
         robot_state.connected = False
-        if controller_status_label:
-            controller_status_label.text = "CTRL"
-            if ctrl_tooltip:
-                ctrl_tooltip.text = "stopped"
-            controller_status_label.style("color: #DB2828")
         logging.info("Controller stopped")
     except Exception as e:
         logging.error("Stop controller failed: %s", e)
@@ -708,10 +719,16 @@ def build_page_content() -> None:
                 with ui.tabs().props("vertical").style(
                     "background: transparent !important; pointer-events: auto;"
                 ).classes("absolute left-0 top-0 bottom-0 w-[72px] z-30") as side_tabs:
-                    ui.tab(name="program", label="", icon="code")
-                    ui.tab(name="io", label="", icon="settings_input_component")
-                    ui.tab(name="settings", label="", icon="settings")
-                    ui.tab(name="gripper", label="", icon="pan_tool_alt")
+                    program_tab = ui.tab(name="program", label="", icon="code")
+                    program_tab.mark("tab-program")
+                    io_tab = ui.tab(
+                        name="io", label="", icon="settings_input_component"
+                    )
+                    io_tab.mark("tab-io")
+                    settings_tab = ui.tab(name="settings", label="", icon="settings")
+                    settings_tab.mark("tab-settings")
+                    gripper_tab = ui.tab(name="gripper", label="", icon="pan_tool_alt")
+                    gripper_tab.mark("tab-gripper")
                     ui.element(tag="q-route-tab").props(
                         f"icon='help' href='{PAROL6_OFFICIAL_DOC_URL}'"
                     ).tooltip("Open PAROL6 documentation")
@@ -758,7 +775,7 @@ def build_page_content() -> None:
                                 .classes("overflow-y-auto")
                                 .style("max-height: calc(100vh - 120px);")
                             ):
-                                io_page = io_page or IoPage()
+                                io_page = io_page or IoPage(client)
                                 io_page.build()
 
                         with ui.tab_panel("settings").classes(
@@ -775,7 +792,7 @@ def build_page_content() -> None:
                                 .classes("overflow-y-auto")
                                 .style("max-height: calc(100vh - 120px);")
                             ):
-                                settings_page = settings_page or SettingsPage()
+                                settings_page = settings_page or SettingsPage(client)
                                 settings_page.build()
 
                         with ui.tab_panel("gripper").classes(
@@ -792,7 +809,7 @@ def build_page_content() -> None:
                                 .classes("overflow-y-auto")
                                 .style("max-height: calc(100vh - 120px);")
                             ):
-                                gripper_page = gripper_page or GripperPage()
+                                gripper_page = gripper_page or GripperPage(client)
                                 gripper_page.build()
 
                         # Bind left tab changes to enable only when a left panel is open
@@ -825,7 +842,9 @@ def build_page_content() -> None:
                     with ui.tabs().props("vertical").style(
                         "background: transparent !important"
                     ) as bottom_tabs:
-                        ui.tab(name="response", label="", icon="article").tooltip("Log")
+                        resp_tab = ui.tab(name="response", label="", icon="article")
+                        resp_tab.tooltip("Log")
+                        resp_tab.mark("tab-log")
 
                 # Panels positioned above tabs, offset to right of tab column
                 with ui.tab_panels(bottom_tabs, value=None).props(
@@ -885,6 +904,12 @@ def build_page_content() -> None:
 
 @ng_app.on_startup
 async def _on_startup() -> None:
+    """NiceGUI startup hook.
+
+    Any failure to start the controller (including "server already running")
+    is treated as a hard error so tests cannot silently proceed in a bad state.
+    """
+    global server_manager
     # Start controller and streaming on server startup
     try:
         port = ng_app.storage.general.get("com_port", "")
@@ -894,40 +919,30 @@ async def _on_startup() -> None:
         if not controller_state.running:
             await start_controller(port)
 
-        # Honor runtime flags on startup
-        auto_sim = os.getenv("PAROL_WEBAPP_AUTO_SIMULATOR", "1").lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        require_ready = os.getenv("PAROL_WEBAPP_REQUIRE_READY", "1").lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        if require_ready:
-            with contextlib.suppress(Exception):
-                await client.wait_for_server_ready(timeout=3.0)
-                await client.stream_on()
+        await client.stream_on()
 
-        if not port and auto_sim:
-            with contextlib.suppress(Exception):
-                await client.simulator_on()
-                robot_state.simulator_active = True
-                await asyncio.sleep(0.05)
-                await client.enable()
+        if not port:
+            await client.simulator_on()
+            robot_state.simulator_active = True
+            await asyncio.sleep(0.05)
+            await client.enable()
 
     except Exception as e:
         logging.error("App startup init failed: %s", e)
+        # Clean up server_manager if startup failed
+        if server_manager:
+            server_manager.stop_controller()
+            server_manager = None
+        # Re-raise so tests and callers see a hard failure
+        raise
 
 
 @ng_app.on_shutdown
 async def _on_shutdown() -> None:
-    # Clean shutdown of controller when server stops
-    with contextlib.suppress(Exception):
-        await stop_controller()
+    """NiceGUI shutdown hook - ensure controller is stopped."""
+    logging.debug("Nicegui Shutting Down...")
+    stop_controller()
+    await client.close()
 
 
 @ui.page("/")
@@ -1118,8 +1133,24 @@ def main():
     if args.disable_auto_start is not None:
         RUNTIME_AUTO_START = args.disable_auto_start
 
-    client.host = RUNTIME_CONTROLLER_HOST
-    client.port = RUNTIME_CONTROLLER_PORT
+    # Initialize client and component instances with final runtime controller target
+    global \
+        client, \
+        control_panel, \
+        readout_panel, \
+        editor_panel, \
+        io_page, \
+        gripper_page, \
+        settings_page
+    client = AsyncRobotClient(
+        host=RUNTIME_CONTROLLER_HOST, port=RUNTIME_CONTROLLER_PORT
+    )
+    control_panel = ControlPanel(client)
+    readout_panel = ReadoutPanel()
+    editor_panel = EditorPanel(client)
+    io_page = None
+    gripper_page = None
+    settings_page = None
 
     # Resolve log level priority: explicit --log-level > -v/-q > env default from constants
     if args.log_level:
@@ -1153,7 +1184,7 @@ def main():
         title="PAROL6 NiceGUI Commander",
         host=RUNTIME_SERVER_HOST,
         port=RUNTIME_SERVER_PORT,
-        reload=True,
+        reload=False,
         show=False,
         loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",

@@ -4,11 +4,14 @@ from nicegui import app as ng_app
 from nicegui import ui
 
 from parol_commander.common.theme import set_theme
-from parol_commander.services.robot_client import client
+from parol6 import AsyncRobotClient
 
 
 class SettingsPage:
     """Settings tab page."""
+
+    def __init__(self, client: AsyncRobotClient) -> None:
+        self.client = client
 
     def build(self) -> None:
         # Theme mode toggle
@@ -31,7 +34,7 @@ class SettingsPage:
 
         async def _apply_port():
             ng_app.storage.general["com_port"] = sp_input.value or ""
-            await client.set_serial_port(sp_input.value or "")
+            await self.client.set_serial_port(sp_input.value or "")
             ui.notify(f"SET_PORT {sp_input.value or ''}", color="primary")
 
         with sp_input:

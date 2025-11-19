@@ -2,14 +2,15 @@ import logging
 
 from nicegui import ui
 
-from parol_commander.services.robot_client import client
 from parol_commander.state import robot_state
+from parol6 import AsyncRobotClient
 
 
 class GripperPage:
     """Gripper tab page."""
 
-    def __init__(self) -> None:
+    def __init__(self, client: AsyncRobotClient) -> None:
+        self.client = client
         # Status labels
         self.grip_id_label: ui.label | None = None
         self.grip_cal_status_label: ui.label | None = None
@@ -28,7 +29,7 @@ class GripperPage:
 
     async def _grip_cal(self) -> None:
         try:
-            resp = await client.control_electric_gripper("calibrate")
+            resp = await self.client.control_electric_gripper("calibrate")
             ui.notify(resp, color="primary")
             logging.info("ELECTRIC CALIBRATE")
         except Exception as e:
@@ -49,7 +50,7 @@ class GripperPage:
                 if self.grip_current_slider
                 else 100
             )
-            resp = await client.control_electric_gripper(
+            resp = await self.client.control_electric_gripper(
                 "move", position=pos, speed=spd, current=cur
             )
             ui.notify(resp, color="primary")

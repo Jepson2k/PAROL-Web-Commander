@@ -14,6 +14,17 @@ _LEVEL_COLORS = {
     "ERROR": "\033[31m",  # red
     "CRITICAL": "\033[41m",  # red background
 }
+
+# CSS classes used for NiceGUI log lines (mirrors CLI color semantics)
+_LEVEL_CLASSES = {
+    "TRACE": "log-trace",
+    "DEBUG": "log-debug",
+    "INFO": "log-info",
+    "WARNING": "log-warning",
+    "ERROR": "log-error",
+    "CRITICAL": "log-critical",
+}
+
 _RESET = "\033[0m"
 _DIM = "\033[2m"
 
@@ -82,6 +93,8 @@ class NiceGuiLogHandler(logging.Handler):
         if not _ui_log_targets:
             return
         msg = self.format(record)
+        level = record.levelname.upper()
+        classes = _LEVEL_CLASSES.get(level, "log-info")
         stale: list[weakref.ref] = []
         with _ui_lock:
             for ref in list(_ui_log_targets):
@@ -90,7 +103,7 @@ class NiceGuiLogHandler(logging.Handler):
                     stale.append(ref)
                     continue
                 try:
-                    widget.push(msg)
+                    widget.push(msg, classes=classes)
                 except Exception:
                     # If widget is gone or not available, mark as stale
                     stale.append(ref)

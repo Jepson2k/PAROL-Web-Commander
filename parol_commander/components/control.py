@@ -12,13 +12,13 @@ from typing import Any, cast
 import importlib.resources as pkg_resources
 
 from nicegui import ui
+from parol6 import AsyncRobotClient
 
 from parol_commander.constants import (
     JOINT_LIMITS_DEG,
     WEBAPP_CONTROL_INTERVAL_S,
     WEBAPP_CONTROL_RATE_HZ,
 )
-from parol_commander.services.robot_client import client
 from parol_commander.state import robot_state, ui_state
 from parol6.protocol.types import Axis, Frame
 
@@ -26,8 +26,10 @@ from parol6.protocol.types import Axis, Frame
 class ControlPanel:
     """Bottom-left control panel for jog settings and robot control."""
 
-    def __init__(self) -> None:
-        """Initialize control panel with jog state."""
+    def __init__(self, client: AsyncRobotClient) -> None:
+        """Initialize control panel with jog state and required robot client."""
+        self.client = client
+
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
@@ -345,7 +347,7 @@ class ControlPanel:
             step = abs(float(ui_state.joint_step_deg))
             index = j if direction == "pos" else (j + 6)
             try:
-                await client.jog_joint(
+                await self.client.jog_joint(
                     index, speed_percentage=speed, duration=None, distance_deg=step
                 )
             except Exception as e:
@@ -401,7 +403,7 @@ class ControlPanel:
         if intent is not None:
             j, d = intent
             idx = j if d == "pos" else (j + 6)
-            await client.jog_joint(
+            await self.client.jog_joint(
                 idx, speed_percentage=speed, duration=self.STREAM_TIMEOUT_S
             )
         self._cadence_tick(time.time(), self._tick_stats, "joint")
@@ -465,7 +467,7 @@ class ControlPanel:
             duration = max(0.02, min(0.5, step / 50.0))
             frame = cast(Frame, ui_state.frame)
             try:
-                await client.jog_cartesian(frame, cast(Axis, key), speed, duration)
+                await self.client.jog_cartesian(frame, cast(Axis, key), speed, duration)
             except Exception as e:
                 logging.error("Incremental cart jog failed: %s", e)
             if isinstance(self._cart_pressed_axes, dict):
@@ -498,7 +500,7 @@ class ControlPanel:
         frame = cast(Frame, ui_state.frame)
         axis = self._get_first_pressed_axis()
         if axis is not None:
-            await client.jog_cartesian(
+            await self.client.jog_cartesian(
                 frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
             )
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
@@ -522,7 +524,7 @@ class ControlPanel:
             pose[joint_index] = tgt
             spd = max(1, min(100, int(ui_state.jog_speed)))
 
-            await client.move_joints(pose, speed_percentage=spd)
+            await self.client.move_joints(pose, speed_percentage=spd)
             ui.notify(f"Joint J{joint_index + 1} \u2192 {tgt:.2f}°", color="primary")
         except Exception as e:
             logging.error("Go to joint angle failed: %s", e)
@@ -548,7 +550,7 @@ class ControlPanel:
             target[joint_index] = float(lo if which == "min" else hi)
             spd = max(1, min(100, int(ui_state.jog_speed)))
 
-            await client.move_joints(target, speed_percentage=spd)
+            await self.client.move_joints(target, speed_percentage=spd)
             ui.notify(
                 f"Joint J{joint_index + 1} \u2192 {'min' if which == 'min' else 'max'}",
                 color="primary",
@@ -642,7 +644,7 @@ class ControlPanel:
 
                 async def resume():
                     try:
-                        await client.start()
+                        await self.client.start()
                         ui.notify("Robot enabled - E-STOP cleared", color="positive")
                         if self._estop_dialog:
                             self._estop_dialog.close()
@@ -688,7 +690,7 @@ class ControlPanel:
 
     async def send_enable(self) -> None:
         try:
-            _ = await client.enable()
+            _ = await self.client.enable()
             ui.notify("Sent ENABLE", color="positive")
             logging.info("ENABLE sent")
         except Exception as e:
@@ -696,7 +698,7 @@ class ControlPanel:
 
     async def send_disable(self) -> None:
         try:
-            _ = await client.disable()
+            _ = await self.client.disable()
             ui.notify("Sent DISABLE", color="warning")
             logging.warning("DISABLE sent")
         except Exception as e:
@@ -713,7 +715,7 @@ class ControlPanel:
             return
 
         try:
-            _ = await client.home()
+            _ = await self.client.home()
             ui.notify("Sent HOME", color="primary")
             logging.info("HOME sent")
         except Exception as e:
@@ -766,23 +768,23 @@ class ControlPanel:
         try:
             # Toggle simulator mode and enable
             if not getattr(robot_state, "simulator_active", False):
-                await client.simulator_on()
+                await self.client.simulator_on()
                 robot_state.simulator_active = True
                 # Show persistent simulator banner
                 self._show_sim_banner()
                 # Enable after switching to simulator
                 with contextlib.suppress(Exception):
                     await asyncio.sleep(0.05)  # Brief delay for transport swap
-                    await client.enable()
+                    await self.client.enable()
             else:
-                await client.simulator_off()
+                await self.client.simulator_off()
                 robot_state.simulator_active = False
                 # Hide simulator banner
                 self._hide_sim_banner()
                 # Enable after switching back to robot mode
                 with contextlib.suppress(Exception):
                     await asyncio.sleep(0.05)  # Brief delay for transport swap
-                    await client.enable()
+                    await self.client.enable()
 
             # Update any visual toggle state if present
             if callable(getattr(self, "_update_robot_btn_visual", None)):
@@ -794,7 +796,7 @@ class ControlPanel:
         """Trigger digital E-STOP (STOP command) and show dialog."""
         try:
             # Stop robot immediately
-            await client.stop()
+            await self.client.stop()
             ui.notify("Digital E-STOP activated - robot disabled", color="warning")
             logging.warning("Digital E-STOP triggered")
 
@@ -915,6 +917,7 @@ class ControlPanel:
                                 .props("round flat dense no-caps text-color=white")
                                 .classes("absolute left-1 joint-cap")
                             )
+                            left_btn.mark(f"btn-j{idx + 1}-minus")
 
                             def check_lower_limit(a, i=idx):
                                 if not (
@@ -949,6 +952,7 @@ class ControlPanel:
                                 .props("round flat dense no-caps text-color=white")
                                 .classes("absolute right-1 joint-cap")
                             )
+                            right_btn.mark(f"btn-j{idx + 1}-plus")
 
                             def check_upper_limit(a, i=idx):
                                 if not (
@@ -1027,6 +1031,8 @@ class ControlPanel:
                     )
                     letter = self._cart_assignment.get(assign_key, "X").upper()
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
+                    marker = f"axis-{axis_str.replace('+','plus').replace('-','minus').lower()}"
+                    cont.mark(marker)
                     # Events: press/hold streaming behavior (don't change)
                     cont.on("mousedown", partial(self._on_slot_press, slot_id, True))
                     cont.on("mouseup", partial(self._on_slot_press, slot_id, False))
@@ -1124,7 +1130,7 @@ class ControlPanel:
                     with ui.row().classes("gap-2 w-full items-center"):
                         ui.button(icon="home", on_click=self.send_home).props(
                             "dense round unelevated"
-                        ).tooltip("Return robot to home position")
+                        ).tooltip("Return robot to home position").mark("btn-home")
 
                         # Single-button Robot/Simulator toggle (precision_manufacturing)
                         robot_btn = (
@@ -1135,6 +1141,7 @@ class ControlPanel:
                             .props("round unelevated dense")
                             .tooltip("Toggle between real robot and simulator mode")
                         )
+                        robot_btn.mark("btn-robot-toggle")
 
                         def _update_robot_btn_visual():
                             sim = bool(getattr(robot_state, "simulator_active", False))
@@ -1250,7 +1257,9 @@ class ControlPanel:
                     icon="dangerous", color="negative", on_click=self.on_estop_click
                 ).props("round unelevated").classes(
                     "glass-btn glass-negative text-2xl"
-                ).tooltip("Emergency stop - immediately halt all robot motion")
+                ).tooltip("Emergency stop - immediately halt all robot motion").mark(
+                    "btn-estop"
+                )
 
             # Jog controls (tabs + grids)
             self.render_jog_content()

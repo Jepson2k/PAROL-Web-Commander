@@ -8,7 +8,6 @@ version = "1.0.0"
 description = "Web interface for PAROL robot control"
 requires-python = ">=3.11"
 dependencies = [
-  "parol6 @ file:external/PAROL6-python-API",
   "nicegui<=4.0.0",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
@@ -35,12 +34,16 @@ extend-exclude = [
 ]
 
 [tool.mypy]
-exclude = '(?x)(^external/|PAROL.*/)$'
+files = ["parol_commander"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["parol6", "parol6.*", "roboticstoolbox", "roboticstoolbox.*", "spatialmath", "spatialmath.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["nicegui", "nicegui.*"]
+ignore_errors = true
 
 # ---- Pytest configuration ----
 [tool.pytest.ini_options]
@@ -53,8 +56,15 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "-ra",  # show short test summary for all but passes
+    "-p nicegui.testing.user_plugin",
 ]
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
+    "rate: Control-rate cadence tests",
+    "module_under_test: NiceGUI main module under test for the user fixture",
 ]
+# nicegui.testing expects a path to the app's entrypoint for the user fixture
+main_file = "parol_commander/main.py"
+log_cli = false
+log_level = "DEBUG"

@@ -1,85 +1,123 @@
-from __future__ import annotations
-
+"""Pytest configuration and shared fixtures for PAROL Web Commander tests."""
 import os
-import subprocess
 import sys
-import time
-from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Generator
 
 import pytest
 
-pytest_plugins = ["nicegui.testing.user_plugin"]
-
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-
-@pytest.fixture(scope="module")
-def headless_server() -> Iterator[subprocess.Popen]:
-    """
-    Spawn the headless server in a subprocess with:
-      - cwd = PAROL6-python-API
-      - env: PAROL6_NOAUTOHOME=1, PAROL_LOG_LEVEL=WARNING
-    Ensure proper cleanup.
-    """
-    repo_root = Path(__file__).resolve().parent.parent
-
-    candidates = [
-        repo_root
-        / "external"
-        / "PAROL6-python-API"
-        / "parol6"
-        / "server"
-        / "controller.py",
-        repo_root / "PAROL6-python-API" / "parol6" / "server" / "controller.py",
-    ]
-    server_script = next((p for p in candidates if p.exists()), None)
-    assert server_script is not None, (
-        "Missing headless server. Checked paths:\n"
-        + "\n".join(str(p) for p in candidates)
-    )
-
-    env = os.environ.copy()
-    env["PAROL6_NOAUTOHOME"] = "1"
-    env["PAROL_LOG_LEVEL"] = "WARNING"
-    # Enable hardware-free simulation so IK commands can run end-to-end at 100 Hz
-    env["PAROL6_FAKE_SERIAL"] = "1"
-    proc = subprocess.Popen(
-        [sys.executable, str(server_script)],
-        cwd=str(server_script.parent),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=env,
-        text=True,
-        bufsize=1,
-    )
-
-    # Give it a moment to bind sockets
-    time.sleep(1.5)
-
-    try:
-        yield proc
-    finally:
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            except Exception:
-                pass
+from parol6.client.manager import is_server_running
+import subprocess
 
 
 @pytest.fixture(scope="session", autouse=True)
-def webapp_env_session() -> None:
+def test_env_config() -> Generator[None, None, None]:
+    """Configure environment variables for deterministic test behavior.
+
+    Sets up fake serial and simulator modes so tests can run without hardware.
+    These are only set if not already present in the environment.
     """
-    Global test defaults for the NiceGUI webapp (set at session start via os.environ):
-      - Disable auto simulator toggle at startup (webapp should not call SIMULATOR|ON)
-      - Disable readiness/stream_on waits in tests (prevents timeouts when server not running yet)
-    These can still be overridden per-test with monkeypatch.setenv if needed.
+    env_defaults: dict[str, str] = {
+        "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
+        "PAROL_WEBAPP_REQUIRE_READY": "1",
+        "PAROL_EXCLUSIVE_START": "1",
+        # "PAROL_TRACE": "1",
+        "PAROL_LOG_LEVEL": "DEBUG",
+    }
+
+    originals: dict[str, str | None] = {}
+    for key, default_val in env_defaults.items():
+        originals[key] = os.environ.get(key)
+        if originals[key] is None:
+            os.environ[key] = default_val
+
+    try:
+        yield
+    finally:
+        for key, original_val in originals.items():
+            if original_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original_val
+
+
+@pytest.fixture
+def robot_state():
+    """Provide access to the shared RobotState instance.
+
+    This exposes `parol_commander.state.robot_state` so tests can
+    prime or inspect global robot state without importing main.py
+    and triggering NiceGUI startup handlers a second time.
     """
-    os.environ["PAROL_WEBAPP_AUTO_SIMULATOR"] = "0"
-    os.environ["PAROL_WEBAPP_REQUIRE_READY"] = "0"
+    from parol_commander import state as state_module
+
+    return state_module.robot_state
+
+
+@pytest.fixture
+def reset_robot_state(robot_state):
+    """Reset robot_state to known defaults before each test.
+
+    This ensures tests start with consistent state and don't interfere
+    with each other through shared global state.
+    """
+    # Pre-test setup
+    robot_state.angles = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    robot_state.pose = []
+    robot_state.io = [0, 0, 0, 0, 1]  # ESTOP OK by default
+    robot_state.gripper = [0, 0, 0, 0, 0, 0]
+    robot_state.connected = False
+    robot_state.simulator_active = False
+    robot_state.x = 0.0
+    robot_state.y = 0.0
+    robot_state.z = 0.0
+    robot_state.rx = 0.0
+    robot_state.ry = 0.0
+    robot_state.rz = 0.0
+    robot_state.io_in1 = 0
+    robot_state.io_in2 = 0
+    robot_state.io_out1 = 0
+    robot_state.io_out2 = 0
+    robot_state.io_estop = 1
+
+    yield
+
+    # No special teardown; tests may override fields if needed.
+
+
+@pytest.fixture(scope="session", autouse=True)
+def kill_stale_controllers() -> Generator[None, None, None]:
+    """Kill any existing controller processes before and after test session.
+
+    Ensures no stale controllers from previous runs interfere with tests.
+    """
+
+    def _kill() -> None:
+        try:
+            if sys.platform.startswith("linux") or sys.platform == "darwin":
+                subprocess.run(
+                    ["pkill", "-f", "parol6.server.controller"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+        except Exception:
+            pass
+
+    # Pre-session cleanup
+    _kill()
+    try:
+        yield
+    finally:
+        # Post-session cleanup
+        _kill()
+        # Best-effort verification (non-fatal)
+        try:
+            from parol_commander.constants import CONTROLLER_HOST, CONTROLLER_PORT
+
+            running = is_server_running(
+                host=CONTROLLER_HOST, port=CONTROLLER_PORT, timeout=0.5
+            )
+            if running:
+                _kill()
+        except Exception:
+            pass

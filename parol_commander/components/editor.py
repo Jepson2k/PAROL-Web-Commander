@@ -11,14 +11,13 @@ from nicegui import ui, context
 from parol_commander.common.theme import get_theme
 from parol_commander.constants import REPO_ROOT, CONTROLLER_HOST, CONTROLLER_PORT
 from parol_commander.state import robot_state
-from parol_commander.services.robot_client import client
 from parol_commander.services.script_runner import (
     ScriptProcessHandle,
     run_script,
     create_default_config,
     stop_script,
 )
-from parol6.client.async_client import AsyncRobotClient
+from parol6 import AsyncRobotClient
 
 
 # ---- Command Discovery Functions ----
@@ -77,8 +76,9 @@ def discover_robot_commands() -> dict:
 class EditorPanel:
     """Program editor panel with script execution and command palette."""
 
-    def __init__(self) -> None:
+    def __init__(self, client: AsyncRobotClient) -> None:
         """Initialize editor panel with state and UI references."""
+        self.client = client
         # Program directory
         self.PROGRAM_DIR = (
             REPO_ROOT / "PAROL-commander-software" / "GUI" / "files" / "Programs"
@@ -320,7 +320,7 @@ print(f"Robot status: {{status}}")
                     if self.program_log:
                         self.program_log.push(f"[ERR] {line}")
 
-            await client.stream_off()
+            await self.client.stream_off()
             self.script_handle = await run_script(config, on_stdout, on_stderr)
             self.script_running = True
 
@@ -359,7 +359,7 @@ print(f"Robot status: {{status}}")
                         color="positive" if rc == 0 else "warning",
                     )
                     logging.info("Script %s finished with code %s", filename, rc)
-                    await client.stream_on()
+                    await self.client.stream_on()
         except Exception as e:
             logging.error("Error monitoring script process: %s", e)
             # Best-effort reset if still active with UI client context
@@ -382,7 +382,7 @@ print(f"Robot status: {{status}}")
 
             if handle:
                 await stop_script(handle)
-            await client.stream_on()
+            await self.client.stream_on()
 
             ui.notify("Script stopped", color="warning")
             logging.info("Script stopped by user")

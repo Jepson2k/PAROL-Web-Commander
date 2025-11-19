@@ -32,6 +32,7 @@ class ReadoutPanel:
                             )
                             .classes("text-3xl tcp-x")
                             .style("min-width: 5rem; text-align: right;")
+                            .mark("readout-x")
                         )
                         ui.label("mm").classes("text-xs tcp-x")
                         self.cartesian_labels["X"] = x_label
@@ -45,6 +46,7 @@ class ReadoutPanel:
                             )
                             .classes("text-3xl tcp-y")
                             .style("min-width: 5rem; text-align: right;")
+                            .mark("readout-y")
                         )
                         ui.label("mm").classes("text-xs tcp-y")
                         self.cartesian_labels["Y"] = y_label
@@ -58,6 +60,7 @@ class ReadoutPanel:
                             )
                             .classes("text-3xl tcp-z")
                             .style("min-width: 5rem; text-align: right;")
+                            .mark("readout-z")
                         )
                         ui.label("mm").classes("text-xs tcp-z")
                         self.cartesian_labels["Z"] = z_label
@@ -73,6 +76,7 @@ class ReadoutPanel:
                             )
                             .classes("text-base tcp-rx")
                             .style("min-width: 3.5rem; text-align: right;")
+                            .mark("readout-rx")
                         )
                         ui.label("°").classes("text-xs tcp-rx")
                         self.rotation_labels["Rx"] = rx_label
@@ -86,6 +90,7 @@ class ReadoutPanel:
                             )
                             .classes("text-base tcp-ry")
                             .style("min-width: 3.5rem; text-align: right;")
+                            .mark("readout-ry")
                         )
                         ui.label("°").classes("text-xs tcp-ry")
                         self.rotation_labels["Ry"] = ry_label
@@ -99,6 +104,7 @@ class ReadoutPanel:
                             )
                             .classes("text-base tcp-rz")
                             .style("min-width: 3.5rem; text-align: right;")
+                            .mark("readout-rz")
                         )
                         ui.label("°").classes("text-xs tcp-rz")
                         self.rotation_labels["Rz"] = rz_label

@@ -2,15 +2,17 @@ import logging
 from functools import partial
 
 from nicegui import ui
+from parol6 import AsyncRobotClient
 
-from parol_commander.services.robot_client import client
 from parol_commander.state import robot_state
 
 
 class IoPage:
     """I/O tab page."""
 
-    def __init__(self) -> None:
+    def __init__(self, client: AsyncRobotClient) -> None:
+        self.client = client
+
         # Labels updated by status polling
         self.io_in1_label: ui.label | None = None
         self.io_in2_label: ui.label | None = None
@@ -24,7 +26,7 @@ class IoPage:
         """Map Output 1/2 via pneumatic gripper actions through the UDP API."""
         try:
             action = "open" if state else "close"
-            _ = await client.control_pneumatic_gripper(action, port)
+            _ = await self.client.control_pneumatic_gripper(action, port)
             # Show SET_IO command format in notification
             io_idx = 1 if port == 1 else 2  # OUTPUT 1 = index 1, OUTPUT 2 = index 2
             ui.notify(f"Sent SET_IO|{io_idx}|{state}", color="primary")

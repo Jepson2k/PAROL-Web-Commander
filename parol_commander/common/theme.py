@@ -460,5 +460,18 @@ def inject_layout_css() -> None:
   /* Reduce overlay card padding on mobile */
   .overlay-card { padding: 5px; }
 }
+
+ /* Log line coloring for response log */
+ .nicegui-log .log-trace   { color: var(--sem-info);    opacity: 0.8; }
+ .nicegui-log .log-debug   { color: var(--ctk-muted);   opacity: 0.9; }
+ .nicegui-log .log-info    { color: var(--ctk-text); }
+ .nicegui-log .log-warning { color: var(--sem-warning); }
+ .nicegui-log .log-error   { color: var(--sem-danger); }
+ .nicegui-log .log-critical {
+   color: var(--on-danger);
+   background: var(--sem-danger);
+   padding: 0 4px;
+   border-radius: 3px;
+ }
 """
     )

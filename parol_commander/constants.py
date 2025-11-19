@@ -14,7 +14,7 @@ JOINT_LIMITS_DEG = joint.limits.deg.tolist()
 # Controller target (what the UI connects to)
 CONTROLLER_HOST: str = os.getenv("PAROL_CONTROLLER_IP", "127.0.0.1")
 CONTROLLER_PORT: int = int(os.getenv("PAROL_CONTROLLER_PORT", "5001"))
-AUTO_START: bool = os.getenv("PAROL_AUTO_START", "1") in (
+EXCLUSIVE_START: bool = os.getenv("PAROL_EXCLUSIVE_START", "1") in (
     "1",
     "true",
     "True",
@@ -48,21 +48,3 @@ LOG_LEVEL: int = _resolve_log_level()
 # Webapp control emission cadence (client -> controller)
 WEBAPP_CONTROL_RATE_HZ: float = float(os.getenv("PAROL_WEBAPP_CONTROL_RATE_HZ", "50"))
 WEBAPP_CONTROL_INTERVAL_S: float = 1.0 / max(WEBAPP_CONTROL_RATE_HZ, 1.0)
-
-# Auto-toggle simulator on startup when no serial port is set
-WEBAPP_AUTO_SIMULATOR: bool = os.getenv("PAROL_WEBAPP_AUTO_SIMULATOR", "1") in (
-    "1",
-    "true",
-    "True",
-    "yes",
-    "YES",
-)
-
-# Require server ready/stream_on at startup (can be disabled in tests)
-WEBAPP_REQUIRE_READY: bool = os.getenv("PAROL_WEBAPP_REQUIRE_READY", "1") in (
-    "1",
-    "true",
-    "True",
-    "yes",
-    "YES",
-)
