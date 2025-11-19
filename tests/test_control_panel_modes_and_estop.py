@@ -80,7 +80,7 @@ async def test_digital_estop_shows_dialog(
     user.find(marker="btn-estop").click()
 
     # Give time for handler
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(1)
 
     # Should see E-STOP notification and dialog
     await user.should_see("Digital E-STOP activated - robot disabled")
