@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pre-commit"]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pytest-timeout", "pre-commit"]
 
 [project.scripts]
 parol-commander = "parol_commander.main:main"
@@ -58,6 +58,9 @@ addopts = [
     "-ra",  # show short test summary for all but passes
     "-p nicegui.testing.user_plugin",
 ]
+# Global per-test timeout
+timeout = 180
+timeout_method = "thread"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",

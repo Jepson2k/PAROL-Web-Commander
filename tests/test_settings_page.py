@@ -33,7 +33,7 @@ async def test_serial_port_persistence_and_set_port(
     user.find("Set Port").click()
 
     # Give time for handler
-    await asyncio.sleep(1)
+    await asyncio.sleep(0.3)
 
     # Assert that a SET_PORT notification was emitted
     assert any(
