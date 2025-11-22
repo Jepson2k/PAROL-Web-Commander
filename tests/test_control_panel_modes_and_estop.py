@@ -4,6 +4,7 @@ These tests use the NiceGUI `user` fixture and the real PAROL6 controller
 (in fake-serial mode) to verify that mode toggles, HOME, and digital
 E-STOP behavior work as expected at the UI and state level.
 """
+
 import asyncio
 
 import pytest

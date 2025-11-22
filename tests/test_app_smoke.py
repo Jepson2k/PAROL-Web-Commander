@@ -1,4 +1,5 @@
 """Smoke tests for PAROL Web Commander app startup and basic UI presence."""
+
 import pytest
 from nicegui.testing import User
 

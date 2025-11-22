@@ -1,4 +1,5 @@
 """Pytest configuration and shared fixtures for PAROL Web Commander tests."""
+
 import os
 import sys
 from typing import Generator

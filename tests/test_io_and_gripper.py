@@ -1,4 +1,5 @@
 """Tests for I/O and gripper functionality."""
+
 import asyncio
 
 import pytest

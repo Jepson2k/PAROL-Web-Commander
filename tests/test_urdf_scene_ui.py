@@ -3,6 +3,7 @@
 These tests verify that opening the main page creates a URDF scene and
 populates basic state on ``ui_state``.
 """
+
 import asyncio
 
 import pytest

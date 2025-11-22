@@ -4,6 +4,7 @@ These tests use the NiceGUI `user` fixture and the real PAROL6 controller
 (in fake-serial mode) to verify that jog controls actually change the
 reported robot state, rather than just asserting on client call patterns.
 """
+
 import asyncio
 
 import pytest
@@ -56,8 +57,10 @@ async def test_cartesian_jog_icon_sends_jog_cartesian(user: User, robot_state) -
     assert robot_state.simulator_active
     initial_pose = list(robot_state.pose or [])
 
-    # Click the X+ axis icon (marker is axis-xplus)
-    user.find(marker="axis-xplus").click()
+    # Press-hold the X+ axis icon (marker is axis-xplus) to ensure a streamed jog
+    user.find(marker="axis-xplus").trigger("mousedown")
+    await asyncio.sleep(0.4)
+    user.find(marker="axis-xplus").trigger("mouseup")
 
     # Wait for motion and status update
     await asyncio.sleep(0.7)

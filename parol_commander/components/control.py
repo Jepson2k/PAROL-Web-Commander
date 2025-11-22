@@ -278,6 +278,61 @@ class ControlPanel:
             # Update axis->element map for pressed visuals
             self._cart_axis_imgs[axis_str] = elem
 
+    # ---- Enablement and visuals ----
+
+    def _set_strong_disabled(self, elem: ui.element | None, disabled: bool) -> None:
+        if not elem:
+            return
+        if disabled:
+            elem.classes(add="cp-disabled-strong")
+        else:
+            elem.classes(remove="cp-disabled-strong")
+
+    def refresh_joint_enablement(self) -> None:
+        """Apply stronger disabled visuals to joint +/- buttons using robot_state.joint_en."""
+        en = list(getattr(robot_state, "joint_en", []))
+        if len(en) != 12:
+            return
+        for j in range(6):
+            plus_allowed = bool(en[2 * j])
+            minus_allowed = bool(en[2 * j + 1])
+            self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
+            self._set_strong_disabled(self._joint_left_btns.get(j), not minus_allowed)
+
+    def refresh_cartesian_enablement(self) -> None:
+        """Apply stronger disabled visuals to axis icons using CART_EN for current frame and mirror to 3D gizmo."""
+        axis_order = [
+            "X+",
+            "X-",
+            "Y+",
+            "Y-",
+            "Z+",
+            "Z-",
+            "RX+",
+            "RX-",
+            "RY+",
+            "RY-",
+            "RZ+",
+            "RZ-",
+        ]
+        en = (
+            robot_state.cart_en_trf
+            if str(getattr(ui_state, "frame", "TRF")).upper() == "TRF"
+            else robot_state.cart_en_wrf
+        )
+        if not isinstance(en, list) or len(en) != 12:
+            return
+        # 2D icons
+        for i, ax in enumerate(axis_order):
+            elem = self._cart_axis_imgs.get(ax)
+            self._set_strong_disabled(elem, not bool(en[i]))
+        # 3D gizmo handles
+        if ui_state.urdf_scene and hasattr(
+            ui_state.urdf_scene, "set_control_handle_enabled"
+        ):
+            for i, ax in enumerate(axis_order):
+                ui_state.urdf_scene.set_control_handle_enabled(ax, bool(en[i]))
+
     # ---- Joint jog methods ----
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
@@ -420,6 +475,35 @@ class ControlPanel:
                     color="negative",
                     icon="error",
                 )
+            return
+
+        # Check backend-reported enablement for this axis in current frame
+        axis_order = [
+            "X+",
+            "X-",
+            "Y+",
+            "Y-",
+            "Z+",
+            "Z-",
+            "RX+",
+            "RX-",
+            "RY+",
+            "RY-",
+            "RZ+",
+            "RZ-",
+        ]
+        en_list = (
+            robot_state.cart_en_trf
+            if str(getattr(ui_state, "frame", "TRF")).upper() == "TRF"
+            else robot_state.cart_en_wrf
+        )
+        allowed = True
+        if isinstance(en_list, list) and len(en_list) == 12 and axis in axis_order:
+            idx = axis_order.index(axis)
+            allowed = bool(int(en_list[idx]))
+        # Apply strong disabled visual if not allowed and ignore press
+        self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
+        if is_pressed and not allowed:
             return
 
         self._apply_pressed_style(self._cart_axis_imgs.get(axis), bool(is_pressed))
@@ -606,64 +690,90 @@ class ControlPanel:
             is_physical: True for physical E-STOP (persistent until released),
                         False for digital E-STOP (with Resume button)
         """
-        # Close existing dialog if open
-        if self._estop_dialog:
-            self._estop_dialog.close()
-            self._estop_dialog = None
 
-        # Create new dialog
-        self._estop_dialog = ui.dialog()
-        self._estop_dialog_is_physical = is_physical
+        def _build_dialog() -> None:
+            # Close existing dialog if open
+            if self._estop_dialog:
+                self._estop_dialog.close()
+                self._estop_dialog = None
 
-        # Make dialog persistent for physical E-STOP
-        if is_physical:
-            self._estop_dialog.props("persistent")
+            # Create new dialog
+            self._estop_dialog = ui.dialog()
+            self._estop_dialog_is_physical = is_physical
 
-        with self._estop_dialog, ui.card().classes("gap-4 items-center"):
-            # Ensure lottie-player web component is loaded
-            ui.html(
-                """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
-                sanitize=False,
-            ).classes("w-96")
-
+            # Make dialog persistent for physical E-STOP
             if is_physical:
-                # Physical E-STOP: persistent message
-                ui.label("Physical E-STOP Active").classes(
-                    "text-xl font-bold text-negative text-center"
-                )
-                ui.label("The physical E-STOP button was pressed.").classes(
-                    "text-center"
-                )
-                ui.label("To continue, unset the E-STOP button.").classes("text-center")
-            else:
-                # Digital E-STOP: with Resume button
-                ui.label("Digital E-STOP Active").classes(
-                    "text-xl font-bold text-warning text-center"
-                )
-                ui.label("Robot motion has been stopped.").classes("text-center")
+                self._estop_dialog.props("persistent")
 
-                async def resume():
-                    try:
-                        await self.client.start()
-                        ui.notify("Robot enabled - E-STOP cleared", color="positive")
-                        if self._estop_dialog:
-                            self._estop_dialog.close()
-                            self._estop_dialog = None
-                    except Exception as e:
-                        ui.notify(f"Resume failed: {e}", color="negative")
-                        logging.error("Resume after digital E-STOP failed: %s", e)
+            with self._estop_dialog, ui.card().classes("gap-4 items-center"):
+                # Ensure lottie-player web component is loaded
+                ui.html(
+                    """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
+                    sanitize=False,
+                ).classes("w-96")
 
-                with ui.row().classes("gap-2 justify-center w-full mt-4"):
-                    ui.button("Resume", on_click=resume).props("color=positive size=lg")
+                if is_physical:
+                    # Optional immediate feedback toast
+                    ui.notify("Physical E-STOP activated", color="negative")
 
-        self._estop_dialog.open()
+                    # Physical E-STOP: persistent message
+                    ui.label("Physical E-STOP Active").classes(
+                        "text-xl font-bold text-negative text-center"
+                    )
+                    ui.label("The physical E-STOP button was pressed.").classes(
+                        "text-center"
+                    )
+                    ui.label("To continue, unset the E-STOP button.").classes(
+                        "text-center"
+                    )
+                else:
+                    # Digital E-STOP: with Resume button
+                    ui.label("Digital E-STOP Active").classes(
+                        "text-xl font-bold text-warning text-center"
+                    )
+                    ui.label("Robot motion has been stopped.").classes("text-center")
+
+                    async def resume():
+                        try:
+                            await self.client.start()
+                            ui.notify(
+                                "Robot enabled - E-STOP cleared", color="positive"
+                            )
+                            if self._estop_dialog:
+                                self._estop_dialog.close()
+                                self._estop_dialog = None
+                        except Exception as e:
+                            ui.notify(f"Resume failed: {e}", color="negative")
+                            logging.error("Resume after digital E-STOP failed: %s", e)
+
+                    with ui.row().classes("gap-2 justify-center w-full mt-4"):
+                        ui.button("Resume", on_click=resume).props(
+                            "color=positive size=lg"
+                        )
+
+            self._estop_dialog.open()
+
+        # Ensure UI operations run in the proper client/session context
+        if ui_state.client:
+            with ui_state.client:
+                _build_dialog()
+        else:
+            _build_dialog()
 
     def close_estop_dialog(self) -> None:
         """Close the E-STOP dialog if open."""
-        if self._estop_dialog:
-            self._estop_dialog.close()
-            self._estop_dialog = None
-            self._estop_dialog_is_physical = False
+
+        def _close() -> None:
+            if self._estop_dialog:
+                self._estop_dialog.close()
+                self._estop_dialog = None
+                self._estop_dialog_is_physical = False
+
+        if ui_state.client:
+            with ui_state.client:
+                _close()
+        else:
+            _close()
 
     def check_estop_state_change(self) -> None:
         """Monitor robot_state.io_estop and show/hide dialog as needed.
@@ -674,11 +784,13 @@ class ControlPanel:
 
         # Detect transition from OK (1) to TRIGGERED (0)
         if self._last_estop_state == 1 and current_estop == 0:
+            logging.warning("Physical E-STOP detected (io_estop 1->0)")
             # Physical E-STOP was just pressed
             self.show_estop_dialog(is_physical=True)
 
         # Detect transition from TRIGGERED (0) to OK (1)
         elif self._last_estop_state == 0 and current_estop == 1:
+            logging.info("Physical E-STOP released (io_estop 0->1)")
             # Physical E-STOP was just released
             if self._estop_dialog and self._estop_dialog_is_physical:
                 self.close_estop_dialog()
@@ -1031,7 +1143,7 @@ class ControlPanel:
                     )
                     letter = self._cart_assignment.get(assign_key, "X").upper()
                     cont.classes(self._axis_color_class_for(letter, rotation=rotation))
-                    marker = f"axis-{axis_str.replace('+','plus').replace('-','minus').lower()}"
+                    marker = f"axis-{axis_str.replace('+', 'plus').replace('-', 'minus').lower()}"
                     cont.mark(marker)
                     # Events: press/hold streaming behavior (don't change)
                     cont.on("mousedown", partial(self._on_slot_press, slot_id, True))

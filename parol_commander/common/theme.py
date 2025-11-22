@@ -246,6 +246,15 @@ input::-webkit-inner-spin-button {
 input[type=number] {
   -moz-appearance: textfield;
 }
+
+/* Strong disabled utility for controls */
+.cp-disabled-strong {
+  opacity: 0.15 !important;
+  filter: grayscale(1) contrast(0.6) brightness(0.8);
+  pointer-events: none !important;
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+}
 """
     )
 

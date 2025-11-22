@@ -157,6 +157,7 @@ class UrdfScene:
         self._active_axis: Optional[str] = None
         self._hover_axis: Optional[str] = None
         self._handle_base_colors: Dict[str, str] = {}  # axis_key -> base hex color
+        self._handle_enabled: Dict[str, bool] = {}  # axis_key -> enabled flag
         self._gizmo_visible: bool = True
         self._gizmo_display_mode: str = "TRANSLATE"  # 'TRANSLATE' or 'ROTATE'
         self._control_frame: str = "TRF"  # 'TRF' or 'WRF'
@@ -313,6 +314,18 @@ class UrdfScene:
             raise ValueError(f"Invalid frame: {frame}. Must be 'WRF' or 'TRF'.")
         self._control_frame = frame
         self._update_gizmo_parent()
+
+    def set_control_handle_enabled(self, axis_key: str, enabled: bool) -> None:
+        """Enable/disable a specific gizmo handle by axis key (e.g., 'X+', 'RY-', 'RZ+').
+
+        Disabled handles are dimmed and ignore interaction.
+        """
+        axis_key = (axis_key or "").upper()
+        if not axis_key:
+            return
+        self._handle_enabled[axis_key] = bool(enabled)
+        # Update visuals to reflect disabled state
+        self._update_handle_visuals(axis_key)
 
     def set_gizmo_display_mode(self, mode: str) -> None:
         """Toggle gizmo display between translation arrows and rotation rings.
@@ -635,6 +648,7 @@ class UrdfScene:
 
         self._gizmo_handles.setdefault(axis_key, []).extend([shaft, head])
         self._handle_base_colors[axis_key] = color
+        self._handle_enabled[axis_key] = True
 
     def _create_rotation_half(
         self,
@@ -723,6 +737,7 @@ class UrdfScene:
 
         self._gizmo_handles.setdefault(axis_key, []).extend([curved_shaft, arrowhead])
         self._handle_base_colors[axis_key] = color
+        self._handle_enabled[axis_key] = True
 
     def _reparent_gizmo(self, parent) -> None:
         """Attach gizmo to parent and reset its local transform."""
@@ -768,7 +783,7 @@ class UrdfScene:
                     if self._is_handle_visible(candidate):
                         axis = candidate
                         break
-            if axis:
+            if axis and self._handle_enabled.get(axis, True):
                 self._activate_axis(axis)
         elif click_type in ("mouseup", "mouseleave"):
             self._deactivate_active_axis()
@@ -785,7 +800,10 @@ class UrdfScene:
                     if self._is_handle_visible(candidate):
                         axis = candidate
                         break
-            self._set_hover_axis(axis)
+            # Only hover if enabled
+            self._set_hover_axis(
+                axis if (axis and self._handle_enabled.get(axis, True)) else None
+            )
 
     def _is_handle_visible(self, axis_key: str) -> bool:
         """Check if a handle should be interactive based on current display mode.
@@ -887,10 +905,13 @@ class UrdfScene:
         self._update_handle_visuals(axis_key)
 
     def _update_handle_visuals(self, axis_key: str) -> None:
-        """Update handle visuals based on current state (pressed > hover > normal)."""
+        """Update handle visuals based on current state (pressed > hover > normal),
+        and dim/disable if handle is not enabled.
+        """
         parts = self._gizmo_handles.get(axis_key, [])
         if not parts:
             return
+        is_enabled = self._handle_enabled.get(axis_key, True)
 
         # Determine state precedence: pressed > hover > normal
         is_pressed = axis_key == self._active_axis
@@ -905,7 +926,10 @@ class UrdfScene:
         is_rotation = axis_key.startswith("R")
 
         # Compute color and opacity based on state
-        if is_pressed:
+        if not is_enabled:
+            color = base_color
+            opacity = 0.15
+        elif is_pressed:
             color = base_color
             opacity = 1.0
         elif is_hovered:

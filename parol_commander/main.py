@@ -1060,6 +1060,17 @@ async def _status_consumer() -> None:
                 robot_state.io = io_list
                 robot_state.gripper = gr_list
 
+                # New movement enablement arrays
+                joint_en = status.get("joint_en") or None
+                cart_en_wrf = status.get("cart_en_wrf") or None
+                cart_en_trf = status.get("cart_en_trf") or None
+                if isinstance(joint_en, list) and len(joint_en) == 12:
+                    robot_state.joint_en = [int(x) for x in joint_en]
+                if isinstance(cart_en_wrf, list) and len(cart_en_wrf) == 12:
+                    robot_state.cart_en_wrf = [int(x) for x in cart_en_wrf]
+                if isinstance(cart_en_trf, list) and len(cart_en_trf) == 12:
+                    robot_state.cart_en_trf = [int(x) for x in cart_en_trf]
+
                 # Propagate task fields from STATUS if present
                 robot_state.action_current = status.get("action_current") or ""
                 robot_state.action_state = status.get("action_state") or "IDLE"
@@ -1067,6 +1078,11 @@ async def _status_consumer() -> None:
 
                 # Update UI directly from multicast consumer
                 update_ui_from_status()
+                # Refresh cartesian enablement visuals in control panel
+                if callable(
+                    getattr(control_panel, "refresh_cartesian_enablement", None)
+                ):
+                    control_panel.refresh_cartesian_enablement()
             except Exception as e:
                 logging.debug("Status consumer parse error: %s", e)
     except asyncio.CancelledError:

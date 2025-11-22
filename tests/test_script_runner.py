@@ -1,4 +1,5 @@
 """Unit tests for script runner service."""
+
 import sys
 from pathlib import Path
 

@@ -1,4 +1,5 @@
 """Fake implementations for testing."""
+
 import time
 from typing import Any, Callable
 

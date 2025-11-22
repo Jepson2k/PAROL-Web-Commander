@@ -55,6 +55,10 @@ class RobotState:
     )  # len=16 homogeneous transform flattened
     io: list[int] = field(default_factory=list)  # [in1,in2,out1,out2,estop]
     gripper: list[int] = field(default_factory=list)  # [id,pos,spd,cur,status,obj]
+    # Movement enablement arrays from STATUS (12 ints each)
+    joint_en: list[int] = field(default_factory=lambda: [1] * 12)
+    cart_en_wrf: list[int] = field(default_factory=lambda: [1] * 12)
+    cart_en_trf: list[int] = field(default_factory=lambda: [1] * 12)
     connected: bool = False
     last_update_ts: float = 0.0
     # Derived scalars for convenient, high-performance UI bindings
