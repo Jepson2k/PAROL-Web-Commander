@@ -46,5 +46,6 @@ LOG_LEVEL: int = _resolve_log_level()
 
 
 # Webapp control emission cadence (client -> controller)
-WEBAPP_CONTROL_RATE_HZ: float = float(os.getenv("PAROL_WEBAPP_CONTROL_RATE_HZ", "50"))
+# We want it as low as possible while being higher than the jog duration rate and enough to feel responsive
+WEBAPP_CONTROL_RATE_HZ: float = float(os.getenv("PAROL_WEBAPP_CONTROL_RATE_HZ", "20"))
 WEBAPP_CONTROL_INTERVAL_S: float = 1.0 / max(WEBAPP_CONTROL_RATE_HZ, 1.0)

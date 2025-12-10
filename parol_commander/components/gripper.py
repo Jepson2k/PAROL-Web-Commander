@@ -2,6 +2,7 @@ import logging
 
 from nicegui import ui
 
+from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.state import robot_state
 from parol6 import AsyncRobotClient
 
@@ -30,6 +31,7 @@ class GripperPage:
     async def _grip_cal(self) -> None:
         try:
             resp = await self.client.control_electric_gripper("calibrate")
+            motion_recorder.record_action("gripper", calibrate=True)
             ui.notify(resp, color="primary")
             logging.info("ELECTRIC CALIBRATE")
         except Exception as e:
@@ -52,6 +54,9 @@ class GripperPage:
             )
             resp = await self.client.control_electric_gripper(
                 "move", position=pos, speed=spd, current=cur
+            )
+            motion_recorder.record_action(
+                "gripper", position=pos, speed=spd, current=cur
             )
             ui.notify(resp, color="primary")
             logging.info("ELECTRIC MOVE pos=%s spd=%s cur=%s", pos, spd, cur)

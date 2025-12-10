@@ -6,6 +6,7 @@ import pytest
 from nicegui.testing import User
 
 from tests.helpers.fakes import RecordingAsyncClient
+from tests.helpers.wait import wait_for_page_ready
 
 
 @pytest.mark.unit
@@ -42,6 +43,7 @@ async def test_io_tab_high_low_buttons_send_commands(
     for SET_IO notifications and (if available) updated IO state.
     """
     await user.open("/")
+    await wait_for_page_ready()
 
     # Open the I/O tab
     user.find(marker="tab-io").click()
@@ -57,9 +59,9 @@ async def test_io_tab_high_low_buttons_send_commands(
     await asyncio.sleep(0.5)
 
     # Assert that a SET_IO notification was emitted
-    assert any(
-        "Sent SET_IO" in m for m in user.notify.messages
-    ), "Expected SET_IO notification after HIGH click"
+    assert any("Sent SET_IO" in m for m in user.notify.messages), (
+        "Expected SET_IO notification after HIGH click"
+    )
 
     # Optionally assert that IO output changed
     new_out1 = int(getattr(robot_state, "io_out1", 0))
@@ -99,6 +101,7 @@ async def test_gripper_tab_calibrate_button_sends_notification(
     when the calibrate button is clicked in the gripper tab.
     """
     await user.open("/")
+    await wait_for_page_ready()
 
     # Open the Gripper tab
     user.find(marker="tab-gripper").click()
@@ -115,9 +118,9 @@ async def test_gripper_tab_calibrate_button_sends_notification(
     await asyncio.sleep(0.5)
 
     # At least one new notification should have been emitted
-    assert len(user.notify.messages) > len(
-        before
-    ), "Expected a notification after clicking Calibrate gripper"
+    assert len(user.notify.messages) > len(before), (
+        "Expected a notification after clicking Calibrate gripper"
+    )
 
 
 @pytest.mark.integration
@@ -130,6 +133,7 @@ async def test_gripper_move_goto_sends_notification(
     when the Move GoTo button is clicked in the gripper tab.
     """
     await user.open("/")
+    await wait_for_page_ready()
 
     # Open the Gripper tab
     user.find(marker="tab-gripper").click()
@@ -146,6 +150,6 @@ async def test_gripper_move_goto_sends_notification(
     await asyncio.sleep(0.5)
 
     # At least one new notification should have been emitted
-    assert len(user.notify.messages) > len(
-        before
-    ), "Expected a notification after clicking Move GoTo"
+    assert len(user.notify.messages) > len(before), (
+        "Expected a notification after clicking Move GoTo"
+    )

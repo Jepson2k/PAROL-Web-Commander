@@ -4,19 +4,32 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from typing import Any
+import re
+import time
+from typing import Any, Callable
+import uuid
 
 from nicegui import ui, context
 
 from parol_commander.common.theme import get_theme
 from parol_commander.constants import REPO_ROOT, CONTROLLER_HOST, CONTROLLER_PORT
-from parol_commander.state import robot_state
+from parol_commander.state import (
+    robot_state,
+    simulation_state,
+    ui_state,
+    EditorTab,
+    editor_tabs_state,
+)
 from parol_commander.services.script_runner import (
     ScriptProcessHandle,
     run_script,
     create_default_config,
     stop_script,
 )
+from parol_commander.services.path_visualizer import path_visualizer
+from parol_commander.services.motion_recorder import motion_recorder
+from parol_commander.state import playback_state
+from parol_commander.components.playback_overlay import playback_overlay
 from parol6 import AsyncRobotClient
 
 
@@ -73,6 +86,30 @@ def discover_robot_commands() -> dict:
     return commands
 
 
+def generate_completions_from_commands() -> list[dict]:
+    """Generate CodeMirror completion items from discovered robot commands."""
+    all_commands = discover_robot_commands()
+    completions = []
+
+    for name, cmd in all_commands.items():
+        # Parse signature to create a useful apply text
+        sig = cmd["signature"]
+        # Remove 'self' from signature if present
+        sig_clean = sig.replace("(self, ", "(").replace("(self)", "()")
+
+        # Create the completion item
+        completion = {
+            "label": f"rbt.{name}",
+            "detail": sig_clean,
+            "info": cmd["docstring"],
+            "apply": f"rbt.{name}",  # Just insert the method name, user will add args
+            "type": "function",
+        }
+        completions.append(completion)
+
+    return completions
+
+
 class EditorPanel:
     """Program editor panel with script execution and command palette."""
 
@@ -87,10 +124,36 @@ class EditorPanel:
             self.PROGRAM_DIR = REPO_ROOT / "programs"
             self.PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Program editor widgets
+        # Multi-tab management
+        self.tabs_container: ui.tabs | None = None
+        self.tab_panels_container: ui.tab_panels | None = None
+        self._tab_widgets: dict[
+            str, dict
+        ] = {}  # tab_id -> {textarea, log, splitter, filename_input, ...}
+
+        # Active tab's widgets (updated on tab switch for backward compatibility)
         self.program_filename_input: ui.input | None = None
         self.program_textarea: ui.codemirror | None = None
         self.program_log: ui.log | None = None
+        self.run_btn: ui.button | None = None
+        self.log_toggle_btn: ui.button | None = None
+
+        # Bottom playback bar elements
+        self.playback_bar: ui.element | None = None
+        self._play_btn: ui.button | None = None
+        self.scrub_slider: ui.slider | None = None
+        self.step_label: ui.label | None = None
+        self.speed_fab: ui.fab | None = None
+        self._tick_accumulator: float = 0.0
+        self._playback_timer: ui.timer | None = None
+
+        # Shared log area (below play bar)
+        self.log_container: ui.element | None = None
+        self._log_expanded: bool = False
+        self.editor_splitter: ui.splitter | None = None
+        self._splitter_value_when_expanded: float = (
+            70.0  # Remember user's preferred split
+        )
 
         # Script execution via subprocess
         self.script_handle: ScriptProcessHandle | None = None
@@ -99,9 +162,14 @@ class EditorPanel:
         # Drawer element reference
         self.drawer: ui.element | None = None
 
+        # Debounce timer for auto-simulation on code change
+        self._simulation_debounce_timer: ui.timer | None = None
+        self._debounce_delay: float = 0.75  # 750ms delay before running simulation
+
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
-        return f"""from parol6 import RobotClient
+        return f"""import time
+from parol6 import RobotClient
 
 rbt = RobotClient(host={CONTROLLER_HOST!r}, port={CONTROLLER_PORT})
 
@@ -141,15 +209,19 @@ print(f"Robot status: {{status}}")
 
     def _generate_snippet(self, method_name: str, use_current_position: bool) -> str:
         """Generate Python snippet with optional current position pre-fill."""
+        # Get user's current speed and acceleration settings
+        speed = ui_state.jog_speed
+        accel = ui_state.jog_accel
+
         # Motion commands that can use current position
         if use_current_position:
             if method_name == "move_joints":
                 angles = list(robot_state.angles)
-                return f"rbt.move_joints({angles}, speed_percentage=50)"
+                return f"rbt.move_joints({angles}, speed_percentage={speed}, accel_percentage={accel})"
             elif method_name in ("move_pose", "move_cartesian"):
                 x, y, z = robot_state.x, robot_state.y, robot_state.z
                 rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
-                return f"rbt.{method_name}([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed_percentage=50)"
+                return f"rbt.{method_name}([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed_percentage={speed}, accel_percentage={accel})"
 
         # Generic snippets - delegate to existing method
         return self._insert_python_snippet(method_name)
@@ -164,8 +236,187 @@ print(f"Robot status: {{status}}")
             self.program_textarea.value = val + snippet + "\n"
             logging.info("Added Python snippet: %s", snippet)
 
-    def build_command_palette_table(self) -> None:
-        """Build hierarchical command palette using ui.expansion for categories."""
+    def sync_code_from_target(self, target_id: str, pose: list[float]) -> None:
+        """Update the program code with the new pose for a specific target.
+
+        Uses marker-based lookup (# TARGET:uuid) instead of line numbers for stability.
+
+        Note: pose is in scene units (meters for position, degrees for rotation).
+        Code uses user units (mm for position, degrees for rotation).
+        """
+        if not self.program_textarea:
+            return
+
+        # Check if codemirror is properly initialized
+        try:
+            current_value = self.program_textarea.value
+            if current_value is None:
+                logging.debug("Sync skipped: codemirror value is None")
+                return
+        except (AttributeError, RuntimeError) as e:
+            logging.debug(f"Sync skipped: codemirror not ready - {e}")
+            return
+
+        content = current_value
+        lines = content.splitlines()
+
+        # Find line with TARGET:target_id marker (marker-based lookup)
+        target_marker = f"# TARGET:{target_id}"
+        found_line_idx = None
+
+        for i, line in enumerate(lines):
+            if target_marker in line:
+                found_line_idx = i
+                break
+
+        if found_line_idx is None:
+            logging.warning(f"Sync failed: Target marker {target_id} not found in code")
+            return
+
+        line = lines[found_line_idx]
+
+        # Replace the coordinate list in the line
+        # Match a list of numbers: [...]
+        match = re.search(r"(\[[\d\.\,\-\s]+\])", line)
+
+        if match:
+            # Convert from scene units (meters) to user units (mm) for position
+            # Rotation stays in degrees (unchanged)
+            pose_mm = [
+                pose[0] * 1000.0 if len(pose) > 0 else 0.0,  # x: m → mm
+                pose[1] * 1000.0 if len(pose) > 1 else 0.0,  # y: m → mm
+                pose[2] * 1000.0 if len(pose) > 2 else 0.0,  # z: m → mm
+                pose[3] if len(pose) > 3 else 0.0,  # rx: degrees
+                pose[4] if len(pose) > 4 else 0.0,  # ry: degrees
+                pose[5] if len(pose) > 5 else 0.0,  # rz: degrees
+            ]
+
+            # Format new pose with reasonable precision
+            new_pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose_mm) + "]"
+
+            # Replace in line (preserve the marker)
+            new_line = line[: match.start()] + new_pose_str + line[match.end() :]
+            lines[found_line_idx] = new_line
+
+            # Update text area (this will trigger debounced simulation)
+            self.program_textarea.value = "\n".join(lines)
+
+            logging.info(f"Synced code for target {target_id}: {new_pose_str}")
+        else:
+            logging.warning(
+                f"Sync failed: Could not find coordinate list in line: {line}"
+            )
+
+    def delete_target_code(self, target_id: str) -> None:
+        """Delete the code line corresponding to the target and re-simulate.
+
+        Uses marker-based lookup (# TARGET:uuid) to find and remove the line.
+        """
+        if not self.program_textarea:
+            return
+
+        content = self.program_textarea.value or ""
+        lines = content.splitlines()
+
+        # Find and remove line with TARGET:target_id marker
+        target_marker = f"# TARGET:{target_id}"
+        new_lines = [line for line in lines if target_marker not in line]
+
+        if len(new_lines) < len(lines):
+            # Line was removed - update editor
+            self.program_textarea.value = "\n".join(new_lines)
+            logging.info(f"Deleted target {target_id} from code")
+            # Re-simulation will trigger automatically via debounced on_change
+        else:
+            logging.warning(f"Target {target_id} marker not found for deletion")
+
+    def add_target_code(self, pose: list[float], move_type: str) -> str | None:
+        """Add target code to the editor and return the marker ID.
+
+        Args:
+            pose: [x, y, z, rx, ry, rz] position and orientation
+            move_type: Type of movement ("pose", "cartesian", "joints")
+
+        Returns:
+            Marker ID (uuid string) for the created target, or None on failure
+        """
+        if not self.program_textarea:
+            return None
+
+        # Generate unique marker ID
+        marker_id = uuid.uuid4().hex[:8]
+
+        # Get user's current speed and acceleration settings
+        speed = ui_state.jog_speed
+        accel = ui_state.jog_accel
+
+        # Format the pose with appropriate precision
+        pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
+
+        # Generate appropriate code based on move_type with marker
+        if move_type == "joints":
+            code_line = f"rbt.move_joints({pose_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+        elif move_type == "cartesian":
+            code_line = f"rbt.move_cartesian({pose_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+        else:  # Default to move_pose
+            code_line = f"rbt.move_pose({pose_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+
+        # Get current content and add the new line
+        content = self.program_textarea.value or ""
+
+        # Ensure content ends with newline
+        if content and not content.endswith("\n"):
+            content += "\n"
+
+        # Append new code (will trigger debounced simulation)
+        new_content = content + code_line + "\n"
+        self.program_textarea.value = new_content
+
+        logging.info(f"Added target code with marker {marker_id}: {code_line}")
+        return marker_id
+
+    def add_joint_target_code(self, joint_angles: list[float]) -> str | None:
+        """Add joint target code to the editor and return the marker ID.
+
+        Args:
+            joint_angles: [j1, j2, j3, j4, j5, j6] joint angles in degrees
+
+        Returns:
+            Marker ID (uuid string) for the created target, or None on failure
+        """
+
+        if not self.program_textarea:
+            return None
+
+        # Generate unique marker ID
+        marker_id = uuid.uuid4().hex[:8]
+
+        # Get user's current speed and acceleration settings
+        speed = ui_state.jog_speed
+        accel = ui_state.jog_accel
+
+        # Format the joint angles with appropriate precision
+        angles_str = "[" + ", ".join(f"{v:.3f}" for v in joint_angles) + "]"
+
+        # Generate code line with marker
+        code_line = f"rbt.move_joints({angles_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+
+        # Get current content and add the new line
+        content = self.program_textarea.value or ""
+
+        # Ensure content ends with newline
+        if content and not content.endswith("\n"):
+            content += "\n"
+
+        # Append new code (will trigger debounced simulation)
+        new_content = content + code_line + "\n"
+        self.program_textarea.value = new_content
+
+        logging.info(f"Added joint target code with marker {marker_id}: {code_line}")
+        return marker_id
+
+    def _build_command_menu(self) -> None:
+        """Build command palette as a dropdown menu with nested submenus."""
         # Discover all commands dynamically
         all_commands = discover_robot_commands()
 
@@ -177,101 +428,210 @@ print(f"Robot status: {{status}}")
                 categories[cat] = []
             categories[cat].append({"key": key, **cmd})
 
-        # Scrollable container
-        with ui.element("div").classes("overflow-y-auto w-full").style("height: 260px"):
+        # Build menu structure with nested submenus (following NiceGUI docs pattern)
+        with ui.menu():
             for category_name, commands in sorted(categories.items()):
-                # Collapsible category expansion (no icon)
-                with ui.expansion(category_name).classes("w-full").props("dense"):
-                    for cmd in sorted(commands, key=lambda c: c["title"]):
-                        # Clickable command row with tooltip
-                        with ui.row().classes(
-                            "cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 p-1 w-full items-center"
-                        ) as row:
-                            label = ui.label(cmd["title"]).classes("text-sm")
-                            # Add tooltip showing signature and docstring with proper wrapping
-                            with label:
+                # Category as submenu parent - must disable auto_close to keep open while navigating
+                with ui.menu_item(category_name, auto_close=False).classes(
+                    "text-sm font-medium"
+                ):
+                    # Arrow indicator on the right side
+                    with ui.item_section().props("side"):
+                        ui.icon("keyboard_arrow_right")
+                    # Nested submenu with auto-close
+                    with (
+                        ui.menu()
+                        .props('anchor="top end" self="top start" auto-close')
+                        .classes("max-h-80 overflow-y-auto")
+                    ):
+                        for cmd in sorted(commands, key=lambda c: c["title"]):
+                            # Command menu item
+                            item = ui.menu_item(
+                                cmd["title"],
+                                on_click=lambda e, k=cmd["key"]: self._insert_command(
+                                    k, True
+                                ),
+                            ).classes("text-sm")
+
+                            # Add tooltip
+                            with item:
                                 tooltip_text = f"{cmd['signature']}"
                                 if cmd["docstring"]:
                                     tooltip_text += f"\n\n{cmd['docstring']}"
                                 ui.tooltip(tooltip_text).classes("text-xs").style(
                                     "max-width: 300px; white-space: pre-wrap;"
                                 )
-                            # Click handler with current position support
-                            row.on(
-                                "click",
-                                lambda e, k=cmd["key"]: self._insert_command(k, True),
-                            )
 
     async def load_program(self, filename: str | None = None) -> None:
-        """Load a program file into the editor."""
+        """Load a program file into a new tab (or switch to existing tab if already open)."""
         try:
-            name = (
-                filename
-                or (
-                    self.program_filename_input.value
-                    if self.program_filename_input
-                    else ""
-                )
-                or ""
-            )
+            # Get filename from parameter or active tab
+            name = filename or ""
+            if not name:
+                tab = editor_tabs_state.get_active_tab()
+                if tab:
+                    name = tab.filename
+            if not name:
+                ui.notify("No filename specified", color="warning")
+                return
+
+            file_path = str(self.PROGRAM_DIR / name)
+
+            # Check if already open - switch to existing tab
+            existing_tab = editor_tabs_state.find_tab_by_path(file_path)
+            if existing_tab:
+                self._switch_to_tab(existing_tab.id)
+                ui.notify(f"Switched to existing tab: {name}", color="info")
+                return
+
+            # Load content and create new tab
             text = (self.PROGRAM_DIR / name).read_text(encoding="utf-8")
-            if self.program_textarea:
-                self.program_textarea.value = text
-            ui.notify(f"Loaded {name}", color="primary")
+            tab = self._new_tab(filename=name, content=text)
+            tab.file_path = file_path
+            tab.saved_content = text  # Mark as clean
+
+            # Update dirty indicator
+            widgets = self._tab_widgets.get(tab.id, {})
+            dirty_dot = widgets.get("dirty_dot")
+            if dirty_dot:
+                dirty_dot.set_visibility(False)
+
+            ui.notify(f"Loaded {name}", color="positive")
             logging.info("Loaded program %s", name)
         except Exception as e:
             ui.notify(f"Load failed: {e}", color="negative")
             logging.error("Load failed: %s", e)
 
     async def save_program(self, as_name: str | None = None) -> None:
-        """Save the current program to a file."""
-        try:
-            name = (
-                as_name
-                or (
-                    self.program_filename_input.value
-                    if self.program_filename_input
-                    else ""
-                )
-                or ""
-            )
-            content = self.program_textarea.value if self.program_textarea else ""
-            (self.PROGRAM_DIR / name).write_text(content, encoding="utf-8")
-            ui.notify(f"Saved {name}", color="positive")
-            logging.info("Saved program %s", name)
-            if as_name and self.program_filename_input:
-                self.program_filename_input.value = as_name
-        except Exception as e:
-            ui.notify(f"Save failed: {e}", color="negative")
-            logging.error("Save failed: %s", e)
+        """Save the active tab's program to a file."""
+        tab = editor_tabs_state.get_active_tab()
+        if not tab:
+            ui.notify("No active tab to save", color="warning")
+            return
+        await self._save_tab(tab)
+
+    def download_program(self) -> None:
+        """Download the active tab's program content to the user's device."""
+        tab = editor_tabs_state.get_active_tab()
+        if not tab:
+            ui.notify("No active tab to download", color="warning")
+            return
+        self._download_tab(tab)
 
     def open_file_picker(self) -> None:
-        """Open a file picker dialog to upload a program file."""
+        """Open a file picker dialog to upload a program file into a new tab."""
         dlg = ui.dialog()
-        with dlg, ui.card():
-            ui.label("Open Program from disk")
+        with dlg, ui.card().classes("overlay-card w-96"):
+            ui.label("Open Program from Device").classes("text-lg font-medium mb-2")
 
-            def _on_upload(e):
+            # Loading spinner (hidden by default)
+            spinner = ui.spinner("dots", size="lg").classes("mx-auto")
+            spinner.visible = False
+
+            async def _on_upload(e):
                 try:
-                    data = e.content.read()
+                    spinner.visible = True
+
+                    # Read file content in thread pool to avoid blocking
+                    data = await asyncio.to_thread(e.content.read)
                     name = getattr(e, "name", None) or "uploaded_program.txt"
-                    (self.PROGRAM_DIR / name).write_bytes(data)
-                    if self.program_filename_input:
-                        self.program_filename_input.value = name
-                    if self.program_textarea:
-                        self.program_textarea.value = data.decode(
-                            "utf-8", errors="ignore"
-                        )
-                    ui.notify(f"Loaded {name}", color="primary")
+                    content = data.decode("utf-8", errors="ignore")
+
+                    # Write file to server
+                    file_path = str(self.PROGRAM_DIR / name)
+                    await asyncio.to_thread((self.PROGRAM_DIR / name).write_bytes, data)
+
+                    # Check if already open - switch to existing tab
+                    existing_tab = editor_tabs_state.find_tab_by_path(file_path)
+                    if existing_tab:
+                        # Update existing tab's content
+                        existing_tab.content = content
+                        existing_tab.saved_content = content
+                        widgets = self._tab_widgets.get(existing_tab.id, {})
+                        textarea = widgets.get("textarea")
+                        if textarea:
+                            textarea.value = content
+                        self._switch_to_tab(existing_tab.id)
+                        ui.notify(f"Updated existing tab: {name}", color="info")
+                    else:
+                        # Create new tab
+                        tab = self._new_tab(filename=name, content=content)
+                        tab.file_path = file_path
+                        tab.saved_content = content
+                        ui.notify(f"Loaded {name}", color="positive")
+
+                    dlg.close()
                 except Exception as ex:
-                    ui.notify(f"Open failed: {ex}", color="negative")
+                    ui.notify(f"Upload failed: {ex}", color="negative")
+                    logging.error("File upload failed: %s", ex)
                 finally:
+                    spinner.visible = False
+
+            ui.upload(on_upload=_on_upload).props(
+                "accept=.py, max-file-size=10485760"
+            ).classes("w-full")
+            ui.label("Max file size: 10MB").classes("text-xs text-gray-500")
+            with ui.row().classes("gap-2 mt-2 justify-end w-full"):
+                ui.button("Cancel", on_click=dlg.close).props("flat")
+        dlg.open()
+
+    def open_server_file_dialog(self) -> None:
+        """Open a dialog to select and load a program file from the server."""
+        dlg = ui.dialog()
+        with dlg, ui.card().classes("overlay-card w-96"):
+            ui.label("Open Program from Server").classes("text-lg font-medium mb-2")
+
+            # List available files from PROGRAM_DIR
+            try:
+                files = sorted(
+                    [
+                        f.name
+                        for f in self.PROGRAM_DIR.iterdir()
+                        if f.is_file()
+                        and f.suffix in (".py", ".txt", ".prog", ".gcode", "")
+                    ]
+                )
+            except Exception:
+                files = []
+
+            if not files:
+                ui.label("No program files found").classes("text-gray-500 my-4")
+                with ui.row().classes("gap-2 justify-end w-full"):
+                    ui.button("Close", on_click=dlg.close).props("flat")
+            else:
+                file_select = ui.select(
+                    options=files,
+                    label="Select file",
+                    value=files[0] if files else None,
+                ).classes("w-full")
+
+                async def do_open():
+                    if file_select.value:
+                        await self.load_program(file_select.value)
                     dlg.close()
 
-            ui.upload(on_upload=_on_upload).props("accept=.txt,.prog,.gcode,*/*")
-            with ui.row().classes("gap-2"):
-                ui.button("Cancel", on_click=dlg.close)
+                with ui.row().classes("gap-2 mt-4 justify-end w-full"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Open", on_click=do_open).props("color=primary")
         dlg.open()
+
+    async def _toggle_run_script(self) -> None:
+        """Toggle start/stop script."""
+        if self.script_running:
+            await self._stop_script_process()
+        else:
+            await self._start_script_process()
+        self._update_run_btn()
+
+    def _update_run_btn(self) -> None:
+        """Update run/stop button visuals."""
+        if self.run_btn:
+            if self.script_running:
+                self.run_btn.props("icon=stop color=negative")
+                self.run_btn.tooltip("Stop script")
+            else:
+                self.run_btn.props("icon=play_arrow color=positive")
+                self.run_btn.tooltip("Start script")
 
     async def _start_script_process(self) -> None:
         """Save current editor content and start it as a Python subprocess."""
@@ -323,10 +683,23 @@ print(f"Robot status: {{status}}")
             await self.client.stream_off()
             self.script_handle = await run_script(config, on_stdout, on_stderr)
             self.script_running = True
+            self._update_run_btn()
+
+            # Show playback overlay for script execution
+            playback_overlay.show()
+            playback_overlay.set_interactive(
+                False
+            )  # Non-interactive during robot execution
+
+            # Auto-expand log
+            self._expand_log()
+
+            # Capture UI client context BEFORE creating background task
+            ui_client = context.client
 
             # Launch monitor task to reset state when script finishes
             h = self.script_handle  # capture
-            asyncio.create_task(self._monitor_script_completion(h, filename))
+            asyncio.create_task(self._monitor_script_completion(h, filename, ui_client))
 
             ui.notify(f"Started script: {filename}", color="positive")
             logging.info("Started script: %s", filename)
@@ -334,13 +707,19 @@ print(f"Robot status: {{status}}")
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
             logging.error("Failed to start script: %s", e)
+            self.script_running = False
+            self._update_run_btn()
 
     async def _monitor_script_completion(
-        self, handle: ScriptProcessHandle, filename: str
+        self, handle: ScriptProcessHandle, filename: str, ui_client: Any
     ) -> None:
-        """Monitor script subprocess completion and reset state when it finishes."""
-        # Capture UI client context at the start
-        ui_client = context.client
+        """Monitor script subprocess completion and reset state when it finishes.
+
+        Args:
+            handle: The script process handle to monitor
+            filename: Name of the script file for logging
+            ui_client: The NiceGUI client context (must be captured before task creation)
+        """
 
         try:
             rc = await handle["proc"].wait()
@@ -354,6 +733,8 @@ print(f"Robot status: {{status}}")
                 with ui_client:
                     self.script_handle = None
                     self.script_running = False
+                    self._update_run_btn()
+                    # Don't auto-hide playback bar - user can dismiss it manually
                     ui.notify(
                         f"Script finished: {filename} (exit {rc})",
                         color="positive" if rc == 0 else "warning",
@@ -367,6 +748,8 @@ print(f"Robot status: {{status}}")
                 if self.script_handle is handle:
                     self.script_handle = None
                     self.script_running = False
+                    self._update_run_btn()
+                    # Don't auto-hide playback bar on error either
 
     async def _stop_script_process(self) -> None:
         """Stop the running script process."""
@@ -379,6 +762,8 @@ print(f"Robot status: {{status}}")
             # Clear UI state up-front; monitor will see this and stay silent
             self.script_handle = None
             self.script_running = False
+            self._update_run_btn()
+            playback_overlay.hide()
 
             if handle:
                 await stop_script(handle)
@@ -392,82 +777,728 @@ print(f"Robot status: {{status}}")
             logging.error("Error stopping script: %s", e)
             # State already cleared above
 
-    def build(self) -> None:
-        """Build the program editor content (no wrapper)."""
-        # Editor content
-        with ui.column():
-            with ui.row():
-                with ui.column():
-                    with ui.row().classes("items-center gap-2 w-full"):
-                        self.program_filename_input = ui.input(
-                            label="Filename", value=""
-                        ).classes("text-sm font-small flex-1")
-                        ui.button("Open", on_click=self.open_file_picker).props(
-                            "unelevated"
-                        )
+    async def _run_simulation(self, notify: bool = True) -> str | None:
+        """Run the simulation for the current script.
 
-                    self.program_textarea = (
-                        ui.codemirror(
-                            value=self._default_python_snippet(),
-                            language="Python",
-                            line_wrapping=True,
-                        )
-                        .classes("w-full")
-                        .style("height: 420px")
+        Args:
+            notify: Whether to show notification toasts (default True)
+
+        Returns:
+            Error message if simulation failed, None otherwise.
+        """
+        content = self.program_textarea.value if self.program_textarea else ""
+        if not content:
+            if notify:
+                ui.notify("No script content to simulate", color="warning")
+            return None
+
+        if notify:
+            ui.notify("Running simulation...", color="info")
+        error = await path_visualizer.update_path_visualization(content)
+
+        # Show error in program log if any
+        if error and self.program_log:
+            self.program_log.push(f"[SIM ERROR] {error}")
+
+        if notify:
+            if error:
+                ui.notify("Simulation completed with errors", color="warning")
+            else:
+                ui.notify("Simulation complete", color="positive")
+
+        return error
+
+    def _schedule_debounced_simulation(self) -> None:
+        """Schedule a debounced simulation run when code changes.
+
+        Cancels any pending simulation and schedules a new one after the debounce delay.
+        This avoids running simulation on every keystroke.
+        """
+        schedule_time = time.time()
+        # Cancel any pending simulation timer
+        if self._simulation_debounce_timer is not None:
+            logging.debug(
+                "DEBOUNCE: Cancelling pending timer (had timer=%s)",
+                self._simulation_debounce_timer,
+            )
+            self._simulation_debounce_timer.cancel()
+            self._simulation_debounce_timer = None
+
+        async def run_simulation_quietly():
+            """Run simulation without notifications (silent auto-update)."""
+            fire_time = time.time()
+            logging.debug(
+                "DEBOUNCE: Timer fired after %.3fs (scheduled at %.3f, fired at %.3f)",
+                fire_time - schedule_time,
+                schedule_time,
+                fire_time,
+            )
+            self._simulation_debounce_timer = None
+            try:
+                logging.debug("DEBOUNCE: Starting simulation...")
+                await self._run_simulation(notify=False)
+                logging.debug("DEBOUNCE: Simulation completed successfully")
+            except Exception as e:
+                # Log error but don't crash the UI - show subtle notification
+                logging.error("Auto-simulation failed: %s", e, exc_info=True)
+                ui.notify(f"Simulation error: {e}", color="negative", timeout=3000)
+
+        # Schedule new simulation after debounce delay
+        logging.debug(
+            "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
+        )
+        self._simulation_debounce_timer = ui.timer(
+            self._debounce_delay, run_simulation_quietly, once=True
+        )
+
+    def _toggle_recording(self) -> None:
+        """Toggle motion recording on/off."""
+        motion_recorder.toggle_recording()
+        # Update button visual
+        if hasattr(self, "record_btn") and self.record_btn:
+            from parol_commander.state import recording_state
+
+            if recording_state.is_recording:
+                self.record_btn.props("color=warning")
+                self.record_btn.tooltip("Stop Recording")
+            else:
+                self.record_btn.props("color=negative")
+                self.record_btn.tooltip("Start Recording")
+
+    def _toggle_log(self) -> None:
+        """Toggle shared log panel visibility via splitter position."""
+        if self._log_expanded:
+            self._collapse_log()
+        else:
+            self._expand_log()
+
+    def _expand_log(self) -> None:
+        """Expand the shared log panel by adjusting splitter."""
+        self._log_expanded = True
+        if self.editor_splitter:
+            self.editor_splitter.set_value(self._splitter_value_when_expanded)
+        if self.log_toggle_btn:
+            self.log_toggle_btn.props("icon=expand_less")
+            self.log_toggle_btn.tooltip("Hide Output")
+
+    def _collapse_log(self) -> None:
+        """Collapse the shared log panel by adjusting splitter."""
+        self._log_expanded = False
+        if self.editor_splitter:
+            self.editor_splitter.set_value(94)  # 94% to editor (collapsed)
+        if self.log_toggle_btn:
+            self.log_toggle_btn.props("icon=expand_more")
+            self.log_toggle_btn.tooltip("Show Output")
+
+    def _on_splitter_change(self, e) -> None:
+        """Handle splitter drag changes to update log expanded state."""
+        value = e.value if hasattr(e, "value") else 94
+
+        # If user drags to near-bottom (>90%), treat as collapsed
+        if value > 90:
+            self._log_expanded = False
+            if self.log_toggle_btn:
+                self.log_toggle_btn.props("icon=expand_more")
+                self.log_toggle_btn.tooltip("Show Output")
+        else:
+            self._log_expanded = True
+            self._splitter_value_when_expanded = value  # Remember user's preference
+            if self.log_toggle_btn:
+                self.log_toggle_btn.props("icon=expand_less")
+                self.log_toggle_btn.tooltip("Hide Output")
+
+    # ---- Tab Management Methods ----
+
+    def _new_tab(
+        self, filename: str = "untitled.py", content: str | None = None
+    ) -> EditorTab:
+        """Create a new tab and switch to it."""
+        tab = EditorTab(
+            id=uuid.uuid4().hex[:8],
+            filename=filename,
+            file_path=None,
+            content=content if content is not None else self._default_python_snippet(),
+            saved_content=content
+            if content is not None
+            else self._default_python_snippet(),
+            output_log=[],
+            path_segments=[],
+            targets=[],
+            created_at=time.time(),
+        )
+
+        editor_tabs_state.add_tab(tab)
+        self._create_tab_widget(tab)
+        self._create_tab_panel(tab)
+        self._switch_to_tab(tab.id)
+
+        return tab
+
+    def _close_tab(self, tab: EditorTab) -> None:
+        """Close a tab, prompting to save if dirty."""
+        if tab.is_dirty:
+            self._show_save_confirmation(tab)
+        else:
+            self._do_close_tab(tab)
+
+    def _show_save_confirmation(self, tab: EditorTab) -> None:
+        """Show save confirmation dialog for dirty tab."""
+        dlg = ui.dialog()
+        
+        def dont_save():
+            dlg.close()
+            self._do_close_tab(tab)
+        
+        with dlg, ui.card().classes("overlay-card"):
+            ui.label(f"Save changes to {tab.filename}?").classes(
+                "text-lg font-medium mb-2"
+            )
+            ui.label("Your changes will be lost if you don't save.").classes(
+                "text-sm text-gray-500 mb-4"
+            )
+            with ui.row().classes("gap-2 justify-end w-full"):
+                ui.button(
+                    "Don't Save",
+                    on_click=dont_save,
+                ).props("flat color=negative")
+                ui.button("Cancel", on_click=dlg.close).props("flat")
+                ui.button(
+                    "Save", on_click=lambda: self._save_tab_and_close(tab, dlg)
+                ).props("color=primary")
+        dlg.open()
+
+    async def _save_tab_and_close(self, tab: EditorTab, dlg: ui.dialog) -> None:
+        """Save tab and close it."""
+        await self._save_tab(tab)
+        dlg.close()
+        self._do_close_tab(tab)
+
+    def _do_close_tab(self, tab: EditorTab) -> None:
+        """Actually close the tab and clean up UI."""
+        tab_id = tab.id
+
+        # Determine which tab to switch to BEFORE removing
+        tabs = editor_tabs_state.tabs
+        closed_idx = next((i for i, t in enumerate(tabs) if t.id == tab_id), -1)
+        new_active_id = None
+
+        if len(tabs) > 1:
+            if closed_idx > 0:
+                new_active_id = tabs[closed_idx - 1].id  # Previous tab
+            else:
+                new_active_id = tabs[1].id  # Next tab if closing first
+
+        # Remove tab widget from tabs container
+        if tab_id in self._tab_widgets:
+            widgets = self._tab_widgets[tab_id]
+            # Delete the tab widget element
+            if "tab_element" in widgets and widgets["tab_element"]:
+                widgets["tab_element"].delete()
+            # Delete the panel element
+            if "panel" in widgets and widgets["panel"]:
+                widgets["panel"].delete()
+            del self._tab_widgets[tab_id]
+
+        # Remove from state
+        editor_tabs_state.remove_tab(tab_id)
+
+        # Create new tab if all tabs closed
+        if not editor_tabs_state.tabs:
+            self._new_tab()
+        elif new_active_id:
+            editor_tabs_state.active_tab_id = new_active_id
+            self._switch_to_tab(new_active_id)
+
+    def _switch_to_tab(self, tab_id: str) -> None:
+        """Switch to a specific tab."""
+        tab = next((t for t in editor_tabs_state.tabs if t.id == tab_id), None)
+        if not tab:
+            return
+
+        # Save current tab's simulation context and log content
+        current_tab = editor_tabs_state.get_active_tab()
+        if current_tab and current_tab.id != tab_id:
+            self._save_simulation_context(current_tab)
+            # Save current log content to tab
+            # (log content is stored in tab.output_log by script runner callbacks)
+
+        # Update active tab
+        editor_tabs_state.active_tab_id = tab_id
+
+        # Update tab panels value
+        if self.tab_panels_container:
+            self.tab_panels_container.set_value(tab_id)
+
+        # Update tabs container value
+        if self.tabs_container:
+            self.tabs_container.set_value(tab_id)
+
+        # Load this tab's simulation context
+        self._load_simulation_context(tab)
+
+        # Swap log content: load new tab's log entries into shared log
+        if self.program_log:
+            self.program_log.clear()
+            for entry in tab.output_log:
+                self.program_log.push(entry)
+
+        # Update references for backward compatibility
+        widgets = self._tab_widgets.get(tab_id, {})
+        self.program_textarea = widgets.get("textarea")
+        self.program_filename_input = widgets.get("filename_input")
+
+    def _save_simulation_context(self, tab: EditorTab) -> None:
+        """Save current simulation state to tab."""
+        tab.path_segments = list(simulation_state.path_segments)
+        tab.targets = list(simulation_state.targets)
+
+    def _load_simulation_context(self, tab: EditorTab) -> None:
+        """Load tab's simulation state into global simulation_state."""
+        simulation_state.path_segments = list(tab.path_segments)
+        simulation_state.targets = list(tab.targets)
+        simulation_state.current_step_index = 0
+        simulation_state.total_steps = len(tab.path_segments)
+        simulation_state.notify_changed()
+
+    def _create_tab_widget(self, tab: EditorTab) -> ui.tab | None:
+        """Create a single tab widget with filename input, save button, close button."""
+        if not self.tabs_container:
+            return None
+
+        with self.tabs_container:
+            tab_element = ui.tab(name=tab.id, label="").classes("editor-tab")
+            with tab_element:
+                with ui.row().classes("items-center gap-1 no-wrap"):
+                    # Dirty indicator (orange dot)
+                    dirty_dot = (
+                        ui.icon("fiber_manual_record", size="xs")
+                        .classes("text-amber-500")
+                        .style("font-size: 8px;")
+                    )
+                    # Bind visibility to dirty state - update on content change
+                    dirty_dot.bind_visibility_from(tab, "is_dirty", lambda d: d)
+
+                    # Filename input (compact)
+                    filename_input = (
+                        ui.input(value=tab.filename)
+                        .props("dense borderless")
+                        .classes("text-sm w-28")
+                        .on("change", lambda e, t=tab: setattr(t, "filename", e.value))
                     )
 
-                    # Initialize CodeMirror theme based on theme/system
-                    try:
-                        mode = get_theme()
-                        effective = "light" if mode == "light" else "dark"
-                        self.program_textarea.theme = (
-                            "basicLight" if effective == "light" else "oneDark"
-                        )
-                    except Exception:
-                        self.program_textarea.theme = "oneDark"
+                    # Close button
+                    ui.button(
+                        icon="close", on_click=lambda t=tab: self._close_tab(t)
+                    ).props("flat round dense size=xs").tooltip("Close tab")
 
-                    with ui.row().classes("gap-2"):
-                        ui.button("Start", on_click=self._start_script_process).props(
-                            "unelevated color=positive"
-                        )
-                        ui.button("Stop", on_click=self._stop_script_process).props(
-                            "unelevated color=negative"
-                        )
-                        ui.button("Save", on_click=self.save_program).props(
-                            "unelevated"
-                        )
+            # Store tab element reference
+            if tab.id not in self._tab_widgets:
+                self._tab_widgets[tab.id] = {}
+            self._tab_widgets[tab.id]["tab_element"] = tab_element
+            self._tab_widgets[tab.id]["filename_input"] = filename_input
+            self._tab_widgets[tab.id]["dirty_dot"] = dirty_dot
 
-                        def save_as():
-                            async def do_save_as():
-                                name = save_as_input.value.strip() or "program.txt"
-                                await self.save_program(as_name=name)
-                                save_as_dialog.close()
+        return tab_element
 
-                            save_as_dialog = ui.dialog()
-                            with save_as_dialog, ui.card():
-                                ui.label("Save As")
-                                save_as_input = ui.input(
-                                    label="New filename",
-                                    value=self.program_filename_input.value
-                                    if self.program_filename_input
-                                    else "",
-                                ).classes("w-80")
-                                with ui.row().classes("gap-2"):
-                                    ui.button("Cancel", on_click=save_as_dialog.close)
-                                    ui.button("Save", on_click=do_save_as).props(
-                                        "color=positive"
-                                    )
-                            save_as_dialog.open()
+    def _create_tab_panel(self, tab: EditorTab) -> ui.tab_panel | None:
+        """Create content panel for a tab (CodeMirror only, log is shared)."""
+        if not self.tab_panels_container:
+            return None
 
-                        ui.button("Save as", on_click=save_as).props("unelevated")
-
-                with ui.column():
-                    self.build_command_palette_table()
-
-            # Program log directly beneath editor
-            ui.label("Program Log").classes("text-sm text-[var(--ctk-muted)]")
-            self.program_log = (
-                ui.log(max_lines=1000)
-                .classes("w-full whitespace-pre-wrap break-words")
-                .style("height: 200px")
+        with self.tab_panels_container:
+            panel = (
+                ui.tab_panel(name=tab.id)
+                .classes("editor-tab-panel")
+                .style("padding: 0; width: 100%; height: 100%;")
             )
+            with panel:
+                # Generate completions
+                completions = generate_completions_from_commands()
+
+                # CodeMirror editor - fill entire panel (uses its own internal scrolling)
+                textarea = (
+                    ui.codemirror(
+                        value=tab.content,
+                        language="Python",
+                        line_wrapping=True,
+                        on_change=lambda e, t=tab: self._on_tab_content_change(
+                            t, e.value
+                        ),
+                        custom_completions=completions,
+                    )
+                    .classes("w-full h-full")
+                    .style("min-height: 100%;")
+                )
+
+                # Initialize theme
+                try:
+                    mode = get_theme()
+                    effective = "light" if mode == "light" else "dark"
+                    textarea.theme = "basicLight" if effective == "light" else "oneDark"
+                except Exception:
+                    textarea.theme = "oneDark"
+
+            # Store references
+            self._tab_widgets[tab.id]["panel"] = panel
+            self._tab_widgets[tab.id]["textarea"] = textarea
+
+        return panel
+
+    def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
+        """Handle content change for a tab."""
+        tab.content = new_value
+
+        # Update dirty indicator visibility
+        widgets = self._tab_widgets.get(tab.id, {})
+        dirty_dot = widgets.get("dirty_dot")
+        if dirty_dot:
+            dirty_dot.set_visibility(tab.is_dirty)
+
+        # Only run simulation for active tab
+        if tab.id == editor_tabs_state.active_tab_id:
+            self._schedule_debounced_simulation()
+
+    async def _save_tab(self, tab: EditorTab) -> None:
+        """Save tab content to server."""
+        try:
+            name = tab.filename or "program.py"
+            file_path = str(self.PROGRAM_DIR / name)
+            (self.PROGRAM_DIR / name).write_text(tab.content, encoding="utf-8")
+            tab.file_path = file_path
+            tab.saved_content = tab.content  # Mark as clean
+
+            # Update dirty indicator
+            widgets = self._tab_widgets.get(tab.id, {})
+            dirty_dot = widgets.get("dirty_dot")
+            if dirty_dot:
+                dirty_dot.set_visibility(False)
+
+            ui.notify(f"Saved {name}", color="positive")
+            logging.info("Saved program %s", name)
+        except Exception as e:
+            ui.notify(f"Save failed: {e}", color="negative")
+            logging.error("Save failed: %s", e)
+
+    def _download_tab(self, tab: EditorTab) -> None:
+        """Download tab content to user's device."""
+        content = tab.content
+        if not content:
+            ui.notify("No content to download", color="warning")
+            return
+
+        filename = tab.filename.strip() or "program.py"
+        ui.download(content.encode("utf-8"), filename)
+        ui.notify(f"Downloading {filename}", color="info")
+        logging.info("Downloaded program %s", filename)
+
+    async def _save_active_tab(self) -> None:
+        """Save the currently active tab."""
+        tab = editor_tabs_state.get_active_tab()
+        if tab:
+            await self._save_tab(tab)
+
+    def _download_active_tab(self) -> None:
+        """Download the currently active tab."""
+        tab = editor_tabs_state.get_active_tab()
+        if tab:
+            self._download_tab(tab)
+
+    # ---- Bottom Playback Bar Methods ----
+
+    def _toggle_sim_play(self) -> None:
+        """Toggle simulation playback play/pause."""
+        simulation_state.is_playing = not simulation_state.is_playing
+        playback_state.is_playing = simulation_state.is_playing
+
+        if simulation_state.is_playing:
+            self._tick_accumulator = 0.0
+            if self._playback_timer is None:
+                self._playback_timer = ui.timer(0.1, self._playback_tick)
+        else:
+            if self._playback_timer:
+                self._playback_timer.cancel()
+                self._playback_timer = None
+
+        self._update_play_button()
+
+    def _update_play_button(self) -> None:
+        """Update play/pause button icon."""
+        if self._play_btn:
+            icon = "pause" if simulation_state.is_playing else "play_arrow"
+            self._play_btn.props(f"icon={icon}")
+
+    def _playback_tick(self) -> None:
+        """Handle playback timer tick."""
+        if not simulation_state.is_playing:
+            return
+
+        speed = simulation_state.playback_speed
+        self._tick_accumulator += speed
+        steps_to_advance = int(self._tick_accumulator)
+        self._tick_accumulator -= steps_to_advance
+
+        if steps_to_advance > 0:
+            new_idx = simulation_state.current_step_index + steps_to_advance
+            if new_idx >= simulation_state.total_steps:
+                new_idx = simulation_state.total_steps - 1
+                simulation_state.is_playing = False
+                playback_state.is_playing = False
+                if self._playback_timer:
+                    self._playback_timer.cancel()
+                    self._playback_timer = None
+                self._update_play_button()
+
+            simulation_state.current_step_index = new_idx
+            self._update_robot_pose()
+            self._update_step_label()
+
+    def _update_robot_pose(self) -> None:
+        """Update robot pose in URDF scene based on current step."""
+        if not simulation_state.path_segments:
+            return
+
+        idx = simulation_state.current_step_index
+        if 0 <= idx < len(simulation_state.path_segments):
+            segment = simulation_state.path_segments[idx]
+            if segment.joints and ui_state.urdf_scene:
+                ui_state.urdf_scene.set_axis_values(segment.joints)
+
+    def _step_forward(self) -> None:
+        """Step forward one segment."""
+        if simulation_state.current_step_index < simulation_state.total_steps - 1:
+            simulation_state.current_step_index += 1
+            self._update_robot_pose()
+            self._update_step_label()
+
+    def _step_backward(self) -> None:
+        """Step backward one segment."""
+        if simulation_state.current_step_index > 0:
+            simulation_state.current_step_index -= 1
+            self._update_robot_pose()
+            self._update_step_label()
+
+    def _on_scrub_change(self, value: int) -> None:
+        """Handle scrub slider change."""
+        simulation_state.current_step_index = value
+        self._update_robot_pose()
+        self._update_step_label()
+
+    def _on_speed_change(self, value: float) -> None:
+        """Handle speed slider change."""
+        simulation_state.playback_speed = value
+        playback_state.playback_speed = value
+
+    def _set_speed(self, value: float) -> None:
+        """Set playback speed from FAB menu selection."""
+        simulation_state.playback_speed = value
+        playback_state.playback_speed = value
+
+    def _update_step_label(self) -> None:
+        """Update step counter label."""
+        if self.step_label:
+            current = simulation_state.current_step_index + 1
+            total = simulation_state.total_steps
+            self.step_label.set_text(f"{current} / {total}")
+
+    def _build_bottom_bar(self) -> None:
+        """Build the bottom playback bar with controls.
+
+        Order: Previous | Play/Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
+        """
+        with (
+            ui.row()
+            .classes("w-full items-center gap-2 bottom-playback-bar")
+            .style("min-height: 48px;") as bar
+        ):
+            self.playback_bar = bar
+
+            # 1. Previous step
+            ui.button(icon="skip_previous", on_click=self._step_backward).props(
+                "round dense flat"
+            ).tooltip("Previous step")
+
+            # 2. Play/Stop (run script or stop)
+            self.run_btn = (
+                ui.button(icon="play_arrow", on_click=self._toggle_run_script)
+                .props("round dense color=positive unelevated")
+                .tooltip("Run Program")
+            )
+
+            # 3. Next step
+            ui.button(icon="skip_next", on_click=self._step_forward).props(
+                "round dense flat"
+            ).tooltip("Next step")
+
+            # 4. Scrub slider (flex-grow)
+            with ui.element("div").classes("flex-1 px-2"):
+                self.scrub_slider = (
+                    ui.slider(min=0, max=100, step=1, value=0)
+                    .props("label-always")
+                    .on(
+                        "update:model-value",
+                        lambda e: self._on_scrub_change(int(e.args)),
+                    )
+                )
+                # Bind to simulation state
+                self.scrub_slider.bind_value(simulation_state, "current_step_index")
+
+            # Step counter
+            self.step_label = ui.label("0 / 0").classes(
+                "text-sm min-w-[60px] text-center"
+            )
+
+            # 5. Speed FAB (dropdown with speed options)
+            with (
+                ui.fab(icon="speed", color="amber")
+                .props("dense unelevated round size=sm direction=up")
+                .tooltip("Playback Speed") as speed_fab
+            ):
+                self.speed_fab = speed_fab
+                ui.fab_action("0.25x", on_click=lambda: self._set_speed(0.25))
+                ui.fab_action("0.5x", on_click=lambda: self._set_speed(0.5))
+                ui.fab_action("1x", on_click=lambda: self._set_speed(1.0))
+                ui.fab_action("2x", on_click=lambda: self._set_speed(2.0))
+                ui.fab_action("4x", on_click=lambda: self._set_speed(4.0))
+
+            # 6. Record button
+            self.record_btn = (
+                ui.button(icon="fiber_manual_record", on_click=self._toggle_recording)
+                .props("round dense color=negative unelevated")
+                .tooltip("Start Recording")
+            )
+
+            # 7. Capture position
+            ui.button(
+                icon="camera_alt", on_click=motion_recorder.capture_current_pose
+            ).props("round dense unelevated").tooltip("Capture Current Pose")
+
+            # 8. Log show/hide
+            self.log_toggle_btn = (
+                ui.button(icon="expand_more", on_click=self._toggle_log)
+                .props("round dense flat")
+                .tooltip("Show Output")
+            )
+
+    def build(self, close_callback: Callable | None = None) -> None:
+        """Build the program editor content with multi-tab support."""
+        # Main editor container
+        with (
+            ui.column()
+            .classes("w-full h-full gap-0")
+            .style("height: 100%; min-height: 0; padding-bottom: 16px;")
+        ):
+            # ---- Header Row (title + tabs + cmd + X) ----
+            with (
+                ui.row()
+                .classes("w-full items-center gap-2 px-2")
+                .style("height: 42px;")
+            ):
+                # Title
+                ui.label("Program").classes("text-lg font-medium whitespace-nowrap")
+
+                # Tabs area (horizontal scroll)
+                with (
+                    ui.scroll_area()
+                    .classes("flex-1 no-wrap items-start")
+                    .style("height: 42px;")
+                ):
+                    with ui.row().classes("items-center gap-0 flex-nowrap"):
+                        # Tabs container
+                        self.tabs_container = (
+                            ui.tabs()
+                            .props("dense inline-label")
+                            .classes("editor-tabs")
+                            .on(
+                                "update:model-value",
+                                lambda e: self._switch_to_tab(e.args),
+                            )
+                        )
+
+                        # Add/Open FAB (last element in scrollable area)
+                        with (
+                            ui.fab(icon="add", color="grey-7")
+                            .props("dense unelevated direction=right")
+                            .classes("ml-2")
+                            .tooltip("New / Open")
+                        ):
+                            ui.fab_action(
+                                icon="note_add",
+                                on_click=lambda: self._new_tab(),
+                            ).tooltip("New tab")
+                            ui.fab_action(
+                                icon="folder_open",
+                                on_click=self.open_server_file_dialog,
+                            ).tooltip("Open from server")
+                            ui.fab_action(
+                                icon="upload_file",
+                                on_click=self.open_file_picker,
+                            ).tooltip("Upload from device")
+
+                # Save FAB (saves active tab, outside scroll area)
+                with (
+                    ui.fab(icon="save", color="grey-7")
+                    .props("dense unelevated direction=right")
+                    .tooltip("Save")
+                ):
+                    ui.fab_action(
+                        icon="dns",
+                        on_click=lambda: self._save_active_tab(),
+                    ).tooltip("Save to server")
+                    ui.fab_action(
+                        icon="download",
+                        on_click=lambda: self._download_active_tab(),
+                    ).tooltip("Download to device")
+
+                # Command palette menu (outside scroll area)
+                with (
+                    ui.button(icon="library_add")
+                    .props("unelevated round dense")
+                    .tooltip("Insert Command")
+                ):
+                    self._build_command_menu()
+
+                # X close button
+                if close_callback:
+                    ui.button(icon="close", on_click=close_callback).props(
+                        "flat round dense color=white"
+                    )
+
+            # ---- Splitter: Editor (before) | Playbar (separator) | Log (after) ----
+            # horizontal=True means vertical stacking (column layout)
+            with (
+                ui.splitter(
+                    horizontal=True,
+                    value=94,  # Start collapsed (94% to editor, leaves room for playbar)
+                    limits=(50, 94),
+                    on_change=self._on_splitter_change,
+                )
+                .classes("w-full flex-1 editor-splitter")
+                .style("overflow: hidden;") as splitter
+            ):
+                self.editor_splitter = splitter
+
+                # ---- Tab Panels Area (CodeMirror) in splitter.before ----
+                with splitter.before:
+                    self.tab_panels_container = (
+                        ui.tab_panels(self.tabs_container)
+                        .classes("w-full h-full")
+                        .props("animated")
+                        .style("padding: 0; overflow: hidden;")
+                    )
+
+                # ---- Playbar in splitter.separator (acts as handle) ----
+                with splitter.separator:
+                    self._build_bottom_bar()
+
+                # ---- Shared Log Area in splitter.after ----
+                with splitter.after:
+                    with ui.scroll_area().classes("w-full h-full") as log_container:
+                        self.log_container = log_container
+                        self.program_log = (
+                            ui.log(max_lines=1000)
+                            .classes("w-full whitespace-pre-wrap break-words")
+                            .style("min-height: 0;")
+                        )
+
+        # Create initial tab
+        self._new_tab()

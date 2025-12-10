@@ -102,6 +102,16 @@ class NiceGuiLogHandler(logging.Handler):
                 if widget is None:
                     stale.append(ref)
                     continue
+                # Check if the widget's client is still valid before pushing
+                # This prevents the "Client has been deleted" warning from NiceGUI
+                try:
+                    client_ref = widget._client()
+                    if client_ref is None or client_ref._deleted:
+                        stale.append(ref)
+                        continue
+                except (RuntimeError, AttributeError):
+                    stale.append(ref)
+                    continue
                 try:
                     widget.push(msg, classes=classes)
                 except Exception:

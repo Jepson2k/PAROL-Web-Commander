@@ -12,10 +12,12 @@ dependencies = [
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
+  "xxhash>=3.0.0",
+  "pyserial>=3.5",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pytest-timeout", "pre-commit"]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
 
 [project.scripts]
 parol-commander = "parol_commander.main:main"
@@ -36,6 +38,7 @@ extend-exclude = [
 [tool.mypy]
 files = ["parol_commander"]
 ignore_missing_imports = true
+namespace_packages = false
 
 [[tool.mypy.overrides]]
 module = ["parol6", "parol6.*", "roboticstoolbox", "roboticstoolbox.*", "spatialmath", "spatialmath.*"]
@@ -57,9 +60,10 @@ addopts = [
     "--strict-config",
     "-ra",  # show short test summary for all but passes
     "-p nicegui.testing.user_plugin",
+    "-nauto",  # parallel test execution (use -n0 to disable)
 ]
 # Global per-test timeout
-timeout = 180
+timeout = 30
 timeout_method = "thread"
 markers = [
     "unit: Unit tests",

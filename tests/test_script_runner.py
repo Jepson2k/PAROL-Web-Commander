@@ -127,3 +127,62 @@ def test_create_default_config() -> None:
     assert "python_exe" in config
     assert config["filename"] == "/tmp/test.py"
     assert config["python_exe"] == sys.executable
+
+
+@pytest.mark.unit
+async def test_script_can_import_parol6_libraries(tmp_path: Path) -> None:
+    """Test that user scripts have access to parol6 robot libraries.
+
+    Verifies that scripts run via the script runner can import the
+    parol6 library and its key components. This ensures users can
+    write robot control scripts that use the expected API.
+    """
+    from parol_commander.services.script_runner import run_script, create_default_config
+
+    # Write a script that imports the key parol6 modules
+    script_path = tmp_path / "test_imports.py"
+    script_path.write_text(
+        """
+# Test that all key parol6 imports are available
+from parol6 import RobotClient, AsyncRobotClient
+from parol6.protocol.types import Axis, Frame
+
+# Verify classes are actually importable (not just module stubs)
+assert RobotClient is not None
+assert AsyncRobotClient is not None
+assert Axis is not None
+assert Frame is not None
+
+print("All parol6 imports successful")
+"""
+    )
+
+    # Collect stdout lines
+    stdout_lines = []
+    stderr_lines = []
+
+    def on_stdout(line: str) -> None:
+        stdout_lines.append(line)
+
+    def on_stderr(line: str) -> None:
+        stderr_lines.append(line)
+
+    # Run the script
+    config = create_default_config(str(script_path))
+    handle = await run_script(config, on_stdout=on_stdout, on_stderr=on_stderr)
+
+    # Wait for completion
+    if handle and handle["proc"]:
+        return_code = await handle["proc"].wait()
+    else:
+        return_code = -1
+
+    # Assert script completed successfully (exit code 0 means imports worked)
+    assert return_code == 0, (
+        f"Script failed with code {return_code}. Stderr: {stderr_lines}"
+    )
+
+    # Assert the success message was printed
+    assert any("All parol6 imports successful" in line for line in stdout_lines), (
+        f"Expected success message in stdout: {stdout_lines}"
+    )

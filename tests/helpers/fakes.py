@@ -70,6 +70,26 @@ class RecordingAsyncClient:
         """Record a move_joints command."""
         self._record("move_joints", target, speed_percentage=speed_percentage, **kwargs)
 
+    async def move_cartesian(
+        self,
+        pose: list[float],
+        *,
+        duration: float | None = None,
+        speed_percentage: float | None = None,
+        accel_percentage: float | None = None,
+        **kwargs: Any,
+    ) -> bool:
+        """Record a move_cartesian command."""
+        self._record(
+            "move_cartesian",
+            pose,
+            duration=duration,
+            speed_percentage=speed_percentage,
+            accel_percentage=accel_percentage,
+            **kwargs,
+        )
+        return True
+
     # System commands
     async def home(self) -> None:
         """Record a home command."""

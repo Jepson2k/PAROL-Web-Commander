@@ -7,45 +7,69 @@ from nicegui.testing import User
 from nicegui import ui, app as ng_app
 from typing import Any
 
+from tests.helpers.wait import wait_for_page_ready
+
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
 app_storage: Any = getattr(ng_app, "storage")
 
 
 @pytest.mark.integration
-async def test_serial_port_persistence_and_set_port(
-    user: User, reset_robot_state
-) -> None:
-    """Test that serial port can be configured via the Settings tab.
+async def test_settings_tab_accessible(user: User, reset_robot_state) -> None:
+    """Test that Settings tab is accessible in the control panel.
 
-    Verifies that clicking "Set Port" results in a corresponding notification
-    and that the stored port value is updated.
+    Verifies that the Settings tab can be found and clicked to reveal
+    the settings content with serial port selection.
     """
-    # Ensure a clean starting value in storage
-    app_storage.general["com_port"] = ""
-
     await user.open("/")
+    await wait_for_page_ready()
 
-    # Open the Settings tab
-    user.find(marker="tab-settings").click()
+    # Settings is embedded in the control panel (bottom-left HUD)
+    # The control panel has tabs: "Joint Jog", "Cartesian Jog", "Settings"
+    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab.click()
+    await asyncio.sleep(0.1)
 
-    # Find the serial port input and type a test port
-    test_port = "/dev/ttyTEST0"
-    # Select the input element by type and label content
-    port_input = user.find(kind=ui.input, content="Serial Port")
-    port_input.type(test_port)
+    # Verify the Settings tab panel is now showing by checking for expected content
+    # The Serial Port section should be visible
+    await user.should_see("Serial Port")
+    await user.should_see("Show Route")
+    await user.should_see("Theme")
 
-    # Click Set Port button
-    user.find("Set Port").click()
 
-    # Give time for handler
-    await asyncio.sleep(0.3)
+@pytest.mark.integration
+async def test_serial_port_select_exists(user: User, reset_robot_state) -> None:
+    """Test that the serial port select dropdown exists in Settings.
 
-    # Assert that a SET_PORT notification was emitted
-    assert any(
-        test_port in m and "SET_PORT" in m for m in user.notify.messages
-    ), "Expected SET_PORT notification containing the test port value"
+    Note: The port select auto-saves on change (no Set Port button needed).
+    We verify the select element exists with the correct label.
+    """
+    await user.open("/")
+    await wait_for_page_ready()
 
-    # And that the value is persisted in NiceGUI's general storage
-    assert (
-        app_storage.general.get("com_port") == test_port
-    ), "Expected com_port to be stored in NiceGUI general storage"
+    # Navigate to Settings tab
+    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab.click()
+    await asyncio.sleep(0.1)
+
+    # Find the serial port select - it has label="Port"
+    port_select = user.find(kind=ui.select, content="Port")
+    assert port_select is not None, "Serial port select should exist in Settings"
+
+
+@pytest.mark.integration
+async def test_tool_dropdown_exists_in_settings(user: User, reset_robot_state) -> None:
+    """Test that the tool selection dropdown exists in Settings.
+
+    Verifies the Tool dropdown is present with the expected label.
+    """
+    await user.open("/")
+    await wait_for_page_ready()
+
+    # Navigate to Settings tab
+    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab.click()
+    await asyncio.sleep(0.1)
+
+    # Verify Tool label and dropdown are visible
+    await user.should_see("Tool")
+    await user.should_see("Select end effector tool")

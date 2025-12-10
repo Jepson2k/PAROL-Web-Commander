@@ -1,6 +1,20 @@
+import asyncio
+import logging
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, TYPE_CHECKING
 from nicegui import binding
+from typing_extensions import dataclass_transform
+
+# Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
+if TYPE_CHECKING:
+    from parol_commander.services.urdf_scene import UrdfScene
+
+    @dataclass_transform(field_specifiers=(field,))
+    def bindable_dataclass(cls=None, /, **kwargs):
+        return cls  # type: ignore[return-value]
+else:
+    bindable_dataclass = binding.bindable_dataclass
 
 
 @dataclass
@@ -46,8 +60,113 @@ class StatusSnapshot:
     timestamp: float = 0.0
 
 
+@dataclass
+class ProgramTarget:
+    id: str  # Unique identifier (UUID)
+    line_number: int  # Line number in the editor (1-based)
+    pose: list[float]  # [x, y, z, rx, ry, rz]
+    move_type: str  # "cartesian", "pose", "joints"
+    scene_object_id: str  # ID of the 3D marker object in the scene
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for subprocess communication."""
+        return {
+            "id": self.id,
+            "line_number": self.line_number,
+            "pose": self.pose,
+            "move_type": self.move_type,
+            "scene_object_id": self.scene_object_id,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ProgramTarget":
+        """Deserialize from dict."""
+        return cls(**d)
+
+
+@dataclass
+class PathSegment:
+    points: list[list[float]]  # List of [x, y, z] points defining the segment
+    color: str  # Hex color code (green, blue, orange, red)
+    is_valid: bool  # Whether the segment is reachable (IK valid)
+    line_number: int  # Source line number in program
+    joints: list[float] | None = None  # Joint angles at end of segment
+    move_type: str = "cartesian"  # "cartesian", "joints", "smooth_*"
+    is_dashed: bool = True  # Whether to render as dashed line
+    show_arrows: bool = True  # Whether to show direction arrows
+
+    def to_dict(self) -> dict:
+        """Serialize to dict for subprocess communication."""
+        return {
+            "points": self.points,
+            "color": self.color,
+            "is_valid": self.is_valid,
+            "line_number": self.line_number,
+            "joints": self.joints,
+            "move_type": self.move_type,
+            "is_dashed": self.is_dashed,
+            "show_arrows": self.show_arrows,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PathSegment":
+        """Deserialize from dict."""
+        return cls(**d)
+
+
+@dataclass
+class PlaybackState:
+    """State for unified playback (simulation and robot execution)."""
+
+    is_playing: bool = False
+    is_simulating: bool = False  # True = sim mode, False = robot execution
+    current_step: int = 0
+    total_steps: int = 0
+    playback_speed: float = 1.0  # 1.0, 2.0, 4.0, 8.0
+    scrub_interactive: bool = True  # False in robot mode
+
+
+@bindable_dataclass
+class SimulationState:
+    targets: list[ProgramTarget] = field(default_factory=list)
+    path_segments: list[PathSegment] = field(default_factory=list)
+    current_step_index: int = 0
+    total_steps: int = 0
+    is_playing: bool = False
+    playback_speed: float = 1.0  # Multiplier
+    preview_mode: bool = False  # True=Dry Run, False=Real Execute
+    paths_visible: bool = True
+    envelope_visible: bool = False
+    envelope_mode: str = "auto"  # "auto" | "on" | "off"
+    _change_listeners: list[Callable[[], None]] = field(
+        default_factory=list, repr=False
+    )
+
+    def add_change_listener(self, callback: Callable[[], None]) -> None:
+        """Register a callback to be notified when simulation state changes."""
+        if callback not in self._change_listeners:
+            self._change_listeners.append(callback)
+
+    def remove_change_listener(self, callback: Callable[[], None]) -> None:
+        """Unregister a previously registered callback."""
+        if callback in self._change_listeners:
+            self._change_listeners.remove(callback)
+
+    def notify_changed(self) -> None:
+        """Notify all registered listeners that state has changed."""
+        for cb in self._change_listeners:
+            cb()
+
+
+@bindable_dataclass
+class RecordingState:
+    is_recording: bool = False
+    mode: str = "manual"  # "manual", "continuous", "post_jog"
+    capture_interval_s: float = 0.5
+
+
 # Extended shared state singletons for cross-module access
-@binding.bindable_dataclass
+@bindable_dataclass
 class RobotState:
     angles: list[float] = field(default_factory=list)  # len=6 in degrees
     pose: list[float] = field(
@@ -82,6 +201,26 @@ class RobotState:
     action_current: str = ""
     action_state: str = ""
     action_queue: list[dict] = field(default_factory=list)
+    # Editing mode - when True, x/y/z/angles are controlled by target editor
+    editing_mode: bool = False
+    _change_listeners: list[Callable[[], None]] = field(
+        default_factory=list, repr=False
+    )
+
+    def add_change_listener(self, callback: Callable[[], None]) -> None:
+        """Register a callback to be notified when robot state changes."""
+        if callback not in self._change_listeners:
+            self._change_listeners.append(callback)
+
+    def remove_change_listener(self, callback: Callable[[], None]) -> None:
+        """Unregister a previously registered callback."""
+        if callback in self._change_listeners:
+            self._change_listeners.remove(callback)
+
+    def notify_changed(self) -> None:
+        """Notify all registered listeners that state has changed."""
+        for cb in self._change_listeners:
+            cb()
 
 
 @dataclass
@@ -98,20 +237,10 @@ class ProgramState:
     last_speed_pct: int | None = None
 
 
-@binding.bindable_dataclass
+@bindable_dataclass
 class UiState:
-    # URDF configuration
-    urdf_config: dict = field(
-        default_factory=lambda: {
-            "material": "#888",
-            "background_color": "#eee",
-            "auto_sync": True,
-            "joint_name_order": ["L1", "L2", "L3", "L4", "L5", "L6"],
-            "deg_to_rad": True,
-        }
-    )
-    # URDF state
-    urdf_scene: Any = None
+    # URDF scene instance (holds UrdfSceneConfig)
+    urdf_scene: "UrdfScene | None" = None
     urdf_joint_names: list[str] | None = None
     urdf_index_mapping: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
     current_tool_stls: list[Any] = field(default_factory=list)
@@ -121,19 +250,166 @@ class UiState:
     jog_accel: int = 50
     incremental_jog: bool = False
     joint_step_deg: float = 1.0
-    frame: str = "TRF"
+    frame: str = "WRF"
     gizmo_visible: bool = True
 
     # Timers (set post-build)
     joint_jog_timer: Any = None
     cart_jog_timer: Any = None
 
-    # NiceGUI client context for background tasks
-    client: Any = None
+    # Editor panel reference for script stopping
+    editor_panel: Any = None
+
+
+@dataclass
+class EditorTab:
+    """State for a single editor tab."""
+
+    id: str  # Unique tab identifier (UUID hex)
+    filename: str  # Display name / filename
+    file_path: str | None  # Full path if saved to server
+    content: str  # Current editor content
+    saved_content: str  # Content at last save (for dirty tracking)
+    output_log: list[str] = field(default_factory=list)  # Per-tab output log entries
+    path_segments: list[PathSegment] = field(
+        default_factory=list
+    )  # Per-tab simulation paths
+    targets: list[ProgramTarget] = field(default_factory=list)  # Per-tab targets
+    created_at: float = 0.0  # Timestamp
+
+    @property
+    def is_dirty(self) -> bool:
+        """Return True if content differs from saved content."""
+        return self.content != self.saved_content
+
+
+@bindable_dataclass
+class EditorTabsState:
+    """State for multi-tab editor."""
+
+    tabs: list[EditorTab] = field(default_factory=list)
+    active_tab_id: str | None = None
+    _change_listeners: list[Callable[[], None]] = field(
+        default_factory=list, repr=False
+    )
+
+    def get_active_tab(self) -> EditorTab | None:
+        """Get the currently active tab."""
+        if not self.active_tab_id:
+            return None
+        return next((t for t in self.tabs if t.id == self.active_tab_id), None)
+
+    def find_tab_by_path(self, file_path: str | None) -> EditorTab | None:
+        """Find a tab with the given file path. Returns None if file_path is None."""
+        if file_path is None:
+            return None
+        return next((t for t in self.tabs if t.file_path == file_path), None)
+
+    def add_tab(self, tab: EditorTab) -> None:
+        """Add a new tab."""
+        self.tabs.append(tab)
+        self.notify_changed()
+
+    def remove_tab(self, tab_id: str) -> None:
+        """Remove a tab by ID."""
+        self.tabs = [t for t in self.tabs if t.id != tab_id]
+        if self.active_tab_id == tab_id:
+            self.active_tab_id = self.tabs[0].id if self.tabs else None
+        self.notify_changed()
+
+    def add_change_listener(self, callback: Callable[[], None]) -> None:
+        """Register a callback to be notified when tabs state changes."""
+        if callback not in self._change_listeners:
+            self._change_listeners.append(callback)
+
+    def remove_change_listener(self, callback: Callable[[], None]) -> None:
+        """Unregister a previously registered callback."""
+        if callback in self._change_listeners:
+            self._change_listeners.remove(callback)
+
+    def notify_changed(self) -> None:
+        """Notify all registered listeners that state has changed."""
+        for cb in self._change_listeners:
+            cb()
+
+
+@dataclass
+class ReadinessState:
+    """Tracks application initialization readiness for tests.
+
+    This provides precise synchronization points that tests can await
+    instead of using blind sleep() calls.
+
+    Events:
+        backend_ready: Set when backend streaming is active with valid robot data
+        urdf_scene_ready: Set when URDF 3D scene is fully initialized
+        page_ready: Set when all page components are initialized
+        simulator_ready: Set when simulator mode is fully operational after toggle
+    """
+
+    backend_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    urdf_scene_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    page_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    simulator_ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+    backend_ready_ts: float = 0.0
+    urdf_scene_ready_ts: float = 0.0
+    page_ready_ts: float = 0.0
+    simulator_ready_ts: float = 0.0
+
+    def reset(self) -> None:
+        """Reset all events for test isolation."""
+        self.backend_ready = asyncio.Event()
+        self.urdf_scene_ready = asyncio.Event()
+        self.page_ready = asyncio.Event()
+        self.simulator_ready = asyncio.Event()
+        self.backend_ready_ts = 0.0
+        self.urdf_scene_ready_ts = 0.0
+        self.page_ready_ts = 0.0
+        self.simulator_ready_ts = 0.0
+
+    def reset_simulator_ready(self) -> None:
+        """Reset simulator_ready event (call before simulator toggle)."""
+        self.simulator_ready = asyncio.Event()
+        self.simulator_ready_ts = 0.0
+        logging.debug("Readiness: simulator_ready reset")
+
+    def signal_backend_ready(self) -> None:
+        """Signal that backend is ready (call from _status_consumer)."""
+        if not self.backend_ready.is_set():
+            self.backend_ready_ts = time.time()
+            self.backend_ready.set()
+            logging.debug("Readiness: backend_ready signaled")
+
+    def signal_urdf_scene_ready(self) -> None:
+        """Signal that URDF scene is ready (call from initialize_urdf_scene)."""
+        if not self.urdf_scene_ready.is_set():
+            self.urdf_scene_ready_ts = time.time()
+            self.urdf_scene_ready.set()
+            logging.debug("Readiness: urdf_scene_ready signaled")
+
+    def signal_page_ready(self) -> None:
+        """Signal full page readiness (call from index_page after setup)."""
+        if not self.page_ready.is_set():
+            self.page_ready_ts = time.time()
+            self.page_ready.set()
+            logging.debug("Readiness: page_ready signaled")
+
+    def signal_simulator_ready(self) -> None:
+        """Signal that simulator is ready (call from _status_consumer after toggle)."""
+        if not self.simulator_ready.is_set():
+            self.simulator_ready_ts = time.time()
+            self.simulator_ready.set()
+            logging.debug("Readiness: simulator_ready signaled")
 
 
 # Module-level singletons
-robot_state = RobotState()
-controller_state = ControllerState()
-program_state = ProgramState()
-ui_state = UiState()
+robot_state: RobotState = RobotState()
+controller_state: ControllerState = ControllerState()
+program_state: ProgramState = ProgramState()
+ui_state: UiState = UiState()
+simulation_state: SimulationState = SimulationState()
+recording_state: RecordingState = RecordingState()
+playback_state: PlaybackState = PlaybackState()
+readiness_state: ReadinessState = ReadinessState()
+editor_tabs_state: EditorTabsState = EditorTabsState()

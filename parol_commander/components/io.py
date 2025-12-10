@@ -4,6 +4,7 @@ from functools import partial
 from nicegui import ui
 from parol6 import AsyncRobotClient
 
+from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.state import robot_state
 
 
@@ -27,6 +28,7 @@ class IoPage:
         try:
             action = "open" if state else "close"
             _ = await self.client.control_pneumatic_gripper(action, port)
+            motion_recorder.record_action("io", port=port, state=state)
             # Show SET_IO command format in notification
             io_idx = 1 if port == 1 else 2  # OUTPUT 1 = index 1, OUTPUT 2 = index 2
             ui.notify(f"Sent SET_IO|{io_idx}|{state}", color="primary")

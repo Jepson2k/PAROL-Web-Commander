@@ -2,16 +2,21 @@ import asyncio
 import pytest
 from nicegui.testing import User
 
+from tests.helpers.wait import wait_for_page_ready
+
 
 @pytest.mark.integration
 async def test_cartesian_disabled_blocks_jog(user: User, monkeypatch):
     """When CART_EN reports axis disabled, ControlPanel should ignore presses (no jog sent)."""
     # Open app
     await user.open("/")
+    await wait_for_page_ready()
 
-    # Set TRF array to all zeros to disable all cart axes
+    # Set BOTH WRF and TRF arrays to all zeros to disable all cart axes
+    # (WRF is the default frame, so we must disable WRF axes)
     from parol_commander.state import robot_state
 
+    robot_state.cart_en_wrf = [0] * 12
     robot_state.cart_en_trf = [0] * 12
 
     # Patch AsyncRobotClient.jog_cartesian to record calls

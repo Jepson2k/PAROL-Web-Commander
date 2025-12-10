@@ -22,8 +22,8 @@ class ReadoutPanel:
             # Colored Cartesian and Rotational pose readouts with units
             with ui.column().classes("gap-1"):
                 # X/Y/Z row - larger text with mm units
-                with ui.row().classes("items-center justify-between w-full"):
-                    with ui.row().classes("items-center gap-1"):
+                with ui.row().classes("items-center justify-between w-full no-wrap"):
+                    with ui.row().classes("items-center gap-1 no-wrap"):
                         ui.label("X:").classes("text-sm tcp-x")
                         x_label = (
                             ui.label("-")
@@ -37,7 +37,7 @@ class ReadoutPanel:
                         ui.label("mm").classes("text-xs tcp-x")
                         self.cartesian_labels["X"] = x_label
 
-                    with ui.row().classes("items-center gap-1"):
+                    with ui.row().classes("items-center gap-1 no-wrap"):
                         ui.label("Y:").classes("text-sm tcp-y")
                         y_label = (
                             ui.label("-")
@@ -51,7 +51,7 @@ class ReadoutPanel:
                         ui.label("mm").classes("text-xs tcp-y")
                         self.cartesian_labels["Y"] = y_label
 
-                    with ui.row().classes("items-center gap-1"):
+                    with ui.row().classes("items-center gap-1 no-wrap"):
                         ui.label("Z:").classes("text-sm tcp-z")
                         z_label = (
                             ui.label("-")
