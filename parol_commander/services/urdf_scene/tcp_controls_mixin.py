@@ -40,8 +40,11 @@ class TCPControlsMixin:
     joint_names: List[str]
 
     # Methods from other mixins (for type checking)
-    def _sync_robot_state_from_editing(self) -> None: ...
-    def _update_edit_bar_values(self, editing_type: str) -> None: ...
+    def _sync_robot_state_from_editing(self) -> None:
+        ...
+
+    def _update_edit_bar_values(self, editing_type: str) -> None:
+        ...
 
     _current_editing_type: Optional[str]
 
@@ -54,9 +57,11 @@ class TCPControlsMixin:
         self._tcp_last_rotation: Optional[Tuple[float, float, float]] = None
 
         # Direct Cartesian move callback (pose in mm/degrees) - used in LIVE/SIMULATOR
-        self._tcp_cartesian_move_callback: Optional[Callable[[List[float]], None]] = (
-            None
-        )
+        self._tcp_cartesian_move_callback: Optional[
+            Callable[[List[float]], None]
+        ] = None
+        # Drag-start callback to signal start of a TCP TransformControls operation
+        self._tcp_cartesian_move_start_callback: Optional[Callable[[], None]] = None
         # Drag-end callback to signal end of a TCP TransformControls operation
         self._tcp_cartesian_move_end_callback: Optional[Callable[[], None]] = None
 
@@ -83,6 +88,10 @@ class TCPControlsMixin:
             callback: Function to call with target pose in mm/degrees
         """
         self._tcp_cartesian_move_callback = callback
+
+    def on_tcp_cartesian_move_start(self, callback: Callable[[], None]) -> None:
+        """Register callback to be called when a TCP TransformControls drag starts."""
+        self._tcp_cartesian_move_start_callback = callback
 
     def on_tcp_cartesian_move_end(self, callback: Callable[[], None]) -> None:
         """Register callback to be called when a TCP TransformControls drag ends."""
@@ -181,43 +190,47 @@ class TCPControlsMixin:
 
         # Enable TransformControls with a short Python-side retry until the object exists on JS
         async def _enable_with_retry():
-            attempts = 20  # ~1s total at 50ms intervals
-            for i in range(attempts):
-                # Try to enable now
-                self.scene.run_method(
-                    "enable_transform_controls",
-                    tcp_object_id,
-                    self._tcp_transform_mode,
-                    0.8,
-                    None,
-                    True,
-                )
-                await asyncio.sleep(0.05)
-                ok = await self.scene.run_method(
-                    "has_transform_controls", tcp_object_id
-                )
-                if ok:
-                    # Make sure jog ball is visible
-                    if self._tcp_ball:
-                        self._tcp_ball.visible(True)
-                    # Set transform space
-                    if hasattr(self.scene, "set_transform_space"):
-                        space = "local" if self._control_frame == "TRF" else "world"
-                        self.scene.set_transform_space(tcp_object_id, space)
-                    # Store initial position/rotation for delta calculation
-                    self._tcp_last_position = None
-                    self._tcp_last_rotation = None
-                    self._tcp_transform_enabled = True
-                    space_for_log = (
-                        "world"
-                        if self._tcp_transform_mode == "translate"
-                        else ("local" if self._control_frame == "TRF" else "world")
+            try:
+                attempts = 20  # ~1s total at 50ms intervals
+                for i in range(attempts):
+                    # Try to enable now
+                    self.scene.run_method(
+                        "enable_transform_controls",
+                        tcp_object_id,
+                        self._tcp_transform_mode,
+                        0.8,
+                        None,
+                        True,
                     )
-                    logging.debug(
-                        f"Enabled TCP TransformControls in {mode} mode, space={space_for_log}"
+                    await asyncio.sleep(0.05)
+                    ok = await self.scene.run_method(
+                        "has_transform_controls", tcp_object_id
                     )
-                    return
-            logging.warning("Failed to enable TCP TransformControls after retries")
+                    if ok:
+                        # Make sure jog ball is visible
+                        if self._tcp_ball:
+                            self._tcp_ball.visible(True)
+                        # Set transform space
+                        if hasattr(self.scene, "set_transform_space"):
+                            space = "local" if self._control_frame == "TRF" else "world"
+                            self.scene.set_transform_space(tcp_object_id, space)
+                        # Store initial position/rotation for delta calculation
+                        self._tcp_last_position = None
+                        self._tcp_last_rotation = None
+                        self._tcp_transform_enabled = True
+                        space_for_log = (
+                            "world"
+                            if self._tcp_transform_mode == "translate"
+                            else ("local" if self._control_frame == "TRF" else "world")
+                        )
+                        logging.debug(
+                            f"Enabled TCP TransformControls in {mode} mode, space={space_for_log}"
+                        )
+                        return
+                logging.warning("Failed to enable TCP TransformControls after retries")
+            except (TimeoutError, asyncio.CancelledError):
+                # Scene is shutting down, bail out gracefully
+                logging.debug("TCP TransformControls enablement cancelled (shutdown)")
 
         # Use explicit scene context to avoid stale slot errors
         with self.scene:

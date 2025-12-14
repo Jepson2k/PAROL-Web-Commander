@@ -178,11 +178,11 @@ print("All parol6 imports successful")
         return_code = -1
 
     # Assert script completed successfully (exit code 0 means imports worked)
-    assert return_code == 0, (
-        f"Script failed with code {return_code}. Stderr: {stderr_lines}"
-    )
+    assert (
+        return_code == 0
+    ), f"Script failed with code {return_code}. Stderr: {stderr_lines}"
 
     # Assert the success message was printed
-    assert any("All parol6 imports successful" in line for line in stdout_lines), (
-        f"Expected success message in stdout: {stdout_lines}"
-    )
+    assert any(
+        "All parol6 imports successful" in line for line in stdout_lines
+    ), f"Expected success message in stdout: {stdout_lines}"

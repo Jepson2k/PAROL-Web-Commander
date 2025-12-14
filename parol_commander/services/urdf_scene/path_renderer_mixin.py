@@ -4,14 +4,11 @@ This mixin handles rendering of path segments with optional dashing and directio
 """
 
 import math
-from typing import Any, List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from nicegui import ui
-
-if TYPE_CHECKING:
-    from parol_commander.services.urdf_scene.urdf_scene import UrdfScene
 
 
 class PathRendererMixin:
@@ -94,7 +91,9 @@ class PathRendererMixin:
                 while arrow_pos < segment_end_distance:
                     if arrow_pos >= segment_start_distance:
                         # Calculate position along this segment
-                        local_t = float((arrow_pos - segment_start_distance) / segment_length)  # type: ignore[assignment]
+                        local_t = float(
+                            (arrow_pos - segment_start_distance) / segment_length
+                        )  # type: ignore[assignment]
                         arrow_point = p1 + direction * (local_t * segment_length)
 
                         # Create small cone pointing in direction of travel

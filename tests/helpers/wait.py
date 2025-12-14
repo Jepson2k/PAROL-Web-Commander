@@ -5,7 +5,6 @@ making tests more reliable and faster.
 """
 
 import asyncio
-import warnings
 from typing import Callable
 
 from nicegui.testing import User
@@ -387,3 +386,163 @@ async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> 
         f"simulator_active={robot_state.simulator_active}, "
         f"connected={robot_state.connected}"
     )
+
+
+# ============================================================================
+# Panel Resize Test Helpers
+# ============================================================================
+
+
+async def get_element_rect(user: User, selector: str) -> dict | None:
+    """Get bounding rect of element via JavaScript.
+
+    Args:
+        user: NiceGUI User test fixture
+        selector: CSS selector for the element
+
+    Returns:
+        Dict with top, right, bottom, left, width, height or None if not found
+    """
+    result = await user.page.evaluate(
+        f"""(() => {{
+            const el = document.querySelector('{selector}');
+            if (!el) return null;
+            const rect = el.getBoundingClientRect();
+            return {{
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+                left: rect.left,
+                width: rect.width,
+                height: rect.height
+            }};
+        }})()"""
+    )
+    return result
+
+
+async def get_element_classes(user: User, selector: str) -> list[str]:
+    """Get list of CSS classes on an element.
+
+    Args:
+        user: NiceGUI User test fixture
+        selector: CSS selector for the element
+
+    Returns:
+        List of class names
+    """
+    result = await user.page.evaluate(
+        f"""(() => {{
+            const el = document.querySelector('{selector}');
+            if (!el) return [];
+            return Array.from(el.classList);
+        }})()"""
+    )
+    return result or []
+
+
+async def get_localstorage_item(user: User, key: str) -> dict | None:
+    """Read and parse JSON from localStorage.
+
+    Args:
+        user: NiceGUI User test fixture
+        key: localStorage key
+
+    Returns:
+        Parsed JSON object or None if not found
+    """
+    import json
+
+    result = await user.page.evaluate(f"localStorage.getItem('{key}')")
+    if result:
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+async def set_localstorage_item(user: User, key: str, value: dict) -> None:
+    """Set a JSON value in localStorage.
+
+    Args:
+        user: NiceGUI User test fixture
+        key: localStorage key
+        value: Dict to store as JSON
+    """
+    import json
+
+    json_str = json.dumps(value).replace("'", "\\'")
+    await user.page.evaluate(f"localStorage.setItem('{key}', '{json_str}')")
+
+
+async def clear_localstorage_item(user: User, key: str) -> None:
+    """Remove an item from localStorage.
+
+    Args:
+        user: NiceGUI User test fixture
+        key: localStorage key to remove
+    """
+    await user.page.evaluate(f"localStorage.removeItem('{key}')")
+
+
+async def simulate_drag(user: User, selector: str, dx: int = 0, dy: int = 0) -> None:
+    """Simulate a mouse drag on an element.
+
+    Triggers mousedown on the element, then mousemove and mouseup on document.
+
+    Args:
+        user: NiceGUI User test fixture
+        selector: CSS selector for the element to drag
+        dx: Horizontal pixels to drag (positive = right)
+        dy: Vertical pixels to drag (positive = down)
+    """
+    await user.page.evaluate(
+        f"""(() => {{
+            const el = document.querySelector('{selector}');
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            const startX = rect.left + rect.width / 2;
+            const startY = rect.top + rect.height / 2;
+
+            el.dispatchEvent(new MouseEvent('mousedown', {{
+                clientX: startX,
+                clientY: startY,
+                bubbles: true
+            }}));
+
+            document.dispatchEvent(new MouseEvent('mousemove', {{
+                clientX: startX + {dx},
+                clientY: startY + {dy},
+                bubbles: true
+            }}));
+
+            document.dispatchEvent(new MouseEvent('mouseup', {{
+                clientX: startX + {dx},
+                clientY: startY + {dy},
+                bubbles: true
+            }}));
+        }})()"""
+    )
+
+
+async def wait_for_panel_resize_ready(user: User, timeout_s: float = 3.0) -> None:
+    """Wait for PanelResize module to be configured and app-ready.
+
+    Args:
+        user: NiceGUI User test fixture
+        timeout_s: Maximum time to wait
+
+    Raises:
+        TimeoutError: If PanelResize doesn't become ready
+    """
+    interval = 0.1
+    for _ in range(int(timeout_s / interval)):
+        is_ready = await user.page.evaluate(
+            "window.PanelResize && window.PanelResize.isAppReady()"
+        )
+        if is_ready:
+            return
+        await asyncio.sleep(interval)
+
+    raise TimeoutError(f"PanelResize not ready after {timeout_s}s")

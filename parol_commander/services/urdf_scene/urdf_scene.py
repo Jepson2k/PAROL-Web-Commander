@@ -175,22 +175,20 @@ class UrdfScene(
             self.context_menu.on("hide", lambda: self.context_menu.clear())
             # Use polar grid with 1m radius for general workspace visualization
             default_radius = 1.0  # Default workspace radius in meters
-            with (
-                ui.scene(
-                    grid=False,  # Disable rectangular grid
-                    polar_grid=(default_radius, 12, 6),  # (radius, sectors, rings)
-                    background_color=background_color,
-                    on_click=self._handle_scene_click,
-                    click_events=[
-                        "mousedown",
-                        "mouseup",
-                        "mouseleave",
-                        "contextmenu",
-                    ],
-                )
-                .classes("w-full h-[66vh]")
-                .on_transform_end(self._handle_transform_event) as self.scene
-            ):
+            with ui.scene(
+                grid=False,  # Disable rectangular grid
+                polar_grid=(default_radius, 12, 6),  # (radius, sectors, rings)
+                background_color=background_color,
+                on_click=self._handle_scene_click,
+                click_events=[
+                    "mousedown",
+                    "mouseup",
+                    "mouseleave",
+                    "contextmenu",
+                ],
+            ).classes("w-full h-[66vh]").on_transform_end(
+                self._handle_transform_event
+            ) as self.scene:
                 # Base link
                 self._plot_stls(
                     self.urdf_model.base_link, scale=self._stl_scale, material=material
@@ -420,7 +418,10 @@ class UrdfScene(
             screen_x = getattr(e, "screen_x", None)
             screen_y = getattr(e, "screen_y", None)
             if screen_x is not None and screen_y is not None:
-                self._right_click_start_pos = (float(screen_x) if screen_x is not None else 0.0, float(screen_y) if screen_y is not None else 0.0)
+                self._right_click_start_pos = (
+                    float(screen_x) if screen_x is not None else 0.0,
+                    float(screen_y) if screen_y is not None else 0.0,
+                )
             else:
                 client_x = getattr(e, "client_x", 0)
                 client_y = getattr(e, "client_y", 0)

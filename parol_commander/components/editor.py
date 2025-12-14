@@ -12,7 +12,7 @@ import uuid
 from nicegui import ui, context
 
 from parol_commander.common.theme import get_theme
-from parol_commander.constants import REPO_ROOT, CONTROLLER_HOST, CONTROLLER_PORT
+from parol_commander.constants import REPO_ROOT, config
 from parol_commander.state import (
     robot_state,
     simulation_state,
@@ -171,7 +171,7 @@ class EditorPanel:
         return f"""import time
 from parol6 import RobotClient
 
-rbt = RobotClient(host={CONTROLLER_HOST!r}, port={CONTROLLER_PORT})
+rbt = RobotClient(host={config.controller_host!r}, port={config.controller_port})
 
 print("Moving to home position...")
 rbt.home()
@@ -944,11 +944,11 @@ print(f"Robot status: {{status}}")
     def _show_save_confirmation(self, tab: EditorTab) -> None:
         """Show save confirmation dialog for dirty tab."""
         dlg = ui.dialog()
-        
+
         def dont_save():
             dlg.close()
             self._do_close_tab(tab)
-        
+
         with dlg, ui.card().classes("overlay-card"):
             ui.label(f"Save changes to {tab.filename}?").classes(
                 "text-lg font-medium mb-2"
@@ -1067,6 +1067,7 @@ print(f"Robot status: {{status}}")
 
         with self.tabs_container:
             tab_element = ui.tab(name=tab.id, label="").classes("editor-tab")
+            tab_element.mark(f"editor-tab-{tab.id}")
             with tab_element:
                 with ui.row().classes("items-center gap-1 no-wrap"):
                     # Dirty indicator (orange dot)
@@ -1085,11 +1086,17 @@ print(f"Robot status: {{status}}")
                         .classes("text-sm w-28")
                         .on("change", lambda e, t=tab: setattr(t, "filename", e.value))
                     )
+                    filename_input.mark(f"editor-tab-filename-{tab.id}")
 
                     # Close button
-                    ui.button(
-                        icon="close", on_click=lambda t=tab: self._close_tab(t)
-                    ).props("flat round dense size=xs").tooltip("Close tab")
+                    close_btn = (
+                        ui.button(
+                            icon="close", on_click=lambda t=tab: self._close_tab(t)
+                        )
+                        .props("flat round dense size=xs")
+                        .tooltip("Close tab")
+                    )
+                    close_btn.mark(f"editor-tab-close-{tab.id}")
 
             # Store tab element reference
             if tab.id not in self._tab_widgets:
@@ -1305,17 +1312,18 @@ print(f"Robot status: {{status}}")
 
         Order: Previous | Play/Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
         """
-        with (
-            ui.row()
-            .classes("w-full items-center gap-2 bottom-playback-bar")
-            .style("min-height: 48px;") as bar
-        ):
+        with ui.row().classes("w-full items-center gap-2 bottom-playback-bar").style(
+            "min-height: 48px;"
+        ) as bar:
             self.playback_bar = bar
 
             # 1. Previous step
-            ui.button(icon="skip_previous", on_click=self._step_backward).props(
-                "round dense flat"
-            ).tooltip("Previous step")
+            prev_btn = (
+                ui.button(icon="skip_previous", on_click=self._step_backward)
+                .props("round dense flat")
+                .tooltip("Previous step")
+            )
+            prev_btn.mark("editor-step-prev")
 
             # 2. Play/Stop (run script or stop)
             self.run_btn = (
@@ -1323,11 +1331,15 @@ print(f"Robot status: {{status}}")
                 .props("round dense color=positive unelevated")
                 .tooltip("Run Program")
             )
+            self.run_btn.mark("editor-run-btn")
 
             # 3. Next step
-            ui.button(icon="skip_next", on_click=self._step_forward).props(
-                "round dense flat"
-            ).tooltip("Next step")
+            next_btn = (
+                ui.button(icon="skip_next", on_click=self._step_forward)
+                .props("round dense flat")
+                .tooltip("Next step")
+            )
+            next_btn.mark("editor-step-next")
 
             # 4. Scrub slider (flex-grow)
             with ui.element("div").classes("flex-1 px-2"):
@@ -1348,11 +1360,9 @@ print(f"Robot status: {{status}}")
             )
 
             # 5. Speed FAB (dropdown with speed options)
-            with (
-                ui.fab(icon="speed", color="amber")
-                .props("dense unelevated round size=sm direction=up")
-                .tooltip("Playback Speed") as speed_fab
-            ):
+            with ui.fab(icon="speed", color="amber").props(
+                "dense unelevated round size=sm direction=up"
+            ).tooltip("Playback Speed") as speed_fab:
                 self.speed_fab = speed_fab
                 ui.fab_action("0.25x", on_click=lambda: self._set_speed(0.25))
                 ui.fab_action("0.5x", on_click=lambda: self._set_speed(0.5))
@@ -1366,6 +1376,7 @@ print(f"Robot status: {{status}}")
                 .props("round dense color=negative unelevated")
                 .tooltip("Start Recording")
             )
+            self.record_btn.mark("editor-record-btn")
 
             # 7. Capture position
             ui.button(
@@ -1378,6 +1389,7 @@ print(f"Robot status: {{status}}")
                 .props("round dense flat")
                 .tooltip("Show Output")
             )
+            self.log_toggle_btn.mark("editor-log-toggle")
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
@@ -1421,18 +1433,21 @@ print(f"Robot status: {{status}}")
                             .classes("ml-2")
                             .tooltip("New / Open")
                         ):
-                            ui.fab_action(
+                            new_tab_btn = ui.fab_action(
                                 icon="note_add",
                                 on_click=lambda: self._new_tab(),
                             ).tooltip("New tab")
-                            ui.fab_action(
+                            new_tab_btn.mark("editor-new-tab-btn")
+                            open_server_btn = ui.fab_action(
                                 icon="folder_open",
                                 on_click=self.open_server_file_dialog,
                             ).tooltip("Open from server")
-                            ui.fab_action(
+                            open_server_btn.mark("editor-open-server-btn")
+                            upload_btn = ui.fab_action(
                                 icon="upload_file",
                                 on_click=self.open_file_picker,
                             ).tooltip("Upload from device")
+                            upload_btn.mark("editor-upload-btn")
 
                 # Save FAB (saves active tab, outside scroll area)
                 with (
@@ -1440,21 +1455,25 @@ print(f"Robot status: {{status}}")
                     .props("dense unelevated direction=right")
                     .tooltip("Save")
                 ):
-                    ui.fab_action(
+                    save_btn = ui.fab_action(
                         icon="dns",
                         on_click=lambda: self._save_active_tab(),
                     ).tooltip("Save to server")
-                    ui.fab_action(
+                    save_btn.mark("editor-save-btn")
+                    download_btn = ui.fab_action(
                         icon="download",
                         on_click=lambda: self._download_active_tab(),
                     ).tooltip("Download to device")
+                    download_btn.mark("editor-download-btn")
 
                 # Command palette menu (outside scroll area)
-                with (
+                commands_btn = (
                     ui.button(icon="library_add")
                     .props("unelevated round dense")
                     .tooltip("Insert Command")
-                ):
+                )
+                commands_btn.mark("editor-commands-btn")
+                with commands_btn:
                     self._build_command_menu()
 
                 # X close button
@@ -1465,16 +1484,14 @@ print(f"Robot status: {{status}}")
 
             # ---- Splitter: Editor (before) | Playbar (separator) | Log (after) ----
             # horizontal=True means vertical stacking (column layout)
-            with (
-                ui.splitter(
-                    horizontal=True,
-                    value=94,  # Start collapsed (94% to editor, leaves room for playbar)
-                    limits=(50, 94),
-                    on_change=self._on_splitter_change,
-                )
-                .classes("w-full flex-1 editor-splitter")
-                .style("overflow: hidden;") as splitter
-            ):
+            with ui.splitter(
+                horizontal=True,
+                value=94,  # Start collapsed (94% to editor, leaves room for playbar)
+                limits=(50, 94),
+                on_change=self._on_splitter_change,
+            ).classes("w-full flex-1 editor-splitter").style(
+                "overflow: hidden;"
+            ) as splitter:
                 self.editor_splitter = splitter
 
                 # ---- Tab Panels Area (CodeMirror) in splitter.before ----

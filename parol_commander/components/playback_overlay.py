@@ -24,14 +24,10 @@ class PlaybackOverlay:
 
     def build(self) -> None:
         """Build floating overlay anchored at bottom-center."""
-        with (
-            ui.element("div")
-            .classes("playback-overlay")
-            .style(
-                "position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); "
-                "z-index: 100; pointer-events: auto; display: none;"
-            ) as self.container
-        ):
+        with ui.element("div").classes("playback-overlay").style(
+            "position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); "
+            "z-index: 100; pointer-events: auto; display: none;"
+        ) as self.container:
             with (
                 ui.card()
                 .classes("overlay-card gap-2 items-center")

@@ -41,35 +41,21 @@ class TargetEditorMixin:
     _original_editing_pose: Optional[List[float]]
     context_menu: Any
     _scene_wrapper: Any
-    
-    # Method declarations for methods from other mixins/classes
-    def enter_editing_mode(self, joint_angles: List[float]) -> None: 
-        """Implemented in EditingModeMixin."""
-        pass
-    def exit_editing_mode(self) -> None: 
-        """Implemented in EditingModeMixin."""
-        pass
-    def get_editing_angles(self) -> List[float]: 
-        """Implemented in UrdfScene."""
-        return []
-    def _init_ik_solver(self) -> None: 
-        """Implemented in EditingModeMixin."""
-        pass
-    def enable_tcp_transform_controls(self, mode: str) -> None: 
-        """Implemented in TCPControlsMixin."""
-        pass
-    def _enable_joint_transform_controls(self) -> None: 
-        """Implemented in EditingModeMixin."""
-        pass
-    def _disable_joint_transform_controls(self) -> None: 
-        """Implemented in EditingModeMixin."""
-        pass
-    def _cleanup_editing(self) -> None: 
-        """Implemented in EditingModeMixin."""
-        pass
-    def _ik_for_position(self, target_pos: List[float]) -> Optional[List[float]]: 
-        """Implemented in EditingModeMixin."""
-        return None
+    # Target editor state
+    _right_click_start_pos: Tuple[float, float] | None
+    _editing_target_id: Optional[str]
+
+    # Method references from other mixins (type annotations only - no method body!)
+    # These are provided by EditingModeMixin, TCPControlsMixin, or UrdfScene
+    enter_editing_mode: Any  # (joint_angles: List[float]) -> None
+    exit_editing_mode: Any  # () -> None
+    get_editing_angles: Any  # () -> List[float]
+    _init_ik_solver: Any  # () -> None
+    enable_tcp_transform_controls: Any  # (mode: str) -> None
+    _enable_joint_transform_controls: Any  # () -> None
+    _disable_joint_transform_controls: Any  # () -> None
+    _cleanup_editing: Any  # () -> None
+    _ik_for_position: Any  # (target_pos: List[float]) -> Optional[List[float]]
 
     def _init_target_editor_state(self) -> None:
         """Initialize target editor state variables."""

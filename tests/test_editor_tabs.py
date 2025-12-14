@@ -1,6 +1,5 @@
 """Tests for multi-tab editor functionality."""
 
-import pytest
 from parol_commander.state import (
     EditorTab,
     EditorTabsState,
@@ -312,8 +311,11 @@ class TestEditorTabsState:
     def test_remove_change_listener(self):
         """Test removing a change listener."""
         state = EditorTabsState()
-        calls = []
-        listener = lambda: calls.append("called")
+        calls: list[str] = []
+
+        def listener() -> None:
+            calls.append("called")
+
         state.add_change_listener(listener)
         state.remove_change_listener(listener)
 

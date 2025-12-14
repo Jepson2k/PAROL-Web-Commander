@@ -6,6 +6,7 @@ reported robot state, rather than just asserting on client call patterns.
 """
 
 import asyncio
+import time
 
 import pytest
 from nicegui.testing import User
@@ -143,9 +144,9 @@ async def test_jogging_blocked_when_not_connected_or_simulating() -> None:
     assert all(c["name"] != "jog_joint" for c in fake_client.calls)
 
     # Error notification should mention hardware connection requirement
-    assert any("Robot mode requires a hardware connection" in m for m in messages), (
-        "Expected safety notification when jogging is blocked"
-    )
+    assert any(
+        "Robot mode requires a hardware connection" in m for m in messages
+    ), "Expected safety notification when jogging is blocked"
 
 
 @pytest.mark.unit
@@ -174,6 +175,7 @@ async def test_cart_jog_tick_passes_accel_to_move_cartesian() -> None:
     panel._tcp_drag_active = True
     panel._tcp_latest_pose = [100.0, 200.0, 300.0, 0.0, 0.0, 0.0]
     panel._tcp_last_sent_pose = None  # Ensure pose is considered "changed"
+    panel._last_drag_event_ts = time.time()  # Prevent watchdog timeout
 
     # Call cart_jog_tick which should send move_cartesian with accel
     await panel.cart_jog_tick()
@@ -184,12 +186,12 @@ async def test_cart_jog_tick_passes_accel_to_move_cartesian() -> None:
 
     # Verify accel_percentage was passed
     call = cart_calls[0]
-    assert "accel_percentage" in call["kwargs"], (
-        "move_cartesian should receive accel_percentage"
-    )
-    assert call["kwargs"]["accel_percentage"] == 75.0, (
-        "accel_percentage should match ui_state.jog_accel"
-    )
+    assert (
+        "accel_percentage" in call["kwargs"]
+    ), "move_cartesian should receive accel_percentage"
+    assert (
+        call["kwargs"]["accel_percentage"] == 75.0
+    ), "accel_percentage should match ui_state.jog_accel"
 
 
 @pytest.mark.integration
@@ -344,9 +346,9 @@ async def test_cartesian_jog_click_negative_direction(
 
     # Z should have decreased by exactly 5mm (±0.1mm for rounding)
     delta = initial_z - final_z
-    assert 4.9 <= delta <= 5.1, (
-        f"Expected Z to decrease 5.0mm±0.1mm, moved {delta:.2f}mm"
-    )
+    assert (
+        4.9 <= delta <= 5.1
+    ), f"Expected Z to decrease 5.0mm±0.1mm, moved {delta:.2f}mm"
 
 
 @pytest.mark.integration
@@ -439,9 +441,9 @@ async def test_go_to_joint_limit_changes_joint_configuration(
     )
 
     # We expect J1 to change when going to a joint limit
-    assert abs(final_j1 - initial_j1) > 1.0, (
-        f"Expected J1 to change after go-to-limit, was {initial_j1:.2f}°, now {final_j1:.2f}°"
-    )
+    assert (
+        abs(final_j1 - initial_j1) > 1.0
+    ), f"Expected J1 to change after go-to-limit, was {initial_j1:.2f}°, now {final_j1:.2f}°"
 
 
 # ============================================================================
@@ -465,7 +467,7 @@ def test_joint_jog_skipped_in_editing_mode(robot_state, reset_robot_state) -> No
 
     # The set_joint_pressed method should return early when editing_mode is True
     # We can't easily call async methods in unit tests, but we can verify the guard logic
-    assert robot_state.editing_mode == True, "editing_mode should be True"
+    assert robot_state.editing_mode is True, "editing_mode should be True"
 
     # Clean up
     robot_state.editing_mode = False
@@ -486,7 +488,7 @@ def test_cartesian_jog_skipped_in_editing_mode(robot_state, reset_robot_state) -
 
     # The set_axis_pressed method should return early when editing_mode is True
     # We can't easily call async methods in unit tests, but we can verify the guard logic
-    assert robot_state.editing_mode == True, "editing_mode should be True"
+    assert robot_state.editing_mode is True, "editing_mode should be True"
 
     # Clean up
     robot_state.editing_mode = False

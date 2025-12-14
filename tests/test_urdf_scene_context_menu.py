@@ -1,9 +1,12 @@
 """Test URDF scene context menu handling."""
 
-import pytest
-from unittest.mock import MagicMock, patch
-from nicegui.testing import User
 from dataclasses import dataclass
+from unittest.mock import MagicMock
+
+import pytest
+from nicegui.testing import User
+
+from tests.helpers.wait import wait_for_urdf_ready
 
 
 @dataclass
@@ -26,9 +29,6 @@ class MockEvent:
     click_type: str
     hits: list[MockHit]
     ground_point: MockGroundPoint | None = None
-
-
-from tests.helpers.wait import wait_for_urdf_ready
 
 
 @pytest.mark.integration
@@ -125,13 +125,14 @@ async def test_update_simulation_view_handles_deleted_client(user: User) -> None
     crash with 'Client deleted' error after the user closed the browser tab.
     The fix checks client._deleted before making scene modifications.
     """
-    from parol_commander.state import ui_state, simulation_state
+    from parol_commander.state import ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
 
     urdf_scene = ui_state.urdf_scene
     assert urdf_scene is not None
+    assert urdf_scene.scene is not None
 
     # Mock a deleted client via scene._client()
     mock_client = MagicMock()
@@ -163,6 +164,7 @@ async def test_update_simulation_view_handles_no_client_context(user: User) -> N
 
     urdf_scene = ui_state.urdf_scene
     assert urdf_scene is not None
+    assert urdf_scene.scene is not None
 
     # Mock scene._client() to raise RuntimeError (no client available)
     original_client = urdf_scene.scene._client
@@ -285,9 +287,9 @@ async def test_envelope_sphere_creation_succeeds(user: User) -> None:
         urdf_scene._update_simulation_view()
 
         # Should have created envelope_object
-        assert urdf_scene.envelope_object is not None, (
-            "Envelope sphere should be created when mode='on' and max_reach > 0"
-        )
+        assert (
+            urdf_scene.envelope_object is not None
+        ), "Envelope sphere should be created when mode='on' and max_reach > 0"
     finally:
         # Restore state
         simulation_state.envelope_mode = original_mode
@@ -328,8 +330,6 @@ class TestTcpOffsetTracking:
         scene.envelope_object = None
 
         # Call the actual method by binding it
-        from parol_commander.services.urdf_scene import UrdfScene
-
         bound_method = UrdfScene.update_tcp_pose_from_tool.__get__(scene, type(scene))
 
         # Update to gripper_v1

@@ -11,41 +11,100 @@ PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
 
 # Expose as plain Python lists for UI/serialization friendliness
 JOINT_LIMITS_DEG = joint.limits.deg.tolist()
-# Controller target (what the UI connects to)
-CONTROLLER_HOST: str = os.getenv("PAROL_CONTROLLER_IP", "127.0.0.1")
-CONTROLLER_PORT: int = int(os.getenv("PAROL_CONTROLLER_PORT", "5001"))
-EXCLUSIVE_START: bool = os.getenv("PAROL_EXCLUSIVE_START", "1") in (
-    "1",
-    "true",
-    "True",
-    "yes",
-    "YES",
-)
-# Webserver bind (NiceGUI host/port)
-SERVER_HOST: str = os.getenv("PAROL_SERVER_IP", "0.0.0.0")
-SERVER_PORT: int = int(os.getenv("PAROL_SERVER_PORT", "8080"))
 
 
-def _resolve_log_level() -> int:
-    s = os.getenv("PAROL_LOG_LEVEL")
-    if s:
-        name = s.strip().upper()
-        mapping = {
-            "DEBUG": logging.DEBUG,
-            "INFO": logging.INFO,
-            "WARNING": logging.WARNING,
-            "ERROR": logging.ERROR,
-            "CRITICAL": logging.CRITICAL,
-        }
-        return mapping.get(name, logging.WARNING)
-    else:
+class _Config:
+    """Lazy configuration that reads environment variables at access time.
+
+    This allows tests to set environment variables after module import
+    and have them take effect without module cache manipulation.
+
+    Runtime overrides (e.g., from CLI arguments) take precedence over env vars.
+    Use config.set('property_name', value) to set overrides.
+    """
+
+    def __init__(self) -> None:
+        self._overrides: dict[str, object] = {}
+
+    def set(self, key: str, value: object) -> None:
+        """Set a runtime override (e.g., from CLI arguments).
+
+        Args:
+            key: Property name (e.g., 'server_port', 'controller_host')
+            value: Override value
+        """
+        self._overrides[key] = value
+
+    @property
+    def controller_host(self) -> str:
+        """Controller target host (what the UI connects to)."""
+        if "controller_host" in self._overrides:
+            return str(self._overrides["controller_host"])
+        return os.getenv("PAROL_CONTROLLER_IP", "127.0.0.1")
+
+    @property
+    def controller_port(self) -> int:
+        """Controller target UDP port."""
+        if "controller_port" in self._overrides:
+            return int(self._overrides["controller_port"])  # type: ignore[call-overload]
+        return int(os.getenv("PAROL_CONTROLLER_PORT", "5001"))
+
+    @property
+    def exclusive_start(self) -> bool:
+        """Whether to require exclusive controller ownership on start."""
+        if "exclusive_start" in self._overrides:
+            return bool(self._overrides["exclusive_start"])
+        return os.getenv("PAROL_EXCLUSIVE_START", "1") in (
+            "1",
+            "true",
+            "True",
+            "yes",
+            "YES",
+        )
+
+    @property
+    def server_host(self) -> str:
+        """Webserver bind host (NiceGUI)."""
+        if "server_host" in self._overrides:
+            return str(self._overrides["server_host"])
+        return os.getenv("PAROL_SERVER_IP", "0.0.0.0")
+
+    @property
+    def server_port(self) -> int:
+        """Webserver bind port (NiceGUI)."""
+        if "server_port" in self._overrides:
+            return int(self._overrides["server_port"])  # type: ignore[call-overload]
+        return int(os.getenv("PAROL_SERVER_PORT", "8080"))
+
+    @property
+    def log_level(self) -> int:
+        """Logging level from PAROL_LOG_LEVEL env var."""
+        if "log_level" in self._overrides:
+            return int(self._overrides["log_level"])  # type: ignore[call-overload]
+        s = os.getenv("PAROL_LOG_LEVEL")
+        if s:
+            name = s.strip().upper()
+            mapping = {
+                "DEBUG": logging.DEBUG,
+                "INFO": logging.INFO,
+                "WARNING": logging.WARNING,
+                "ERROR": logging.ERROR,
+                "CRITICAL": logging.CRITICAL,
+            }
+            return mapping.get(name, logging.WARNING)
         return logging.WARNING
 
+    @property
+    def webapp_control_rate_hz(self) -> float:
+        """Webapp control emission rate in Hz."""
+        if "webapp_control_rate_hz" in self._overrides:
+            return float(self._overrides["webapp_control_rate_hz"])  # type: ignore[arg-type]
+        return float(os.getenv("PAROL_WEBAPP_CONTROL_RATE_HZ", "20"))
 
-LOG_LEVEL: int = _resolve_log_level()
+    @property
+    def webapp_control_interval_s(self) -> float:
+        """Webapp control emission interval in seconds."""
+        return 1.0 / max(self.webapp_control_rate_hz, 1.0)
 
 
-# Webapp control emission cadence (client -> controller)
-# We want it as low as possible while being higher than the jog duration rate and enough to feel responsive
-WEBAPP_CONTROL_RATE_HZ: float = float(os.getenv("PAROL_WEBAPP_CONTROL_RATE_HZ", "20"))
-WEBAPP_CONTROL_INTERVAL_S: float = 1.0 / max(WEBAPP_CONTROL_RATE_HZ, 1.0)
+config = _Config()

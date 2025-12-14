@@ -16,8 +16,7 @@ from parol6 import AsyncRobotClient
 
 from parol_commander.constants import (
     JOINT_LIMITS_DEG,
-    WEBAPP_CONTROL_INTERVAL_S,
-    WEBAPP_CONTROL_RATE_HZ,
+    config,
 )
 from parol_commander.state import readiness_state, robot_state, ui_state
 from parol_commander.services.motion_recorder import motion_recorder
@@ -80,8 +79,8 @@ class ControlPanel:
         self._holding_active_cart: set[str] = set()
 
         # Jog cadence constants
-        self.JOG_TICK_S: float = WEBAPP_CONTROL_INTERVAL_S
-        self.CADENCE_WARN_WINDOW: int = max(1, int(WEBAPP_CONTROL_RATE_HZ))
+        self.JOG_TICK_S: float = config.webapp_control_interval_s
+        self.CADENCE_WARN_WINDOW: int = max(1, int(config.webapp_control_rate_hz))
         self.CADENCE_TOLERANCE: float = 0.015  # 15mm
         self.STREAM_TIMEOUT_S: float = 0.1
 
@@ -99,10 +98,11 @@ class ControlPanel:
 
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
-        self._tcp_last_sent_pose: list[float] | None = (
-            None  # Track last sent to avoid duplicates
-        )
+        self._tcp_last_sent_pose: list[
+            float
+        ] | None = None  # Track last sent to avoid duplicates
         self._tcp_drag_active: bool = False
+        self._last_drag_event_ts: float = 0.0
 
         # Step input widget reference for dynamic suffix/tooltip
         self._step_input: ui.number | None = None
@@ -701,6 +701,12 @@ class ControlPanel:
 
         # Priority 1: TransformControls drag actively providing absolute poses
         if self._tcp_drag_active and self._tcp_latest_pose:
+            # Watchdog: If no drag events for 0.5s, assume drag ended (missed END event)
+            if time.time() - self._last_drag_event_ts > 0.5:
+                logging.debug("TCP Drag: Watchdog timeout - auto-ending drag")
+                self._handle_tcp_cartesian_move_end()
+                return
+
             # Only send if pose has changed (avoid flooding with duplicates)
             if self._tcp_last_sent_pose is not None:
                 # Compare with small epsilon for floating-point tolerance
@@ -715,6 +721,8 @@ class ControlPanel:
                     # Pose hasn't changed, skip sending
                     self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
                     return
+            else:
+                logging.debug("TCP Drag: First move (no last sent pose)")
 
             try:
                 await self.client.move_cartesian(
@@ -738,6 +746,30 @@ class ControlPanel:
             )
         self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
+    def _handle_tcp_cartesian_move_start(self) -> None:
+        """Handle start of a TCP TransformControls drag.
+
+        Ensures drag state is reset so that even small initial movements are registered.
+        """
+        logging.debug("TCP Drag: START event received")
+        self._last_drag_event_ts = time.time()
+        if not robot_state.simulator_active and not robot_state.connected:
+            return
+
+        # Force a fresh start for the drag session
+        self._tcp_last_sent_pose = None
+
+        # Start drag session and recorder if not already active
+        if not self._tcp_drag_active:
+            self._tcp_drag_active = True
+            motion_recorder.on_jog_start("cartesian", "TCP")
+
+        # Ensure movement timer is active
+        t = ui_state.cart_jog_timer
+        if t and not t.active:
+            self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+            t.active = True
+
     def _handle_tcp_cartesian_move(self, pose: List[float]) -> None:
         """Handle TCP Cartesian move events from TransformControls drag operations.
 
@@ -754,10 +786,14 @@ class ControlPanel:
 
         # Cache latest target pose (x,y,z in mm, rx,ry,rz in deg)
         self._tcp_latest_pose = list(pose[:6])
+        self._last_drag_event_ts = time.time()
 
         # Start drag session (once) and recorder
         if not self._tcp_drag_active:
+            logging.debug("TCP Drag: Move received while inactive (implicit start)")
             self._tcp_drag_active = True
+            # Implicit start: force reset last sent pose to ensure first move is sent
+            self._tcp_last_sent_pose = None
             motion_recorder.on_jog_start("cartesian", "TCP")
 
         # Ensure movement timer is active
@@ -768,6 +804,7 @@ class ControlPanel:
 
     def _handle_tcp_cartesian_move_end(self) -> None:
         """End of a TCP TransformControls drag: stop recording and possibly timer."""
+        logging.debug("TCP Drag: END event received")
         if self._tcp_drag_active:
             motion_recorder.on_jog_end()
             self._tcp_drag_active = False
@@ -852,7 +889,10 @@ class ControlPanel:
 
             # Register Cartesian move callback for direct TCP position moves (primary approach)
             ui_state.urdf_scene.on_tcp_cartesian_move(self._handle_tcp_cartesian_move)
-            # Register drag end to stop timer/recording
+            # Register drag start/end to manage state
+            ui_state.urdf_scene.on_tcp_cartesian_move_start(
+                self._handle_tcp_cartesian_move_start
+            )
             ui_state.urdf_scene.on_tcp_cartesian_move_end(
                 self._handle_tcp_cartesian_move_end
             )

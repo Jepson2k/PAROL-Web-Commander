@@ -48,19 +48,20 @@ class EditingModeMixin:
     _tcp_ball_dragging: bool
     _tcp_fk_solver: Optional[EditingIKSolver]
     config: Any
-    
-    # Methods from other mixins/classes (declared for type checking)
-    def set_appearance_mode(self, mode: RobotAppearanceMode) -> None: ...
-    def _ensure_tcp_ball(self) -> None: ...
-    def _update_tcp_ball_position(self) -> None: ...
-    def enable_tcp_transform_controls(self, mode: str = "translate") -> None: ...
-    
+
+    # Methods from other mixins/classes (type annotations only - no body!)
+    # These are provided by TCPControlsMixin and other mixins
+    set_appearance_mode: Any  # RobotAppearanceMode -> None
+    _ensure_tcp_ball: Any  # () -> None
+    _update_tcp_ball_position: Any  # () -> None
+    enable_tcp_transform_controls: Any  # (mode: str) -> None
+
     # Optional attributes from TargetEditorMixin
     _unified_target_mode: str
     _current_editing_type: Optional[str]
-    def _sync_robot_state_from_editing(self) -> None: ...
-    def _update_edit_bar_values(self, edit_type: str) -> None: ...
-    def _update_edit_bar_mode_indicator(self) -> None: ...
+    _sync_robot_state_from_editing: Any  # () -> None
+    _update_edit_bar_values: Any  # (edit_type: str) -> None
+    _update_edit_bar_mode_indicator: Any  # () -> None
 
     def _init_editing_mode_state(self) -> None:
         """Initialize editing mode state variables."""

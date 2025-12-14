@@ -2,21 +2,20 @@
 
 import logging
 import os
-import shutil
+import subprocess
 import sys
 from collections.abc import Generator
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-
+from nicegui import run as nicegui_run
 from parol6.client.manager import is_server_running
 from parol6.config import HOME_ANGLES_DEG
-import subprocess
-from nicegui import run as nicegui_run
+
+# Default screen port for browser tests (may be overridden by selenium import below)
+SCREEN_PORT = 3392
 
 if TYPE_CHECKING:
-    from selenium import webdriver
     from nicegui.testing.screen import Screen
 
 
@@ -27,7 +26,6 @@ if TYPE_CHECKING:
 # Conditionally import screen plugin fixtures for browser tests
 # This allows browser tests to run with the 'screen' fixture when selenium is available
 SELENIUM_AVAILABLE = False
-SCREEN_PORT = 3392  # Must match nicegui.testing.screen.Screen.PORT
 try:
     from selenium import webdriver as _webdriver
 
@@ -37,18 +35,50 @@ try:
     )
 
     # Import screen plugin fixtures - these are needed for browser tests
+    # Note: nicegui_remove_all_screenshots is intentionally NOT imported - we override it below
+    # to use worker-specific screenshot directories for parallel test execution
     from nicegui.testing.screen_plugin import (
         screen,  # noqa: F401 - fixture for browser tests
         nicegui_chrome_options,  # noqa: F401
         nicegui_driver,  # noqa: F401
-        nicegui_remove_all_screenshots,  # noqa: F401
         pytest_runtest_makereport,  # noqa: F401
         capabilities,  # noqa: F401
     )
     from nicegui.testing.screen import Screen
+    from pathlib import Path
 
     SCREEN_PORT = Screen.PORT
     SELENIUM_AVAILABLE = True
+
+    @pytest.fixture(scope="session")
+    def nicegui_remove_all_screenshots(
+        worker_id: str, isolate_ports_for_parallel: None
+    ) -> None:
+        """Remove screenshots from worker-specific directory before test session.
+
+        Override of NiceGUI's fixture to support parallel test execution.
+        Each xdist worker gets its own screenshot directory to avoid race conditions.
+
+        Depends on isolate_ports_for_parallel to ensure Screen.PORT is set first.
+        """
+        # Use worker-specific screenshot directory
+        if worker_id == "master" or not worker_id:
+            screenshot_dir = Path("screenshots")
+        else:
+            screenshot_dir = Path(f"screenshots_{worker_id}")
+
+        # Update Screen class to use worker-specific directory
+        Screen.SCREENSHOT_DIR = screenshot_dir
+
+        # Clean up any existing screenshots (with race-condition handling)
+        if screenshot_dir.exists():
+            for name in screenshot_dir.glob("*.png"):
+                try:
+                    name.unlink()
+                except FileNotFoundError:
+                    pass  # Another worker may have already deleted it
+        else:
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     @pytest.fixture
     def chrome_options() -> _webdriver.ChromeOptions:
@@ -69,14 +99,6 @@ try:
         logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
         yield
 
-    # Note: We import capabilities from screen_plugin above, but override it here
-    # to reduce browser console logging from ALL to SEVERE only
-    @pytest.fixture
-    def capabilities(capabilities: dict) -> dict:  # type: ignore[no-redef]
-        """Override browser logging to capture only SEVERE errors."""
-        capabilities["goog:loggingPrefs"] = {"browser": "SEVERE"}
-        return capabilities
-
 except ImportError:
     # selenium not installed - browser tests will be skipped
     pass
@@ -93,19 +115,27 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """Return number of workers for pytest-xdist when -nauto is used.
+
+    Browser tests are resource-heavy (Chrome + NiceGUI server + controller per worker),
+    so we use half of CPU count to prevent resource exhaustion on constrained systems.
+    This scales appropriately: 2 workers on 4-core Pi, 16 workers on 32-core server.
+    """
+    cpu_count = os.cpu_count() or 2
+    return max(1, cpu_count // 2)  # Half of CPUs, minimum 1
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Skip browser tests if selenium is not available, and set screen port."""
+    """Skip browser tests if selenium is not available."""
     if not SELENIUM_AVAILABLE:
         skip_browser = pytest.mark.skip(reason="selenium not installed")
         for item in items:
             if "browser" in item.keywords:
                 item.add_marker(skip_browser)
-    else:
-        # Set PAROL_SERVER_PORT to match the Screen plugin's port for browser tests
-        # This must happen before the app module is imported
-        os.environ["PAROL_SERVER_PORT"] = str(SCREEN_PORT)
 
 
 def _get_worker_ports(worker_id: str) -> tuple[int, int, int]:
@@ -152,21 +182,30 @@ def isolate_ports_for_parallel(worker_id: str) -> Generator[None, None, None]:
 
     This must run before test_env_config to ensure ports are set before
     the app reads them. Includes the multicast port for STATUS isolation.
+
+    For browser tests, overrides Screen.PORT so each worker gets its own port.
     """
     controller_port, server_port, mcast_port = _get_worker_ports(worker_id)
+
+    # Override NiceGUI Screen.PORT class attribute BEFORE screen fixture runs
+    # This allows browser tests to run in parallel (each worker gets unique port)
+    if SELENIUM_AVAILABLE:
+        from nicegui.testing.screen import Screen
+
+        Screen.PORT = server_port
 
     # Store original values
     orig_controller = os.environ.get("PAROL_CONTROLLER_PORT")
     orig_server = os.environ.get("PAROL_SERVER_PORT")
     orig_mcast = os.environ.get("PAROL6_MCAST_PORT")
 
-    # Set worker-specific ports BEFORE any parol6 imports
+    # Set worker-specific ports
     os.environ["PAROL_CONTROLLER_PORT"] = str(controller_port)
     os.environ["PAROL_SERVER_PORT"] = str(server_port)
     os.environ["PAROL6_MCAST_PORT"] = str(mcast_port)
 
-    # Force parol6.config to re-read the env vars by reloading the module
-    # This is necessary because config values are cached at import time
+    # Note: parol_commander.constants uses lazy config properties so no reload needed.
+    # However, parol6.config (external library) still caches at import time.
     import importlib
 
     try:
@@ -351,10 +390,10 @@ def kill_stale_controllers(
         _kill()
         # Best-effort verification (non-fatal)
         try:
-            from parol_commander.constants import CONTROLLER_HOST
+            from parol_commander.constants import config
 
             running = is_server_running(
-                host=CONTROLLER_HOST, port=controller_port, timeout=0.5
+                host=config.controller_host, port=controller_port, timeout=0.5
             )
             if running:
                 _kill()

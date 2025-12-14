@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import math
 import time
@@ -22,16 +23,15 @@ from parol_commander.common.logging_config import (
     configure_logging,
     TRACE,
 )
-from parol_commander.common.theme import apply_theme, get_theme, inject_layout_css
+from parol_commander.common.theme import (
+    apply_theme,
+    get_theme,
+    inject_layout_css,
+    PANEL_RESIZE_CONFIG,
+)
 from parol_commander.constants import (
     PAROL6_OFFICIAL_DOC_URL,
-    SERVER_HOST,
-    SERVER_PORT,
-    CONTROLLER_HOST,
-    CONTROLLER_PORT,
-    EXCLUSIVE_START,
-    LOG_LEVEL,
-    WEBAPP_CONTROL_INTERVAL_S,
+    config,
 )
 
 from parol_commander.state import (
@@ -54,13 +54,6 @@ from parol_commander.services.urdf_scene import (
 )
 from importlib.resources import files as pkg_files
 
-
-# Runtime configuration (resolved later from CLI/env)
-RUNTIME_SERVER_HOST = SERVER_HOST
-RUNTIME_SERVER_PORT = SERVER_PORT
-RUNTIME_CONTROLLER_HOST = CONTROLLER_HOST
-RUNTIME_CONTROLLER_PORT = CONTROLLER_PORT
-RUNTIME_EXCLUSIVE_START = EXCLUSIVE_START
 
 STATIC_DIR = pkg_files("parol_commander").joinpath("static")
 ng_app.add_static_files("/static", str(STATIC_DIR))
@@ -322,10 +315,10 @@ async def start_controller(com_port: str | None) -> None:
     global server_manager
     try:
         # If AUTO_START requested, ensure a server is running at the target tuple
-        if RUNTIME_EXCLUSIVE_START:
+        if config.exclusive_start:
             server_manager = manage_server(
-                host=RUNTIME_CONTROLLER_HOST,
-                port=RUNTIME_CONTROLLER_PORT,
+                host=config.controller_host,
+                port=config.controller_port,
                 com_port=com_port,
                 extra_env=None,
                 normalize_logs=True,
@@ -333,13 +326,13 @@ async def start_controller(com_port: str | None) -> None:
         else:
             # If a controller is already running, reuse it; otherwise start our own
             if is_server_running(
-                host=RUNTIME_CONTROLLER_HOST,
-                port=RUNTIME_CONTROLLER_PORT,
+                host=config.controller_host,
+                port=config.controller_port,
             ):
                 logging.info(
                     "Controller already running at %s:%s; reusing external server",
-                    RUNTIME_CONTROLLER_HOST,
-                    RUNTIME_CONTROLLER_PORT,
+                    config.controller_host,
+                    config.controller_port,
                 )
                 server_manager = None
 
@@ -546,11 +539,9 @@ def build_page_content() -> None:
                 .classes("flex-1 min-h-0 relative")
                 .style("pointer-events: none;")
             ):
-                with (
-                    ui.tabs()
-                    .props("vertical")
-                    .classes("side-tab-bar absolute left-0 top-0 z-40") as side_tabs
-                ):
+                with ui.tabs().props("vertical").classes(
+                    "side-tab-bar absolute left-0 top-0 z-40"
+                ) as side_tabs:
                     program_tab = ui.tab(name="program", label="", icon="code")
                     program_tab.mark("tab-program")
                     io_tab = ui.tab(
@@ -570,32 +561,28 @@ def build_page_content() -> None:
                 # z-30 is lower than tab bar (z-40) so panels slide out from underneath
                 # pl-[64px] = tab bar width (52px) + tab bar margin (12px)
                 # pt-[12px] pb-[12px] match the tab bar's margins
-                with (
-                    ui.column()
-                    .classes(
-                        "left-wrap pl-[58px] w-full h-full overflow-hidden z-30 pt-[12px] pb-[12px]"
-                    )
-                    .style("pointer-events: none;") as left_wrap
-                ):
-                    with (
-                        ui.tab_panels(side_tabs, value=None)
-                        .props(
-                            "vertical animated transition-prev=slide-right transition-next=slide-right"
-                        )
-                        .classes("left-panels h-auto max-h-full overflow-auto z-30")
-                        .style("pointer-events: none;") as left_panels
-                    ):
+                with ui.column().classes(
+                    "left-wrap pl-[58px] w-full h-full overflow-hidden z-30 pt-[12px] pb-[12px]"
+                ).style("pointer-events: none;") as left_wrap:
+                    with ui.tab_panels(side_tabs, value=None).props(
+                        "vertical animated transition-prev=slide-right transition-next=slide-right"
+                    ).classes("left-panels h-auto max-h-full overflow-auto z-30").style(
+                        "pointer-events: none;"
+                    ) as left_panels:
 
                         def close_left_panels():
                             side_tabs.value = None
                             left_panels.value = None
+                            # Clean up layout classes when closing top panel
+                            left_wrap.classes(remove="bottom-open")
+                            left_wrap.classes(remove="bottom-open-non-program")
 
                         with ui.tab_panel("program").classes(
-                            "overlay-card overflow-hidden program-panel p-0"
+                            "overlay-card overflow-hidden program-panel resizable-tab p-0"
                         ):
                             # Editor panel handles its own header row with title, tabs, and close button
                             editor_panel.build(close_callback=close_left_panels)
-                            # Add resize handles for drag-to-resize (right, bottom, corner)
+                            # Resize handles - JS module will attach events
                             ui.element("div").classes("resize-handle-right")
                             ui.element("div").classes("resize-handle-bottom")
                             ui.element("div").classes("resize-handle-corner")
@@ -607,10 +594,8 @@ def build_page_content() -> None:
                                 ui.button(
                                     icon="close", on_click=close_left_panels
                                 ).props("flat round dense color=white")
-                            with (
-                                ui.element("div")
-                                .classes("overflow-y-auto")
-                                .style("max-height: calc(100vh - 120px);")
+                            with ui.element("div").classes(
+                                "overflow-y-auto io-gripper-content"
                             ):
                                 io_page = io_page or IoPage(client)
                                 io_page.build()
@@ -624,10 +609,8 @@ def build_page_content() -> None:
                                 ui.button(
                                     icon="close", on_click=close_left_panels
                                 ).props("flat round dense color=white")
-                            with (
-                                ui.element("div")
-                                .classes("overflow-y-auto")
-                                .style("max-height: calc(100vh - 120px);")
+                            with ui.element("div").classes(
+                                "overflow-y-auto io-gripper-content"
                             ):
                                 gripper_page = gripper_page or GripperPage(client)
                                 gripper_page.build()
@@ -650,103 +633,108 @@ def build_page_content() -> None:
                         side_tabs.on(
                             "update:modelValue", lambda e: update_left_layout()
                         )
+
+                        # Handle tab switching via PanelResize module
+                        def handle_tab_change(e):
+                            to_tab = e.args or ""
+                            ui.run_javascript(
+                                f"PanelResize.onTabChange('top', '{to_tab}')"
+                            )
+
+                        side_tabs.on("update:model-value", handle_tab_change)
+
                         # Initial sync to avoid invisible overlay blocking scene
                         update_left_layout()
 
             # Bottom vertical tabs and panels - anchored at bottom-left
-            with ui.column().classes("absolute bottom-0 left-0 z-40"):
-                # Tabs stay at bottom corner
-                with ui.row().classes(
-                    "absolute bottom-0 left-0 z-50 pointer-events-auto"
-                ):
-                    with (
-                        ui.tabs()
-                        .props("vertical")
-                        .classes("side-tab-bar")
-                        .style("background: transparent !important") as bottom_tabs
-                    ):
-                        resp_tab = ui.tab(name="response", label="", icon="article")
-                        resp_tab.tooltip("Log")
-                        resp_tab.mark("tab-log")
-                        help_tab = ui.tab(name="help", label="", icon="help_outline")
-                        help_tab.tooltip("Help")
-                        help_tab.mark("tab-help")
+            # Tabs positioned to match top tabs: side-tab-bar has margin: 12px
+            with ui.tabs().props("vertical").classes(
+                "side-tab-bar absolute bottom-0 left-0 z-50"
+            ) as bottom_tabs:
+                resp_tab = ui.tab(name="response", label="", icon="article")
+                resp_tab.tooltip("Log")
+                resp_tab.mark("tab-log")
+                help_tab = ui.tab(name="help", label="", icon="help_outline")
+                help_tab.tooltip("Help")
+                help_tab.mark("tab-help")
 
-                # Panels positioned above tabs, offset to right of tab column
-                with (
-                    ui.tab_panels(bottom_tabs, value=None)
-                    .props(
-                        "vertical animated transition-prev=slide-up transition-next=slide-down"
+            # Panels positioned above tabs - styling in theme.py .bottom-panels
+            with ui.tab_panels(bottom_tabs, value=None).props(
+                "vertical animated transition-prev=slide-up transition-next=slide-down"
+            ).classes("bottom-panels") as bottom_panels:
+
+                def close_bottom_panels():
+                    bottom_tabs.value = None
+                    bottom_panels.value = None
+                    # Update classes to restore layout (CSS handles styling)
+                    left_wrap.classes(remove="bottom-open")
+                    bottom_panels.classes(remove="is-open")
+
+                with ui.tab_panel("response").classes(
+                    "overlay-card response-panel resizable-tab"
+                ):
+                    with ui.row().classes("w-full"):
+                        ui.label("Log").classes("text-lg font-medium")
+                        ui.space()
+                        ui.button(icon="close", on_click=close_bottom_panels).props(
+                            "flat round dense color=white"
+                        )
+                    response_log = (
+                        ui.log(max_lines=1000)
+                        .classes("w-full h-full")
+                        .classes("no-x-scroll")
+                        .style(
+                            "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
+                        )
                     )
-                    .classes("bottom-panels")
-                    .style(
-                        "position: absolute; bottom: 12px; left: 52px; pointer-events: none;"
-                    ) as bottom_panels
-                ):
+                    # Resize handles - JS module will attach events
+                    ui.element("div").classes("resize-handle-top")
+                    ui.element("div").classes("resize-handle-right")
+                    ui.element("div").classes("resize-handle-corner")
 
-                    def close_bottom_panels():
-                        bottom_tabs.value = None
-                        bottom_panels.value = None
-                        # Update classes to restore layout (CSS handles styling)
+                with (
+                    ui.tab_panel("help")
+                    .classes("overlay-card")
+                    .style("height: 40vh; width: calc(50vw - 58px);")
+                ):
+                    with ui.row().classes("w-full"):
+                        ui.label("Help").classes("text-lg font-medium")
+                        ui.space()
+                        ui.button(icon="close", on_click=close_bottom_panels).props(
+                            "flat round dense color=white"
+                        )
+                    ui.link(
+                        "Open PAROL Commander Docs",
+                        PAROL6_OFFICIAL_DOC_URL,
+                        new_tab=True,
+                    ).classes("q-my-sm")
+
+                # Bind bottom tab changes to adjust layout via CSS classes
+                def update_bottom_layout():
+                    is_open = bool(bottom_tabs.value)
+                    # Check which top tab is currently active
+                    current_top_tab = side_tabs.value
+                    if is_open:
+                        # Only add bottom-open if program tab is active
+                        # For IO/Gripper tabs, use bottom-open-non-program instead
+                        if current_top_tab == "program":
+                            left_wrap.classes(add="bottom-open")
+                            left_wrap.classes(remove="bottom-open-non-program")
+                        else:
+                            left_wrap.classes(add="bottom-open-non-program")
+                            left_wrap.classes(remove="bottom-open")
+                        bottom_panels.classes(add="is-open")
+                    else:
                         left_wrap.classes(remove="bottom-open")
+                        left_wrap.classes(remove="bottom-open-non-program")
                         bottom_panels.classes(remove="is-open")
 
-                    with (
-                        ui.tab_panel("response")
-                        .classes("overlay-card response-panel")
-                        .style("height: 50vh; width: calc(50vw - 52px);")
-                    ):
-                        with ui.row().classes("w-full"):
-                            ui.label("Log").classes("text-lg font-medium")
-                            ui.space()
-                            ui.button(icon="close", on_click=close_bottom_panels).props(
-                                "flat round dense color=white"
-                            )
-                        response_log = ui.log(max_lines=1000).classes(
-                            "w-full whitespace-pre-wrap break-words h-full"
-                        )
-                        # Add resize handles INSIDE the tab panel (like program-panel)
-                        ui.element("div").classes("resize-handle-top")
-                        ui.element("div").classes("resize-handle-right")
-                        ui.element("div").classes("resize-handle-corner")
+                # Bind to both event casings to ensure compatibility
+                bottom_tabs.on("update:model-value", lambda _: update_bottom_layout())
+                bottom_tabs.on("update:modelValue", lambda _: update_bottom_layout())
 
-                    with (
-                        ui.tab_panel("help")
-                        .classes("overlay-card")
-                        .style("height: 40vh; width: calc(50vw - 52px);")
-                    ):
-                        with ui.row().classes("w-full"):
-                            ui.label("Help").classes("text-lg font-medium")
-                            ui.space()
-                            ui.button(icon="close", on_click=close_bottom_panels).props(
-                                "flat round dense color=white"
-                            )
-                        ui.link(
-                            "Open PAROL Commander Docs",
-                            PAROL6_OFFICIAL_DOC_URL,
-                            new_tab=True,
-                        ).classes("q-my-sm")
-
-                    # Bind bottom tab changes to adjust layout via CSS classes
-                    def update_bottom_layout():
-                        is_open = bool(bottom_tabs.value)
-                        if is_open:
-                            left_wrap.classes(add="bottom-open")
-                            bottom_panels.classes(add="is-open")
-                        else:
-                            left_wrap.classes(remove="bottom-open")
-                            bottom_panels.classes(remove="is-open")
-
-                    # Bind to both event casings to ensure compatibility
-                    bottom_tabs.on(
-                        "update:model-value", lambda e: update_bottom_layout()
-                    )
-                    bottom_tabs.on(
-                        "update:modelValue", lambda e: update_bottom_layout()
-                    )
-
-                    # Initial sync on load to avoid stale half-height state
-                    update_bottom_layout()
+                # Initial sync on load to avoid stale half-height state
+                update_bottom_layout()
 
         # Top-right HUD: Pose readouts
         readout_panel.build("tr")
@@ -756,6 +744,11 @@ def build_page_content() -> None:
 
         # Bottom-center HUD: playback overlay (floating scrub bar)
         playback_overlay.build()
+
+        # Configure panel resize module with app-specific settings
+        ui.run_javascript(f"PanelResize.configure({json.dumps(PANEL_RESIZE_CONFIG)})")
+        # Signal app ready after NiceGUI finishes rendering
+        ui.timer(0.5, lambda: ui.run_javascript("PanelResize.onAppReady()"), once=True)
 
 
 # Guard against duplicate startup/shutdown handler registration during tests
@@ -898,12 +891,12 @@ async def index_page():
 
     # Create jog timers
     joint_jog_timer = ui.timer(
-        interval=WEBAPP_CONTROL_INTERVAL_S,
+        interval=config.webapp_control_interval_s,
         callback=control_panel.jog_tick,
         active=False,
     )
     cart_jog_timer = ui.timer(
-        interval=WEBAPP_CONTROL_INTERVAL_S,
+        interval=config.webapp_control_interval_s,
         callback=control_panel.cart_jog_tick,
         active=False,
     )
@@ -1005,28 +998,27 @@ async def _status_consumer() -> None:
 
 
 def main():
-    global \
-        RUNTIME_SERVER_HOST, \
-        RUNTIME_SERVER_PORT, \
-        RUNTIME_CONTROLLER_HOST, \
-        RUNTIME_CONTROLLER_PORT, \
-        RUNTIME_AUTO_START, \
-        RUNTIME_LOG_LEVEL
+    global client, control_panel, readout_panel, editor_panel
+    global io_page, gripper_page, settings_page
+
     # CLI: web bind, controller target, and log level
+    # Defaults come from config (lazy evaluation - reads env vars at access time)
     parser = argparse.ArgumentParser(description="PAROL6 NiceGUI Webserver")
-    parser.add_argument("--host", default=SERVER_HOST, help="Webserver bind host")
     parser.add_argument(
-        "--port", type=int, default=SERVER_PORT, help="Webserver bind port"
+        "--host", default=config.server_host, help="Webserver bind host"
+    )
+    parser.add_argument(
+        "--port", type=int, default=config.server_port, help="Webserver bind port"
     )
     parser.add_argument(
         "--controller-host",
-        default=CONTROLLER_HOST,
+        default=config.controller_host,
         help="Controller host to connect to",
     )
     parser.add_argument(
         "--controller-port",
         type=int,
-        default=CONTROLLER_PORT,
+        default=config.controller_port,
         help="Controller UDP port",
     )
     parser.add_argument(
@@ -1044,36 +1036,33 @@ def main():
     parser.add_argument(
         "-q", "--quiet", action="store_true", help="Enable WARNING logging"
     )
-    parser.add_argument(
-        "--disable-auto-start",
-        action="store_false",
-        default=True,
-        help="Disable automatic controller start (overrides PAROL_AUTO_START env var)",
-    )
     args, _ = parser.parse_known_args()
 
-    # Resolve runtime values
-    RUNTIME_SERVER_HOST = args.host
-    RUNTIME_SERVER_PORT = int(args.port)
-    RUNTIME_CONTROLLER_HOST = args.controller_host
-    RUNTIME_CONTROLLER_PORT = int(args.controller_port)
+    # Apply CLI overrides to config (these take precedence over env vars)
+    config.set("server_host", args.host)
+    config.set("server_port", args.port)
+    config.set("controller_host", args.controller_host)
+    config.set("controller_port", args.controller_port)
 
-    # Resolve AUTO_START: CLI flag overrides environment variable
-    if args.disable_auto_start is not None:
-        RUNTIME_AUTO_START = args.disable_auto_start
+    # Resolve log level priority: explicit --log-level > -v/-q > env default
+    if args.log_level:
+        if args.log_level == "TRACE":
+            config.set("log_level", TRACE)
+        else:
+            config.set("log_level", getattr(logging, args.log_level))
+    elif args.verbose >= 3:
+        os.environ["PAROL_TRACE"] = "1"
+        config.set("log_level", TRACE)
+    elif args.verbose >= 2:
+        config.set("log_level", logging.DEBUG)
+    elif args.verbose == 1:
+        config.set("log_level", logging.INFO)
+    elif args.quiet:
+        config.set("log_level", logging.WARNING)
+    # else: use env var default (no override needed)
 
-    # Initialize client and component instances with final runtime controller target
-    global \
-        client, \
-        control_panel, \
-        readout_panel, \
-        editor_panel, \
-        io_page, \
-        gripper_page, \
-        settings_page
-    client = AsyncRobotClient(
-        host=RUNTIME_CONTROLLER_HOST, port=RUNTIME_CONTROLLER_PORT
-    )
+    # Initialize client and component instances with final controller target
+    client = AsyncRobotClient(host=config.controller_host, port=config.controller_port)
     control_panel = ControlPanel(client)
     readout_panel = ReadoutPanel()
     editor_panel = EditorPanel(client)
@@ -1083,39 +1072,18 @@ def main():
     gripper_page = None
     settings_page = None
 
-    # Resolve log level priority: explicit --log-level > -v/-q > env default from constants
-    if args.log_level:
-        # Include TRACE support via imported TRACE level constant
-        if args.log_level == "TRACE":
-            RUNTIME_LOG_LEVEL = TRACE
-        else:
-            RUNTIME_LOG_LEVEL = getattr(logging, args.log_level)
-    elif args.verbose >= 3:
-        os.environ["PAROL_TRACE"] = "1"
-        RUNTIME_LOG_LEVEL = TRACE
-    elif args.verbose >= 2:
-        RUNTIME_LOG_LEVEL = logging.DEBUG
-    elif args.verbose == 1:
-        RUNTIME_LOG_LEVEL = logging.INFO
-    elif args.quiet:
-        RUNTIME_LOG_LEVEL = logging.WARNING
-    else:
-        RUNTIME_LOG_LEVEL = LOG_LEVEL
-
     # Configure logging
-    configure_logging(RUNTIME_LOG_LEVEL)
+    configure_logging(config.log_level)
+    logging.info(f"Webserver bind: host={config.server_host} port={config.server_port}")
     logging.info(
-        f"Webserver bind: host={RUNTIME_SERVER_HOST} port={RUNTIME_SERVER_PORT}"
-    )
-    logging.info(
-        f"Controller target: host={RUNTIME_CONTROLLER_HOST} port={RUNTIME_CONTROLLER_PORT}"
+        f"Controller target: host={config.controller_host} port={config.controller_port}"
     )
 
     ui.run(
         title="PAROL6 NiceGUI Commander",
-        host=RUNTIME_SERVER_HOST,
-        port=RUNTIME_SERVER_PORT,
-        reload=False,
+        host=config.server_host,
+        port=config.server_port,
+        reload=True,
         show=False,
         loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",

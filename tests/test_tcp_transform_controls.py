@@ -1,8 +1,7 @@
 """Tests for TCP TransformControls jogging functionality."""
 
 import math
-import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 from parol_commander.services.urdf_scene import UrdfScene, UrdfSceneConfig
 

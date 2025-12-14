@@ -68,9 +68,9 @@ async def test_urdf_scene_joint_limits(user: User) -> None:
 
     joint_limits = scene.get_joint_limits()
     assert isinstance(joint_limits, dict), "Expected joint_limits to be a dict"
-    assert len(joint_limits) >= 6, (
-        f"Expected at least 6 joint limits, got {len(joint_limits)}"
-    )
+    assert (
+        len(joint_limits) >= 6
+    ), f"Expected at least 6 joint limits, got {len(joint_limits)}"
 
     # Each joint should have min and max keys
     for joint_name, limits in joint_limits.items():
@@ -90,9 +90,9 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(user: User) -> None:
 
     # Reset envelope state before test
     workspace_envelope.reset()
-    assert workspace_envelope._generated is False, (
-        "Expected envelope to start ungenerated"
-    )
+    assert (
+        workspace_envelope._generated is False
+    ), "Expected envelope to start ungenerated"
 
     await user.open("/")
     await (
@@ -104,12 +104,12 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(user: User) -> None:
 
     # Envelope should be almost pre-generated after scene.show() is called
     await asyncio.sleep(1)
-    assert workspace_envelope._generated is True, (
-        "Expected workspace envelope to be pre-generated on scene startup"
-    )
-    assert workspace_envelope.max_reach > 0, (
-        "Expected envelope to have calculated max reach"
-    )
+    assert (
+        workspace_envelope._generated is True
+    ), "Expected workspace envelope to be pre-generated on scene startup"
+    assert (
+        workspace_envelope.max_reach > 0
+    ), "Expected envelope to have calculated max reach"
 
 
 @pytest.mark.integration
@@ -134,9 +134,9 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(user: User) -> None
 
     # If envelope_object exists, it should be hidden
     if scene.envelope_object is not None:
-        assert scene.envelope_object.visible_ is False, (
-            "Expected envelope to be hidden when mode is 'off'"
-        )
+        assert (
+            scene.envelope_object.visible_ is False
+        ), "Expected envelope to be hidden when mode is 'off'"
 
     # Now set envelope mode to 'on'
     simulation_state.envelope_mode = "on"
@@ -148,6 +148,6 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(user: User) -> None
     # Envelope object should be created and visible
     # Note: envelope_object may be created lazily on first 'on' mode
     if scene.envelope_object is not None:
-        assert scene.envelope_object.visible_ is True, (
-            "Expected envelope to be visible when mode is 'on'"
-        )
+        assert (
+            scene.envelope_object.visible_ is True
+        ), "Expected envelope to be visible when mode is 'on'"

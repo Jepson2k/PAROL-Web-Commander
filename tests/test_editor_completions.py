@@ -17,9 +17,9 @@ def test_completions_have_required_fields() -> None:
     for completion in completions:
         assert isinstance(completion, dict), f"Expected dict, got {type(completion)}"
         missing = required_fields - set(completion.keys())
-        assert not missing, (
-            f"Completion {completion.get('label', '?')} missing fields: {missing}"
-        )
+        assert (
+            not missing
+        ), f"Completion {completion.get('label', '?')} missing fields: {missing}"
 
 
 @pytest.mark.unit
@@ -29,7 +29,6 @@ def test_completions_include_async_robot_client_methods() -> None:
     Verifies that robot commands are discovered and included.
     """
     from parol_commander.components.editor import generate_completions_from_commands
-    from parol6 import AsyncRobotClient
 
     completions = generate_completions_from_commands()
     completion_labels = {c["label"] for c in completions}
@@ -41,9 +40,9 @@ def test_completions_include_async_robot_client_methods() -> None:
     for method in expected_methods:
         # Methods should be prefixed with "rbt."
         expected_label = f"rbt.{method}"
-        assert expected_label in completion_labels, (
-            f"Expected completion for {expected_label} not found"
-        )
+        assert (
+            expected_label in completion_labels
+        ), f"Expected completion for {expected_label} not found"
 
 
 @pytest.mark.unit
@@ -61,14 +60,14 @@ def test_completions_have_function_type_for_methods() -> None:
         c for c in completions if c["label"].startswith("rbt.") and c["label"] != "rbt"
     ]
 
-    assert len(robot_method_completions) > 0, (
-        "Expected at least one robot method completion"
-    )
+    assert (
+        len(robot_method_completions) > 0
+    ), "Expected at least one robot method completion"
 
     for completion in robot_method_completions:
-        assert completion["type"] == "function", (
-            f"Expected type='function' for {completion['label']}, got '{completion['type']}'"
-        )
+        assert (
+            completion["type"] == "function"
+        ), f"Expected type='function' for {completion['label']}, got '{completion['type']}'"
 
 
 @pytest.mark.unit
@@ -123,6 +122,6 @@ def test_categorize_command_returns_valid_categories() -> None:
 
     for method_name, doc, expected_category in test_cases:
         result = categorize_command(method_name, doc)
-        assert result == expected_category, (
-            f"categorize_command('{method_name}') returned '{result}', expected '{expected_category}'"
-        )
+        assert (
+            result == expected_category
+        ), f"categorize_command('{method_name}') returned '{result}', expected '{expected_category}'"
