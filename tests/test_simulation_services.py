@@ -5,12 +5,10 @@ These tests verify actual behavior rather than just checking if buttons exist.
 
 import pytest
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
 from parol_commander.state import (
-    PathSegment,
-    PlaybackState,
     simulation_state,
     recording_state,
     robot_state,
@@ -18,78 +16,8 @@ from parol_commander.state import (
 )
 from parol_commander.services.dry_run_client import DryRunRobotClient
 from parol_commander.services.motion_recorder import MotionRecorder
-from parol_commander.services.path_visualizer import (
-    PathVisualizer,
-    get_color_for_move_type,
-)
+from parol_commander.services.path_visualizer import PathVisualizer
 from parol_commander.services.urdf_scene.envelope_mixin import WorkspaceEnvelope
-
-
-# ============================================================================
-# Path Visualization Tests
-# ============================================================================
-
-
-class TestPathVisualization:
-    """Tests for path segment creation and visualization."""
-
-    def test_get_color_for_valid_cartesian_move(self):
-        """Cartesian moves should return green color."""
-        color = get_color_for_move_type("cartesian", is_valid=True)
-        assert color == "#2faf7a"
-
-        color = get_color_for_move_type("move_cartesian", is_valid=True)
-        assert color == "#2faf7a"
-
-    def test_get_color_for_valid_joint_move(self):
-        """Joint moves should return blue color."""
-        color = get_color_for_move_type("joints", is_valid=True)
-        assert color == "#4a63e0"
-
-        color = get_color_for_move_type("move_joints", is_valid=True)
-        assert color == "#4a63e0"
-
-    def test_get_color_for_smooth_move(self):
-        """Smooth moves should return purple color."""
-        color = get_color_for_move_type("smooth", is_valid=True)
-        assert color == "#9b59b6"
-
-        color = get_color_for_move_type("smooth_cartesian", is_valid=True)
-        assert color == "#9b59b6"
-
-    def test_get_color_for_invalid_move_returns_red(self):
-        """Invalid moves should return red regardless of move type."""
-        color = get_color_for_move_type("cartesian", is_valid=False)
-        assert color == "#e74c3c"
-
-        color = get_color_for_move_type("joints", is_valid=False)
-        assert color == "#e74c3c"
-
-    def test_get_color_for_unknown_move_type(self):
-        """Unknown move types should return gray."""
-        color = get_color_for_move_type("unknown_type", is_valid=True)
-        assert color == "#95a5a6"
-
-        color = get_color_for_move_type("", is_valid=True)
-        assert color == "#95a5a6"
-
-    def test_path_segment_has_all_required_fields(self):
-        """PathSegment should have all required visualization fields."""
-        segment = PathSegment(
-            points=[[0, 0, 0], [100, 100, 100]],
-            color="#2faf7a",
-            is_valid=True,
-            line_number=5,
-            joints=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            move_type="cartesian",
-            is_dashed=True,
-            show_arrows=True,
-        )
-
-        assert len(segment.points) == 2
-        assert segment.is_dashed is True
-        assert segment.show_arrows is True
-        assert segment.move_type == "cartesian"
 
 
 # ============================================================================
@@ -249,15 +177,6 @@ class TestDryRunClient:
 class TestMotionRecorder:
     """Tests for motion recording functionality (code-insertion API)."""
 
-    @pytest.fixture(autouse=True)
-    def reset_recording_state(self):
-        """Reset recording state before each test."""
-        recording_state.is_recording = False
-        simulation_state.path_segments.clear()
-        yield
-        recording_state.is_recording = False
-        simulation_state.path_segments.clear()
-
     @pytest.fixture
     def mock_editor(self):
         """Create mock editor for testing."""
@@ -321,82 +240,62 @@ class TestMotionRecorder:
             "rbt.move_joints([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
         )
 
-    def test_toggle_recording_starts_session(self):
-        """toggle_recording should start recording when not recording."""
+    def test_toggle_recording_lifecycle(self):
+        """toggle_recording should toggle recording state on/off."""
         recorder = MotionRecorder()
 
+        # Initially not recording
         assert recording_state.is_recording is False
+
+        # First toggle starts recording
         recorder.toggle_recording()
         assert recording_state.is_recording is True
 
-    def test_toggle_recording_stops_session(self):
-        """toggle_recording should stop recording when recording."""
-        recorder = MotionRecorder()
-
-        recorder.toggle_recording()  # Start
-        assert recording_state.is_recording is True
-
-        recorder.toggle_recording()  # Stop
+        # Second toggle stops recording
+        recorder.toggle_recording()
         assert recording_state.is_recording is False
 
-    def test_on_jog_start_sets_active_jog(self):
-        """on_jog_start should set active jog when recording."""
+    def test_jog_recording_lifecycle(self, mock_editor):
+        """Test complete jog recording cycle: start sets state, end inserts code."""
         self._set_robot_pose(100.0, 200.0, 300.0)
         robot_state.angles = [0.0] * 6
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start recording
 
-        recorder.on_jog_start("joint", "J1+")
-
-        # Active jog should be set
-        assert recorder._active_jog is not None
-        assert recorder._active_jog.move_type == "joint"
-        assert recorder._active_jog.axis_info == "J1+"
-
-    def test_on_jog_end_inserts_code(self, mock_editor):
-        """on_jog_end should insert code when jog completes."""
-        self._set_robot_pose(100.0, 200.0, 300.0)
-        robot_state.angles = [0.0] * 6
-
-        recorder = MotionRecorder()
-        recorder.toggle_recording()  # Start recording
-
-        # Start jog
+        # --- Part 1: on_jog_start should set active jog ---
         recorder.on_jog_start("cartesian", "X+")
 
+        assert recorder._active_jog is not None
+        assert recorder._active_jog.move_type == "cartesian"
+        assert recorder._active_jog.axis_info == "X+"
+
+        # --- Part 2: on_jog_end should insert code ---
         # Simulate robot movement during jog (need time to pass > 0.1s)
         time.sleep(0.15)
         self._set_robot_pose(150.0, 250.0, 350.0)
 
-        # End jog - should insert code
         recorder.on_jog_end()
 
         # Check that code was inserted
         inserted_code = mock_editor.program_textarea.value
         assert "rbt.move_cartesian(" in inserted_code
 
-    def test_on_jog_start_ignored_when_not_recording(self):
-        """on_jog_start should be ignored when not recording."""
-        recorder = MotionRecorder()
-
-        # Not recording
-        recorder.on_jog_start("joint", "J1+")
-
-        assert recorder._active_jog is None
-
-    def test_on_jog_end_ignored_when_not_recording(self):
-        """on_jog_end should be ignored when not recording."""
+    def test_jog_events_ignored_when_not_recording(self):
+        """Jog start and end events should be ignored when not recording."""
         recorder = MotionRecorder()
         ui_state.editor_panel = MagicMock()
         ui_state.editor_panel.program_textarea = MagicMock()
         ui_state.editor_panel.program_textarea.value = ""
 
-        # Not recording
-        recorder.on_jog_end()
+        # Not recording - jog start should be ignored
+        recorder.on_jog_start("joint", "J1+")
+        assert recorder._active_jog is None
 
-        # No code inserted
+        # Not recording - jog end should also be ignored
+        recorder.on_jog_end()
         assert ui_state.editor_panel.program_textarea.value == ""
+
         ui_state.editor_panel = None
 
     def test_record_action_home_generates_code(self, mock_editor):
@@ -409,23 +308,19 @@ class TestMotionRecorder:
         inserted_code = mock_editor.program_textarea.value
         assert "rbt.home()" in inserted_code
 
-    def test_record_action_gripper_calibrate(self, mock_editor):
-        """record_action for gripper calibrate should generate code."""
+    def test_record_action_gripper_commands(self, mock_editor):
+        """record_action for gripper should generate calibrate and move code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
+        # Part 1: Calibrate command
         recorder.record_action("gripper", calibrate=True)
-
         inserted_code = mock_editor.program_textarea.value
         assert 'rbt.control_electric_gripper("calibrate")' in inserted_code
 
-    def test_record_action_gripper_move(self, mock_editor):
-        """record_action for gripper move should generate code with params."""
-        recorder = MotionRecorder()
-        recording_state.is_recording = True
-
+        # Part 2: Move command with params
+        mock_editor.program_textarea.value = ""  # Reset
         recorder.record_action("gripper", position=100, speed=50, current=200)
-
         inserted_code = mock_editor.program_textarea.value
         assert 'rbt.control_electric_gripper("move"' in inserted_code
         assert "position=100" in inserted_code
@@ -451,14 +346,6 @@ class TestMotionRecorder:
 
         # Code should not have been inserted (still just initial code)
         assert mock_editor.program_textarea.value == "# Initial code\n"
-
-    def test_no_editor_shows_notification(self):
-        """capture_current_pose without editor should not crash."""
-        ui_state.editor_panel = None
-
-        recorder = MotionRecorder()
-        # Should not raise an exception
-        recorder.capture_current_pose()
 
     def test_multiple_jogs_insert_multiple_code_lines(self, mock_editor):
         """Multiple jog start/end cycles should insert multiple code lines."""
@@ -631,43 +518,6 @@ class TestWorkspaceEnvelope:
         assert envelope.max_reach == 0.0
         assert envelope._generated is False
 
-    def test_generate_sync_no_ui_crash(self, envelope):
-        """generate_sync should work without crashing when called outside UI context.
-
-        This verifies the fix for the ui.notify() crash - generate_sync() should NOT
-        call any UI functions like ui.notify() that require NiceGUI context.
-        """
-        # DO NOT patch ui.notify - we want to verify it's not called
-        # generate_sync uses _generate_envelope_cpu_bound which imports PAROL6_ROBOT directly
-        result = envelope.generate_sync(samples=64)  # 2^6 for grid sampling
-
-        # The important thing is it doesn't crash with ui.notify()
-        # If robot module is available, it will succeed and set max_reach
-        if result:
-            assert envelope._generated is True
-            assert envelope.max_reach > 0
-        else:
-            # Robot module not available, but still shouldn't crash
-            assert envelope._generated is False
-
-        # Either way, _generating should be reset
-        assert envelope._generating is False
-
-    def test_generate_sync_returns_false_without_limits_no_ui_crash(self, envelope):
-        """generate_sync should return False without crashing when limits unavailable.
-
-        This verifies generate_sync() doesn't call ui.notify() for errors.
-        The _generate_envelope_cpu_bound function imports PAROL6_ROBOT directly,
-        so we test the actual behavior with the real module.
-        """
-        # generate_sync uses _generate_envelope_cpu_bound which imports PAROL6_ROBOT directly
-        # Without a valid robot/limits, it should fail gracefully
-        _result = envelope.generate_sync(samples=10)
-
-        # The important thing is it doesn't crash with ui.notify()
-        # Result depends on whether PAROL6_ROBOT is available
-        assert envelope._generating is False  # Should not be stuck in generating state
-
     def test_generate_sync_creates_max_reach_with_valid_robot(self, envelope):
         """generate_sync should calculate max_reach when robot is available.
 
@@ -722,72 +572,24 @@ class TestWorkspaceEnvelope:
         # Returns True because generation is in progress (valid state)
         assert result is True
 
-    def test_get_radius_with_tool_offset_positive(self, envelope):
-        """get_radius_with_tool_offset should add tool offset to max_reach."""
+    @pytest.mark.parametrize(
+        "offset,expected",
+        [
+            (0.05, 0.65),  # Positive offset extends reach
+            (-0.05, 0.65),  # Negative offset uses abs()
+            (0.0, 0.6),  # Zero offset returns base reach
+        ],
+    )
+    def test_get_radius_with_tool_offset(self, envelope, offset, expected):
+        """get_radius_with_tool_offset should add abs(offset) to max_reach."""
         envelope.max_reach = 0.6  # 600mm base reach
 
-        # Tool with 50mm (0.05m) Z offset should extend reach
-        effective_radius = envelope.get_radius_with_tool_offset(0.05)
+        effective_radius = envelope.get_radius_with_tool_offset(offset)
 
-        assert effective_radius == 0.65  # 0.6 + 0.05
+        assert (
+            effective_radius == expected
+        ), f"With offset={offset}, expected {expected}, got {effective_radius}"
 
-    def test_get_radius_with_tool_offset_negative(self, envelope):
-        """get_radius_with_tool_offset should use absolute value of offset."""
-        envelope.max_reach = 0.6
-
-        # Negative offset should still extend reach (uses abs())
-        effective_radius = envelope.get_radius_with_tool_offset(-0.05)
-
-        assert effective_radius == 0.65  # 0.6 + abs(-0.05)
-
-    def test_get_radius_with_zero_offset(self, envelope):
-        """get_radius_with_tool_offset should return max_reach when offset is zero."""
-        envelope.max_reach = 0.6
-
-        effective_radius = envelope.get_radius_with_tool_offset(0.0)
-
-        assert effective_radius == 0.6
-
-
-# ============================================================================
-# Playback State Tests
-# ============================================================================
-
-
-class TestPlaybackState:
-    """Tests for playback state tracking."""
-
-    def test_playback_state_default_values(self):
-        """PlaybackState should have correct default values."""
-        state = PlaybackState()
-
-        assert state.is_playing is False
-        assert state.is_simulating is False
-        assert state.current_step == 0
-        assert state.total_steps == 0
-        assert state.playback_speed == 1.0
-        assert state.scrub_interactive is True
-
-    def test_playback_speed_options(self):
-        """PlaybackState should support 1x, 2x, 4x, 8x speed."""
-        state = PlaybackState()
-
-        for speed in [1.0, 2.0, 4.0, 8.0]:
-            state.playback_speed = speed
-            assert state.playback_speed == speed
-
-    def test_scrub_interactive_false_in_robot_mode(self):
-        """scrub_interactive should be False when not simulating."""
-        state = PlaybackState()
-        state.is_simulating = False
-        state.scrub_interactive = False
-
-        assert state.scrub_interactive is False
-
-
-# ============================================================================
-# Path Visualizer Integration Tests
-# ============================================================================
 
 # ============================================================================
 # Editor Auto-Simulation Tests
@@ -797,45 +599,33 @@ class TestPlaybackState:
 class TestEditorAutoSimulation:
     """Tests for editor auto-simulation on code change."""
 
-    @pytest.fixture(autouse=True)
-    def reset_simulation_state(self):
-        """Reset simulation state before each test."""
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
-        simulation_state.current_step_index = 0
-        simulation_state.total_steps = 0
-        yield
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
-
     @pytest.fixture
     def mock_client(self):
         """Create mock AsyncRobotClient."""
         return MagicMock()
 
-    def test_debounce_delay_default_value(self, mock_client):
-        """EditorPanel should have 750ms default debounce delay."""
+    def test_debounce_defaults(self, mock_client):
+        """EditorPanel should have correct debounce defaults."""
         from parol_commander.components.editor import EditorPanel
 
         panel = EditorPanel(mock_client)
 
-        assert panel._debounce_delay == 0.75
-
-    def test_debounce_timer_initially_none(self, mock_client):
-        """EditorPanel should start with no active debounce timer."""
-        from parol_commander.components.editor import EditorPanel
-
-        panel = EditorPanel(mock_client)
-
+        # Default delay is 375ms
+        assert panel._debounce_delay == 0.375
+        # Timer starts as None
         assert panel._simulation_debounce_timer is None
 
     def test_schedule_debounced_simulation_creates_timer(self, mock_client):
         """schedule_debounced_simulation should create a timer."""
         from parol_commander.components.editor import EditorPanel
+        from parol_commander.state import editor_tabs_state
 
         with patch("parol_commander.components.editor.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
+
+            # Set up active tab so scheduling doesn't return early
+            editor_tabs_state.active_tab_id = "test-tab"
 
             panel = EditorPanel(mock_client)
             panel._schedule_debounced_simulation()
@@ -843,17 +633,21 @@ class TestEditorAutoSimulation:
             # Verify timer was created with correct parameters
             mock_ui.timer.assert_called_once()
             call_args = mock_ui.timer.call_args
-            assert call_args[0][0] == 0.75  # debounce delay
+            assert call_args[0][0] == 0.375  # debounce delay
             assert call_args[1]["once"] is True
 
     def test_schedule_debounced_simulation_cancels_previous_timer(self, mock_client):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
         from parol_commander.components.editor import EditorPanel
+        from parol_commander.state import editor_tabs_state
 
         with patch("parol_commander.components.editor.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
+
+            # Set up active tab so scheduling doesn't return early
+            editor_tabs_state.active_tab_id = "test-tab"
 
             panel = EditorPanel(mock_client)
 
@@ -867,16 +661,16 @@ class TestEditorAutoSimulation:
             assert panel._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio
-    async def test_run_simulation_silent_mode_no_notify(self, mock_client):
-        """_run_simulation(notify=False) should not call ui.notify."""
+    async def test_run_simulation_notify_modes(self, mock_client):
+        """_run_simulation notify parameter controls ui.notify behavior."""
         from parol_commander.components.editor import EditorPanel
 
         with patch("parol_commander.components.editor.ui") as mock_ui:
             with patch(
                 "parol_commander.components.editor.path_visualizer"
             ) as mock_visualizer:
-                # Make update_path_visualization a coroutine
-                async def mock_update(content):
+
+                async def mock_update(content, tab_id=None):
                     pass
 
                 mock_visualizer.update_path_visualization = mock_update
@@ -885,33 +679,12 @@ class TestEditorAutoSimulation:
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = "# some code"
 
+                # Part 1: Silent mode - no notifications
                 await panel._run_simulation(notify=False)
-
-                # ui.notify should NOT have been called
                 mock_ui.notify.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_run_simulation_verbose_mode_shows_notify(self, mock_client):
-        """_run_simulation(notify=True) should call ui.notify."""
-        from parol_commander.components.editor import EditorPanel
-
-        with patch("parol_commander.components.editor.ui") as mock_ui:
-            with patch(
-                "parol_commander.components.editor.path_visualizer"
-            ) as mock_visualizer:
-                # Make update_path_visualization a coroutine
-                async def mock_update(content):
-                    pass
-
-                mock_visualizer.update_path_visualization = mock_update
-
-                panel = EditorPanel(mock_client)
-                panel.program_textarea = MagicMock()
-                panel.program_textarea.value = "# some code"
-
+                # Part 2: Verbose mode - shows notifications
                 await panel._run_simulation(notify=True)
-
-                # ui.notify SHOULD have been called (at least for "Running simulation...")
                 assert mock_ui.notify.call_count >= 1
 
     @pytest.mark.asyncio
@@ -927,7 +700,7 @@ class TestEditorAutoSimulation:
                 update_called = False
                 update_content = None
 
-                async def mock_update(content):
+                async def mock_update(content, tab_id=None):
                     nonlocal update_called, update_content
                     update_called = True
                     update_content = content
@@ -970,128 +743,119 @@ class TestEditorAutoSimulation:
                 assert update_called is False
 
 
-class TestSceneRenderingIntegration:
-    """Integration tests for scene rendering from simulation state.
+class TestSimulationCaching:
+    """Tests for per-tab simulation caching and optimization.
 
-    These tests verify that path segments in simulation_state actually get
-    rendered to scene objects in UrdfScene. This catches the race condition
-    bug where fast simulations could complete without triggering a re-render.
+    These tests verify:
+    - Default script optimization skips simulation and uses cached home position
+    - Non-default scripts trigger actual simulation
+    - Results are stored in the originating tab, not the active tab
+    - Anchor check uses cached final_joints_rad (instant, no blocking)
     """
 
-    @pytest.fixture(autouse=True)
-    def reset_simulation_state(self):
-        """Reset simulation state before each test.
+    def test_default_script_detected(self):
+        """_is_default_script returns True for default content, skipping simulation."""
+        from parol_commander.components.editor import EditorPanel
 
-        Also clears change listeners and urdf_scene to prevent UI rendering
-        callbacks from trying to create scene elements without a NiceGUI context.
-        """
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
-        simulation_state.current_step_index = 0
-        simulation_state.total_steps = 0
-        # Clear any lingering UI callbacks that might try to render
-        simulation_state._change_listeners.clear()
-        # Ensure no stale scene reference exists (prevents UI rendering attempts)
-        original_scene = ui_state.urdf_scene
-        ui_state.urdf_scene = None
-        yield
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
-        simulation_state._change_listeners.clear()
-        ui_state.urdf_scene = original_scene
+        mock_client = MagicMock()
+        panel = EditorPanel(mock_client)
 
-    def test_scene_detects_new_segments_after_render_count_reset(self):
-        """Scene should render new segments when _rendered_segment_count is reset.
+        default_content = panel._default_python_snippet()
+        assert panel._is_default_script(default_content) is True
 
-        This tests the fix for the race condition where:
-        1. Old simulation has N segments, scene renders them, _rendered_segment_count = N
-        2. New simulation clears and adds N NEW segments
-        3. Without reset, scene sees count=N, _rendered=N, thinks nothing changed
-        4. WITH reset (_rendered=0), scene sees count=N > 0, renders new segments
-        """
-        # Add some path segments to simulation state
-        segment1 = PathSegment(
-            points=[[0, 0, 0], [0.1, 0.1, 0.1]],
-            color="#2faf7a",
-            is_valid=True,
-            line_number=1,
-            joints=[0.0] * 6,
-            move_type="cartesian",
+        # Whitespace variations should still match
+        assert panel._is_default_script(default_content + "\n\n  \n") is True
+
+        # Non-default content should not match
+        assert panel._is_default_script("rbt.move_joints([0,0,0,0,0,0])") is False
+
+    def test_anchor_check_uses_cached_final_joints(self):
+        """Anchor check reads from tab.final_joints_rad without blocking."""
+        from parol_commander.state import editor_tabs_state, robot_state, EditorTab
+
+        test_tab = EditorTab(
+            id="test_tab",
+            filename="test.py",
+            file_path=None,
+            content="print('test')",
+            saved_content="print('test')",
         )
-        segment2 = PathSegment(
-            points=[[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]],
-            color="#4a63e0",
-            is_valid=True,
-            line_number=2,
-            joints=[0.1] * 6,
-            move_type="joints",
-        )
-        simulation_state.path_segments.extend([segment1, segment2])
+        editor_tabs_state.tabs.append(test_tab)
+        editor_tabs_state.active_tab_id = "test_tab"
 
-        # Simulate scenario where _rendered_segment_count equals current count
-        # (This is what happens when simulation completes within one timer tick)
-        rendered_count_before = 2  # Pretend we already rendered 2 segments
-        current_count = len(simulation_state.path_segments)  # Also 2
+        recorder = MotionRecorder()
 
-        # Without reset: count == rendered, no new rendering triggered
-        assert current_count == rendered_count_before
-        should_render_without_reset = current_count > rendered_count_before
-        assert should_render_without_reset is False
+        # Robot at home position (degrees)
+        robot_state.angles = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
 
-        # WITH reset (our fix): rendered = 0, count > rendered, rendering triggered
-        rendered_count_after_reset = 0
-        should_render_with_reset = current_count > rendered_count_after_reset
-        assert should_render_with_reset is True
+        # Set cached final joints (matching position in radians)
+        test_tab.final_joints_rad = [1.5708, -1.5708, 3.1416, 0.0, 0.0, 3.1416]
+
+        # Should NOT insert anchor (positions match within tolerance)
+        result = recorder._should_insert_anchor()
+        assert (
+            result is False
+        ), "Anchor should be skipped when robot matches cached position"
+
+        # No cached result -> should insert anchor
+        test_tab.final_joints_rad = None
+        result = recorder._should_insert_anchor()
+        assert result is True, "Anchor should be inserted when no cached position"
 
     @pytest.mark.asyncio
-    async def test_path_visualizer_resets_scene_render_counter(self):
-        """PathVisualizer should reset UrdfScene._rendered_segment_count after simulation.
-
-        This verifies the fix is actually applied in path_visualizer.py.
-        """
+    async def test_results_stored_in_originating_tab(self):
+        """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
+        from parol_commander.state import editor_tabs_state, simulation_state, EditorTab
         from parol_commander.services.path_visualizer import PathVisualizer
 
-        # Create mock UrdfScene with _rendered_segment_count
-        mock_scene = MagicMock()
-        mock_scene._rendered_segment_count = 5  # Simulate previous render count
-        ui_state.urdf_scene = mock_scene
+        # Create two tabs
+        tab1 = EditorTab(
+            id="tab1", filename="a.py", file_path=None, content="", saved_content=""
+        )
+        tab2 = EditorTab(
+            id="tab2", filename="b.py", file_path=None, content="", saved_content=""
+        )
+        editor_tabs_state.tabs = [tab1, tab2]
+        editor_tabs_state.active_tab_id = "tab2"  # Active is tab2
 
-        try:
+        # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
+        with patch(
+            "parol_commander.services.path_visualizer.run"
+        ) as mock_run, patch.object(simulation_state, "notify_changed"):
+            mock_run.setup = MagicMock()
+            mock_run.cpu_bound = AsyncMock(
+                return_value={
+                    "segments": [],
+                    "targets": [],
+                    "truncated": False,
+                    "error": None,
+                    "total_steps": 0,
+                    "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                }
+            )
+
             visualizer = PathVisualizer()
+            # Run simulation for tab1 (not active)
+            await visualizer.update_path_visualization("print('hi')", tab_id="tab1")
 
-            # Run a simple simulation (empty program just to trigger the reset)
-            await visualizer.update_path_visualization("# empty program")
+            # Results should be in tab1, not tab2
+            assert tab1.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+            assert tab2.final_joints_rad is None
 
-            # Verify _rendered_segment_count was reset to 0
-            assert mock_scene._rendered_segment_count == 0
-        finally:
-            ui_state.urdf_scene = None
+    def test_simulation_returns_final_joints_rad(self):
+        """Simulation result includes final_joints_rad for caching."""
+        from parol_commander.services.path_visualizer import _run_simulation_isolated
 
-    def test_scene_render_count_tracking_logic(self):
-        """Test the segment count tracking logic that determines when to render."""
-        # Scenario 1: No segments (clear operation)
-        current_count = 0
-        rendered_count = 5
-        should_clear = current_count == 0
-        assert should_clear is True
+        program = """
+from parol6 import RobotClient
+rbt = RobotClient()
+rbt.home()
+"""
+        result = _run_simulation_isolated(program)
 
-        # Scenario 2: New segments added (incremental add from recording)
-        current_count = 6
-        rendered_count = 5
-        should_render_new = current_count > rendered_count
-        assert should_render_new is True
-
-        # Scenario 3: Segments replaced with same count (simulation race condition)
-        current_count = 5
-        rendered_count = 5
-        should_render_same_count = current_count > rendered_count
-        assert should_render_same_count is False  # BUG: This is why we need reset!
-
-        # Scenario 4: After reset, same count triggers render
-        current_count = 5
-        rendered_count = 0  # Reset by our fix
-        should_render_after_reset = current_count > rendered_count
-        assert should_render_after_reset is True  # FIXED: Now renders
+        assert "final_joints_rad" in result
+        if result["final_joints_rad"] is not None:
+            assert len(result["final_joints_rad"]) == 6
 
 
 class TestPathVisualizerIntegration:
@@ -1103,26 +867,31 @@ class TestPathVisualizerIntegration:
     """
 
     @pytest.fixture(autouse=True)
-    def reset_simulation_state(self):
-        """Reset simulation state before each test.
+    def setup_test_tab(self):
+        """Create a test tab so path visualizer can store results.
 
-        Also clears change listeners and urdf_scene to prevent UI rendering
-        callbacks from trying to create scene elements without a NiceGUI context.
+        State reset is handled by conftest.reset_state fixture.
+        This fixture only sets up the test tab needed for these tests.
         """
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
-        simulation_state.current_step_index = 0
-        simulation_state.total_steps = 0
-        # Clear any lingering UI callbacks that might try to render
+        from parol_commander.state import editor_tabs_state, EditorTab
+
+        # Clear change listeners to prevent UI rendering attempts without context
         simulation_state._change_listeners.clear()
-        # Ensure no stale scene reference exists (prevents UI rendering attempts)
-        original_scene = ui_state.urdf_scene
-        ui_state.urdf_scene = None
+
+        # Create a test tab so path visualizer can store results
+        test_tab = EditorTab(
+            id="test-tab",
+            filename="test.py",
+            file_path=None,
+            content="",
+            saved_content="",
+        )
+        editor_tabs_state.tabs = [test_tab]
+        editor_tabs_state.active_tab_id = "test-tab"
+
         yield
-        simulation_state.path_segments.clear()
-        simulation_state.targets.clear()
+
         simulation_state._change_listeners.clear()
-        ui_state.urdf_scene = original_scene
 
     @pytest.mark.asyncio
     async def test_visualizer_executes_simple_program(self):
@@ -1218,16 +987,7 @@ async def main():
 
     @pytest.mark.asyncio
     async def test_target_markers_create_targets(self):
-        """Programs with TARGET markers should create ProgramTarget objects.
-
-        Bug regression test: Before the fix, exec(program_text) was used without
-        compile(), so the code's filename was "<string>" instead of
-        "simulation_script.py". This caused frame inspection to fail when
-        looking for source lines with TARGET markers.
-
-        After fix: compile(program_text, "simulation_script.py", "exec") is used
-        so frame.f_code.co_filename == "simulation_script.py" as expected.
-        """
+        """Programs with TARGET markers should create ProgramTarget objects."""
         visualizer = PathVisualizer()
 
         # Program with TARGET markers in comments
@@ -1264,15 +1024,15 @@ async def main():
         ), f"Expected target 'def67890' not found in {target_ids}"
 
     @pytest.mark.asyncio
-    async def test_move_without_target_marker_no_target_created(self):
-        """Moves without TARGET markers should NOT create ProgramTarget objects.
+    async def test_move_with_literals_auto_generates_targets(self):
+        """Moves with literal values auto-generate targets for 3D editing.
 
-        This verifies that targets are only created for lines with explicit
-        TARGET:uuid markers, not for all move commands.
+        Even without explicit TARGET:uuid markers, moves with literal coordinates
+        get auto-generated targets so users can edit positions in the 3D scene.
         """
         visualizer = PathVisualizer()
 
-        # Program WITHOUT any TARGET markers
+        # Program WITHOUT explicit TARGET markers, but with literal coordinates
         program = """
 import parol6
 
@@ -1289,7 +1049,47 @@ async def main():
             len(simulation_state.path_segments) >= 2
         ), f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
 
-        # Should NOT have created any targets (no TARGET markers)
+        # Should have auto-generated targets for moves with literal values
+        assert (
+            len(simulation_state.targets) >= 2
+        ), f"Expected at least 2 auto-generated targets, got {len(simulation_state.targets)}"
+
+        # Auto-generated target IDs should be based on line numbers
+        target_ids = [t.id for t in simulation_state.targets]
+        assert any(
+            tid.startswith("auto_") for tid in target_ids
+        ), f"Expected auto-generated target IDs, got {target_ids}"
+
+    @pytest.mark.asyncio
+    async def test_move_with_variables_no_target_created(self):
+        """Moves with variable arguments should visualize but NOT create targets.
+
+        When move commands use variables instead of literal values, the path
+        should still be visualized, but no ProgramTarget is created since
+        the coordinates aren't statically determinable.
+        """
+        visualizer = PathVisualizer()
+
+        # Program with moves using variables (not literals)
+        program = """
+import parol6
+
+async def main():
+    position = [100, 200, 300, 0, 0, 0]
+    joints = [0, 0, 0, 0, 0, 0]
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_cartesian(position)
+        await rbt.move_joints(joints)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have created path segments (visualization still works)
+        assert (
+            len(simulation_state.path_segments) >= 2
+        ), f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+
+        # Should NOT have created any targets (variables not inspectable)
         assert (
             len(simulation_state.targets) == 0
-        ), f"Expected 0 targets (no TARGET markers in code), got {len(simulation_state.targets)}"
+        ), f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import random
 import subprocess
 import sys
 from collections.abc import Generator
@@ -9,99 +10,175 @@ from typing import TYPE_CHECKING
 
 import pytest
 from nicegui import run as nicegui_run
+from nicegui.testing import general as nicegui_testing_general
+from nicegui.testing.general_fixtures import (
+    nicegui_reset_globals,  # noqa: F401 - required by screen fixture
+)
+from nicegui.testing.screen import Screen
+from nicegui.testing.screen_plugin import (
+    capabilities,  # noqa: F401
+    nicegui_driver,  # noqa: F401 - default driver (per-test browser)
+    nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
+    pytest_runtest_makereport,  # noqa: F401
+    screen,  # noqa: F401 - default screen fixture (creates browser per test)
+)
 from parol6.client.manager import is_server_running
 from parol6.config import HOME_ANGLES_DEG
-
-# Default screen port for browser tests (may be overridden by selenium import below)
-SCREEN_PORT = 3392
+from selenium import webdriver as _webdriver
 
 if TYPE_CHECKING:
-    from nicegui.testing.screen import Screen
+    from parol6 import AsyncRobotClient, ServerManager
+
+# ============================================================================
+# Port Configuration (session-randomized to avoid conflicts)
+# ============================================================================
+# Generate unique ports per test session to avoid conflicts between test runs
+_SESSION_PORT_BASE = random.randint(10000, 50000)
+CONTROLLER_PORT = _SESSION_PORT_BASE
+MULTICAST_PORT = _SESSION_PORT_BASE + 1
+
+
+def _get_test_ports() -> tuple[int, int]:
+    """Get the session-unique ports for controller and multicast."""
+    return CONTROLLER_PORT, MULTICAST_PORT
+
+
+@pytest.fixture
+def chrome_options():
+    """Base Chrome options required by nicegui screen_plugin."""
+    return _webdriver.ChromeOptions()
+
+
+# Window size for screen tests - full HD for proper layout
+TEST_WINDOW_WIDTH = 1920
+TEST_WINDOW_HEIGHT = 1080
+
+
+@pytest.fixture(autouse=True)
+def set_screen_window_size(
+    request: pytest.FixtureRequest,
+) -> None:
+    """Set browser window size to 1920x1080 for screen tests.
+
+    This ensures consistent layout across all browser tests.
+    Only runs when a test actually uses the screen fixture.
+    """
+    # Only set window size if this test actually uses the screen fixture
+    if "screen" not in request.fixturenames:
+        return
+    # Get the screen fixture value (it's already been set up if we're here)
+    screen_fixture: Screen = request.getfixturevalue("screen")
+    screen_fixture.selenium.set_window_size(TEST_WINDOW_WIDTH, TEST_WINDOW_HEIGHT)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def silence_selenium_logging():
+    """Reduce Selenium/urllib3/webdriver logging verbosity.
+
+    Selenium debug output includes base64-encoded screenshots which flood
+    the terminal. Set to WARNING to suppress this noise.
+    """
+    logging.getLogger("selenium").setLevel(logging.INFO)
+    logging.getLogger("selenium.webdriver").setLevel(logging.INFO)
+    logging.getLogger("selenium.webdriver.remote").setLevel(logging.INFO)
+    logging.getLogger("urllib3").setLevel(logging.INFO)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
+    yield
 
 
 # ============================================================================
-# Browser Test (Screen Plugin) Configuration
+# Class-scoped Browser Fixture for Expensive Browser Tests
 # ============================================================================
 
-# Conditionally import screen plugin fixtures for browser tests
-# This allows browser tests to run with the 'screen' fixture when selenium is available
-SELENIUM_AVAILABLE = False
-try:
-    from selenium import webdriver as _webdriver
 
-    # Import general fixtures first (provides nicegui_reset_globals)
-    from nicegui.testing.general_fixtures import (
-        nicegui_reset_globals,  # noqa: F401 - required by screen fixture
-    )
+@pytest.fixture(scope="class")
+def class_driver(
+    request: pytest.FixtureRequest,
+) -> Generator[_webdriver.Chrome, None, None]:
+    """Class-scoped Chrome webdriver for shared browser tests.
 
-    # Import screen plugin fixtures - these are needed for browser tests
-    # Note: nicegui_remove_all_screenshots is intentionally NOT imported - we override it below
-    # to use worker-specific screenshot directories for parallel test execution
-    from nicegui.testing.screen_plugin import (
-        screen,  # noqa: F401 - fixture for browser tests
-        nicegui_chrome_options,  # noqa: F401
-        nicegui_driver,  # noqa: F401
-        pytest_runtest_makereport,  # noqa: F401
-        capabilities,  # noqa: F401
-    )
-    from nicegui.testing.screen import Screen
-    from pathlib import Path
+    Creates a single browser instance that persists across all tests in a class.
+    CSS animations are disabled for deterministic testing.
+    """
+    from selenium.webdriver.chrome.service import Service
+    import shutil
 
-    SCREEN_PORT = Screen.PORT
-    SELENIUM_AVAILABLE = True
+    options = _webdriver.ChromeOptions()
+    if not os.environ.get("HEADED"):
+        options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    # Disable CSS animations for deterministic testing
+    options.add_argument("--disable-animations")
 
-    @pytest.fixture(scope="session")
-    def nicegui_remove_all_screenshots(
-        worker_id: str, isolate_ports_for_parallel: None
-    ) -> None:
-        """Remove screenshots from worker-specific directory before test session.
+    # Find system chromedriver (same as NiceGUI's approach)
+    chromedriver_path = shutil.which("chromedriver")
+    if chromedriver_path:
+        service = Service(executable_path=chromedriver_path)
+        driver = _webdriver.Chrome(service=service, options=options)
+    else:
+        driver = _webdriver.Chrome(options=options)
 
-        Override of NiceGUI's fixture to support parallel test execution.
-        Each xdist worker gets its own screenshot directory to avoid race conditions.
+    driver.set_window_size(TEST_WINDOW_WIDTH, TEST_WINDOW_HEIGHT)
+    driver.implicitly_wait(0)
 
-        Depends on isolate_ports_for_parallel to ensure Screen.PORT is set first.
-        """
-        # Use worker-specific screenshot directory
-        if worker_id == "master" or not worker_id:
-            screenshot_dir = Path("screenshots")
-        else:
-            screenshot_dir = Path(f"screenshots_{worker_id}")
+    yield driver
 
-        # Update Screen class to use worker-specific directory
-        Screen.SCREENSHOT_DIR = screenshot_dir
+    driver.quit()
 
-        # Clean up any existing screenshots (with race-condition handling)
-        if screenshot_dir.exists():
-            for name in screenshot_dir.glob("*.png"):
-                try:
-                    name.unlink()
-                except FileNotFoundError:
-                    pass  # Another worker may have already deleted it
-        else:
-            screenshot_dir.mkdir(parents=True, exist_ok=True)
 
-    @pytest.fixture
-    def chrome_options() -> _webdriver.ChromeOptions:
-        """Provide base Chrome options (required by nicegui_chrome_options)."""
-        return _webdriver.ChromeOptions()
+class _StubCaplog:
+    """Minimal caplog stub for class-scoped screen fixture."""
 
-    @pytest.fixture(scope="session", autouse=True)
-    def silence_selenium_logging():
-        """Reduce Selenium/urllib3/webdriver logging verbosity.
+    def __init__(self):
+        self.records = []
 
-        This prevents excessive debug output that can cause browser tests
-        to freeze and produce too much output.
-        """
-        logging.getLogger("selenium").setLevel(logging.WARNING)
-        logging.getLogger("selenium.webdriver").setLevel(logging.WARNING)
-        logging.getLogger("selenium.webdriver.remote").setLevel(logging.WARNING)
-        logging.getLogger("urllib3").setLevel(logging.WARNING)
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
-        yield
+    def clear(self):
+        self.records = []
 
-except ImportError:
-    # selenium not installed - browser tests will be skipped
-    pass
+
+@pytest.fixture(scope="class")
+def class_screen(
+    request: pytest.FixtureRequest,
+    class_driver: _webdriver.Chrome,
+) -> Generator["Screen", None, None]:
+    """Browser session shared across all tests in a class.
+
+    Use for expensive browser tests that don't need isolation between tests.
+    The browser navigates to the app once at class setup and stays open.
+
+    Usage:
+        @pytest.mark.browser
+        class TestPanelOperations:
+            def test_first(self, class_screen):
+                # Uses shared browser session
+                ...
+
+            def test_second(self, class_screen):
+                # Same browser session, state persists from test_first
+                ...
+    """
+    # Set the port env var that NiceGUI's ui.run() expects for screen tests
+    os.environ["NICEGUI_SCREEN_TEST_PORT"] = str(Screen.PORT)
+
+    try:
+        # Reset NiceGUI globals at class setup (isolation between classes)
+        with nicegui_testing_general.nicegui_reset_globals():
+            # Create Screen wrapper with class-scoped driver (stub caplog since we share session)
+            screen_instance = Screen(class_driver, _StubCaplog(), request)  # type: ignore[arg-type]
+
+            # Navigate to app once for all tests in class
+            # Tests should wait for specific elements/conditions they need
+            screen_instance.open("/", timeout=15.0)
+
+            yield screen_instance
+
+            # Stop server before exiting context
+            screen_instance.stop_server()
+        # NiceGUI globals reset on context exit (class teardown)
+    finally:
+        os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -109,130 +186,6 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "browser: marks tests that require a real browser (via Selenium)"
     )
-    config.addinivalue_line(
-        "markers",
-        "slow: marks tests as slow (deselected by default with -m 'not slow')",
-    )
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
-    """Return number of workers for pytest-xdist when -nauto is used.
-
-    Browser tests are resource-heavy (Chrome + NiceGUI server + controller per worker),
-    so we use half of CPU count to prevent resource exhaustion on constrained systems.
-    This scales appropriately: 2 workers on 4-core Pi, 16 workers on 32-core server.
-    """
-    cpu_count = os.cpu_count() or 2
-    return max(1, cpu_count // 2)  # Half of CPUs, minimum 1
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
-    """Skip browser tests if selenium is not available."""
-    if not SELENIUM_AVAILABLE:
-        skip_browser = pytest.mark.skip(reason="selenium not installed")
-        for item in items:
-            if "browser" in item.keywords:
-                item.add_marker(skip_browser)
-
-
-def _get_worker_ports(worker_id: str) -> tuple[int, int, int]:
-    """Compute unique ports for a pytest-xdist worker.
-
-    Args:
-        worker_id: The xdist worker ID (e.g., "master", "gw0", "gw1", ...).
-
-    Returns:
-        Tuple of (controller_port, server_port, mcast_port) unique to this worker.
-    """
-    base_controller = 5001
-    base_server = 8080
-    base_mcast = 50510
-
-    if worker_id == "master" or not worker_id:
-        # Not running in parallel, use defaults
-        return base_controller, base_server, base_mcast
-
-    # worker_id is like "gw0", "gw1", etc.
-    try:
-        worker_num = int(worker_id.replace("gw", ""))
-    except ValueError:
-        return base_controller, base_server, base_mcast
-
-    # Offset ports by worker number (e.g., gw0 -> 5001/8080/50510, gw1 -> 5011/8090/50520, ...)
-    return (
-        base_controller + (worker_num * 10),
-        base_server + (worker_num * 10),
-        base_mcast + (worker_num * 10),
-    )
-
-
-@pytest.fixture(scope="session")
-def worker_id(request: pytest.FixtureRequest) -> str:
-    """Return the xdist worker ID, or 'master' if not running in parallel."""
-    # pytest-xdist sets this; falls back to "master" for non-parallel runs
-    return getattr(request.config, "workerinput", {}).get("workerid", "master")
-
-
-@pytest.fixture(scope="session", autouse=True)
-def isolate_ports_for_parallel(worker_id: str) -> Generator[None, None, None]:
-    """Set unique ports for each xdist worker to avoid collisions.
-
-    This must run before test_env_config to ensure ports are set before
-    the app reads them. Includes the multicast port for STATUS isolation.
-
-    For browser tests, overrides Screen.PORT so each worker gets its own port.
-    """
-    controller_port, server_port, mcast_port = _get_worker_ports(worker_id)
-
-    # Override NiceGUI Screen.PORT class attribute BEFORE screen fixture runs
-    # This allows browser tests to run in parallel (each worker gets unique port)
-    if SELENIUM_AVAILABLE:
-        from nicegui.testing.screen import Screen
-
-        Screen.PORT = server_port
-
-    # Store original values
-    orig_controller = os.environ.get("PAROL_CONTROLLER_PORT")
-    orig_server = os.environ.get("PAROL_SERVER_PORT")
-    orig_mcast = os.environ.get("PAROL6_MCAST_PORT")
-
-    # Set worker-specific ports
-    os.environ["PAROL_CONTROLLER_PORT"] = str(controller_port)
-    os.environ["PAROL_SERVER_PORT"] = str(server_port)
-    os.environ["PAROL6_MCAST_PORT"] = str(mcast_port)
-
-    # Note: parol_commander.constants uses lazy config properties so no reload needed.
-    # However, parol6.config (external library) still caches at import time.
-    import importlib
-
-    try:
-        import parol6.config as cfg_module
-
-        importlib.reload(cfg_module)
-    except ImportError:
-        pass  # Module not imported yet, will pick up env vars on first import
-
-    try:
-        yield
-    finally:
-        # Restore original values
-        if orig_controller is None:
-            os.environ.pop("PAROL_CONTROLLER_PORT", None)
-        else:
-            os.environ["PAROL_CONTROLLER_PORT"] = orig_controller
-
-        if orig_server is None:
-            os.environ.pop("PAROL_SERVER_PORT", None)
-        else:
-            os.environ["PAROL_SERVER_PORT"] = orig_server
-
-        if orig_mcast is None:
-            os.environ.pop("PAROL6_MCAST_PORT", None)
-        else:
-            os.environ["PAROL6_MCAST_PORT"] = orig_mcast
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -248,18 +201,23 @@ def setup_nicegui_process_pool() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def test_env_config(isolate_ports_for_parallel: None) -> Generator[None, None, None]:
+def test_env_config() -> Generator[None, None, None]:
     """Configure environment variables for deterministic test behavior.
 
     Sets up fake serial and simulator modes so tests can run without hardware.
     These are only set if not already present in the environment.
     """
+    controller_port, multicast_port = _get_test_ports()
     env_defaults: dict[str, str] = {
         "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
         "PAROL_WEBAPP_REQUIRE_READY": "1",
-        "PAROL_EXCLUSIVE_START": "1",
+        "PAROL_EXCLUSIVE_START": "0",  # Allow reusing session-scoped controller
         # "PAROL_TRACE": "1",
         "PAROL_LOG_LEVEL": "DEBUG",
+        # Connect webapp to the session-randomized controller port
+        "PAROL_CONTROLLER_PORT": str(controller_port),
+        "PAROL6_CONTROLLER_PORT": str(controller_port),
+        "PAROL6_STATUS_MULTICAST_PORT": str(multicast_port),
     }
 
     originals: dict[str, str | None] = {}
@@ -291,93 +249,89 @@ def robot_state():
     return state_module.robot_state
 
 
-@pytest.fixture
-def reset_robot_state(robot_state):
-    """Reset robot_state to known defaults before each test.
-
-    This ensures tests start with consistent state and don't interfere
-    with each other through shared global state.
-    """
-    # Pre-test setup - use HOME_ANGLES_DEG which is within all joint limits
-    # and matches the simulator's standby position
-    robot_state.angles = list(HOME_ANGLES_DEG)
-    robot_state.pose = []
-    robot_state.io = [0, 0, 0, 0, 1]  # ESTOP OK by default
-    robot_state.gripper = [0, 0, 0, 0, 0, 0]
-    robot_state.connected = False
-    # Note: Do NOT reset simulator_active here - let app startup control this.
-    # Resetting it causes race conditions with startup auto-enable.
-    robot_state.x = 0.0
-    robot_state.y = 0.0
-    robot_state.z = 0.0
-    robot_state.rx = 0.0
-    robot_state.ry = 0.0
-    robot_state.rz = 0.0
-    robot_state.io_in1 = 0
-    robot_state.io_in2 = 0
-    robot_state.io_out1 = 0
-    robot_state.io_out2 = 0
-    robot_state.io_estop = 1
-    # Movement enablement arrays (all enabled by default)
-    robot_state.joint_en = [1] * 12
-    robot_state.cart_en_wrf = [1] * 12
-    robot_state.cart_en_trf = [1] * 12
-    # Reset timestamps and status fields so tests can detect fresh updates
-    robot_state.last_update_ts = 0.0
-    robot_state.action_state = ""
-    robot_state.action_current = ""
-
-    yield
-
-    # No special teardown; tests may override fields if needed.
-
-
 @pytest.fixture(autouse=True)
-def reset_readiness_state():
-    """Reset readiness events between tests for isolation.
+def reset_state(request: pytest.FixtureRequest):
+    """Reset all shared state between tests for isolation.
 
-    This ensures each test starts with fresh asyncio.Event objects
-    so that readiness signals from previous tests don't affect subsequent tests.
+    Skips reset for class_screen tests since the app persists across tests.
+    This unified fixture replaces individual reset_* fixtures in test classes.
     """
+    # Don't reset state for class_screen tests - app persists across tests
+    if "class_screen" in request.fixturenames:
+        yield
+        return
+
+    from parol_commander import state as state_module
     from parol_commander.state import readiness_state
 
+    # Reset readiness events
     readiness_state.reset()
+
+    # Reset robot state
+    state_module.robot_state.angles = list(HOME_ANGLES_DEG)
+    state_module.robot_state.pose = []
+    state_module.robot_state.io = [0, 0, 0, 0, 1]  # ESTOP OK by default
+    state_module.robot_state.gripper = [0, 0, 0, 0, 0, 0]
+    state_module.robot_state.connected = False
+    state_module.robot_state.x = 0.0
+    state_module.robot_state.y = 0.0
+    state_module.robot_state.z = 0.0
+    state_module.robot_state.rx = 0.0
+    state_module.robot_state.ry = 0.0
+    state_module.robot_state.rz = 0.0
+    state_module.robot_state.io_in1 = 0
+    state_module.robot_state.io_in2 = 0
+    state_module.robot_state.io_out1 = 0
+    state_module.robot_state.io_out2 = 0
+    state_module.robot_state.io_estop = 1
+    state_module.robot_state.joint_en = [1] * 12
+    state_module.robot_state.cart_en_wrf = [1] * 12
+    state_module.robot_state.cart_en_trf = [1] * 12
+    state_module.robot_state.last_update_ts = 0.0
+    state_module.robot_state.action_state = ""
+    state_module.robot_state.action_current = ""
+
+    # Reset simulation state
+    state_module.simulation_state.targets.clear()
+    state_module.simulation_state.path_segments.clear()
+    state_module.simulation_state.current_step_index = 0
+    state_module.simulation_state.total_steps = 0
+    state_module.simulation_state.is_playing = False
+    state_module.simulation_state.playback_speed = 1.0
+    state_module.simulation_state.preview_mode = False
+    state_module.simulation_state.paths_visible = True
+    state_module.simulation_state.envelope_visible = False
+    state_module.simulation_state.envelope_mode = "auto"
+
+    # Reset recording state
+    state_module.recording_state.is_recording = False
+
+    # Reset editor/UI state
+    state_module.editor_tabs_state.tabs = []
+    state_module.editor_tabs_state.active_tab_id = None
+    state_module.ui_state.urdf_scene = None
+
     yield
-    # Note: Do NOT reset after test - events that were legitimately set during
-    # test execution should remain set for any cleanup/teardown that needs them.
 
 
 @pytest.fixture(scope="session", autouse=True)
-def kill_stale_controllers(
-    worker_id: str, isolate_ports_for_parallel: None
-) -> Generator[None, None, None]:
+def kill_stale_controllers() -> Generator[None, None, None]:
     """Kill any existing controller processes before and after test session.
 
     Ensures no stale controllers from previous runs interfere with tests.
-    When running in parallel, only kills controllers on this worker's port.
     """
-    controller_port, _, _ = _get_worker_ports(worker_id)
+    controller_port, _ = _get_test_ports()
 
     def _kill() -> None:
         try:
             if sys.platform.startswith("linux") or sys.platform == "darwin":
-                if worker_id == "master" or not worker_id.startswith("gw"):
-                    # Non-parallel: kill all controller processes
-                    subprocess.run(
-                        ["pkill", "-f", "parol6.server.controller"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                else:
-                    # Parallel: only kill controllers listening on our port
-                    # Use fuser to find and kill processes on specific port
-                    subprocess.run(
-                        ["fuser", "-k", f"{controller_port}/udp"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
+                # Kill all controller processes
+                subprocess.run(
+                    ["pkill", "-f", "parol6.server.controller"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
         except Exception:
             pass
 
@@ -399,3 +353,89 @@ def kill_stale_controllers(
                 _kill()
         except Exception:
             pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def session_controller(
+    test_env_config: None,
+    kill_stale_controllers: None,
+) -> Generator["ServerManager", None, None]:
+    """Session-scoped controller shared by all tests.
+
+    Starts the controller once per test session and keeps it running.
+    The app's start_controller() will detect it and reuse it (via PAROL_EXCLUSIVE_START=0).
+    This saves ~4 seconds per test (2s start + 2s stop).
+    """
+    from parol6 import manage_server
+
+    controller_port, multicast_port = _get_test_ports()
+
+    # Start controller once for entire session
+    server_manager = manage_server(
+        host="127.0.0.1",
+        port=controller_port,
+        com_port=None,
+        normalize_logs=True,
+        extra_env={"PAROL6_STATUS_MULTICAST_PORT": str(multicast_port)},
+    )
+
+    try:
+        yield server_manager
+    finally:
+        server_manager.stop_controller()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def session_client(
+    session_controller: "ServerManager",
+) -> Generator["AsyncRobotClient", None, None]:
+    """Session-scoped async client connected to the session controller.
+
+    Performs initial setup (simulator_on, stream_on, enable) once per session.
+    The controller_reset fixture can be used for per-test reset if needed.
+    """
+    import asyncio
+    from parol6 import AsyncRobotClient
+
+    controller_port, _ = _get_test_ports()
+    client = AsyncRobotClient(host="127.0.0.1", port=controller_port)
+
+    # Initial setup - wait for controller and enable simulator
+    async def setup():
+        await client.wait_for_server_ready(timeout=5.0)
+        await client.simulator_on()
+        await client.stream_on()
+        await client.enable()
+
+    asyncio.get_event_loop().run_until_complete(setup())
+
+    try:
+        yield client
+    finally:
+        asyncio.get_event_loop().run_until_complete(client.close())
+
+
+@pytest.fixture(autouse=True)
+async def controller_reset(
+    request: pytest.FixtureRequest,
+    session_controller: "ServerManager",
+):
+    """Per-test fixture that resets the shared controller state.
+
+    Runs automatically before each test that uses user or screen fixtures.
+    Much faster than full controller restart (~0.001s vs ~4s).
+    """
+    from parol6 import AsyncRobotClient
+
+    # Only reset for tests that use NiceGUI app (user, screen, or class_screen fixture)
+    if (
+        "user" in request.fixturenames
+        or "screen" in request.fixturenames
+        or "class_screen" in request.fixturenames
+    ):
+        controller_port, _ = _get_test_ports()
+        # Create a fresh client on this test's event loop
+        async with AsyncRobotClient(host="127.0.0.1", port=controller_port) as client:
+            await client.reset()
+            await client.enable()
+    yield

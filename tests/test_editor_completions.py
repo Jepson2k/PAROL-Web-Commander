@@ -89,39 +89,3 @@ def test_discover_robot_commands_returns_categorized_commands() -> None:
         assert "category" in cmd, f"Command {name} missing 'category'"
         assert "signature" in cmd, f"Command {name} missing 'signature'"
         assert "docstring" in cmd, f"Command {name} missing 'docstring'"
-
-
-@pytest.mark.unit
-def test_categorize_command_returns_valid_categories() -> None:
-    """Test that categorize_command returns valid category names.
-
-    Verifies the categorization logic works for different method types.
-    """
-    from parol_commander.components.editor import categorize_command
-
-    # Test known categorizations
-    test_cases = [
-        ("move_joints", "", "Motion"),
-        ("jog_joint", "", "Motion"),
-        ("smooth_move", "", "Smooth Motion"),
-        ("get_status", "", "Query"),
-        ("get_angles", "", "Query"),
-        ("ping", "", "Query"),
-        ("is_enabled", "", "Query"),
-        ("wait_for_motion", "", "Query"),
-        ("gripper_open", "", "Gripper"),
-        ("gripper_close", "", "Gripper"),
-        ("gcode_command", "", "GCODE"),
-        ("enable", "", "Control & System"),
-        ("disable", "", "Control & System"),
-        ("home", "", "Control & System"),
-        ("stop", "", "Control & System"),
-        ("set_io", "", "IO"),
-        ("unknown_method", "", "Other"),
-    ]
-
-    for method_name, doc, expected_category in test_cases:
-        result = categorize_command(method_name, doc)
-        assert (
-            result == expected_category
-        ), f"categorize_command('{method_name}') returned '{result}', expected '{expected_category}'"

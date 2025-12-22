@@ -131,6 +131,7 @@ class UrdfScene(
         self.path_group: Any | None = None
         self.targets_group: Any | None = None
         self._path_objects: List[Any] = []
+        self._rendered_segment_count: int = 0
 
         # Track robot mesh objects for material changes
         self._robot_meshes: List[ui.scene.stl] = []
@@ -522,9 +523,6 @@ class UrdfScene(
             self.targets_group.visible(True)
 
         # Rebuild paths if changed
-        if not hasattr(self, "_rendered_segment_count"):
-            self._rendered_segment_count = 0
-
         current_count = len(simulation_state.path_segments)
         prev_rendered = self._rendered_segment_count
 
@@ -558,21 +556,22 @@ class UrdfScene(
                     self._rendered_segment_count,
                     current_count - 1,
                 )
-            if self.path_group:
-                with self.path_group:
-                    for i in range(self._rendered_segment_count, current_count):
-                        segment = simulation_state.path_segments[i]
-                        objs = self._render_path_segment(segment)
-                        self._path_objects.extend(objs)
-                        if TRACE_ENABLED:
-                            logger = logging.getLogger(__name__)
-                            logger.trace(  # type: ignore[attr-defined]
-                                "SCENE: Rendered segment %d -> %d objects, "
-                                "total_path_objects=%d",
-                                i,
-                                len(objs),
-                                len(self._path_objects),
-                            )
+            if self.path_group and self.scene:
+                with self.scene:
+                    with self.path_group:
+                        for i in range(self._rendered_segment_count, current_count):
+                            segment = simulation_state.path_segments[i]
+                            objs = self._render_path_segment(segment)
+                            self._path_objects.extend(objs)
+                            if TRACE_ENABLED:
+                                logger = logging.getLogger(__name__)
+                                logger.trace(  # type: ignore[attr-defined]
+                                    "SCENE: Rendered segment %d -> %d objects, "
+                                    "total_path_objects=%d",
+                                    i,
+                                    len(objs),
+                                    len(self._path_objects),
+                                )
             self._rendered_segment_count = current_count
 
         elif current_count < self._rendered_segment_count:
@@ -591,21 +590,22 @@ class UrdfScene(
             self._rendered_segment_count = 0
 
         # Update targets - preserve existing targets to maintain TransformControls
-        if self.targets_group:
+        if self.targets_group and self.scene:
             active_ids = set()
             for target in simulation_state.targets:
                 active_ids.add(target.id)
                 if target.id not in self._target_objects:
                     # Create new target
-                    with self.targets_group:
-                        target_group = ui.scene.group().with_name(
-                            f"targetgroup:{target.id}"
-                        )
-                        with target_group:
-                            sphere = ui.scene.sphere(0.008)
-                            target_color = get_color_for_move_type(target.move_type)
-                            sphere.material(target_color)
-                            sphere.with_name(f"target:{target.id}")
+                    with self.scene:
+                        with self.targets_group:
+                            target_group = ui.scene.group().with_name(
+                                f"targetgroup:{target.id}"
+                            )
+                            with target_group:
+                                sphere = ui.scene.sphere(0.008)
+                                target_color = get_color_for_move_type(target.move_type)
+                                sphere.material(target_color)
+                                sphere.with_name(f"target:{target.id}")
 
                         target_group.move(
                             target.pose[0], target.pose[1], target.pose[2]
@@ -649,6 +649,16 @@ class UrdfScene(
         """Get the scene group for the last actuated joint."""
         last_joint = self.last_actuated_joint_name
         return self.joint_groups.get(last_joint) if last_joint else None
+
+    def invalidate_paths(self) -> None:
+        """Clear rendered paths and reset cache, forcing a full re-render on next update.
+
+        Call this when switching tabs or when the path data has completely changed.
+        """
+        for obj in self._path_objects:
+            obj.delete()
+        self._path_objects.clear()
+        self._rendered_segment_count = 0
 
     # --------- Public API ---------
 
@@ -942,7 +952,7 @@ class UrdfScene(
             self._robot_meshes.append(obj)
 
     def _stl_to_url(self, stl_path: str) -> str:
-        """Convert STL file path to URL, preserving nested structure."""
+        """Convert STL file path to URL, preferring _simplified variants if they exist."""
         # Handle file:// URIs
         if stl_path.startswith("file://"):
             stl_path = stl_path[7:]
@@ -956,6 +966,18 @@ class UrdfScene(
                 rel_path = Path(stl_full.name)
         else:
             rel_path = stl_full
+
+        # Check for _simplified variant (e.g., part.STL -> part_simplified.stl)
+        # Try both original extension case and lowercase .stl
+        for ext in [rel_path.suffix, ".stl"]:
+            simplified_name = rel_path.stem + "_simplified" + ext
+            simplified_path = rel_path.with_name(simplified_name)
+            full_simplified = self.meshes_dir / simplified_path
+
+            if full_simplified.exists():
+                rel_path = simplified_path
+                logging.debug("Using simplified mesh: %s", simplified_path)
+                break
 
         return os.path.join(self.meshes_url, str(rel_path).replace("\\", "/"))
 

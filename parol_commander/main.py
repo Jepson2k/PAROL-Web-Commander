@@ -1,12 +1,14 @@
 import asyncio
+import atexit
 import json
 import logging
 import math
+import os
+import signal
+import sys
 import time
 import contextlib
 import argparse
-import os
-import sys
 from typing import cast
 from spatialmath import SO3
 import numpy as np
@@ -46,7 +48,6 @@ from parol_commander.components.settings import SettingsContent
 from parol_commander.components.control import ControlPanel
 from parol_commander.components.readout import ReadoutPanel
 from parol_commander.components.editor import EditorPanel
-from parol_commander.components.playback_overlay import playback_overlay
 from parol_commander.services.urdf_scene import (
     UrdfScene,
     UrdfSceneConfig,
@@ -576,6 +577,8 @@ def build_page_content() -> None:
                             # Clean up layout classes when closing top panel
                             left_wrap.classes(remove="bottom-open")
                             left_wrap.classes(remove="bottom-open-non-program")
+                            # Track program panel visibility for tab flash
+                            ui_state.program_panel_visible = False
 
                         with ui.tab_panel("program").classes(
                             "overlay-card overflow-hidden program-panel resizable-tab p-0"
@@ -627,11 +630,13 @@ def build_page_content() -> None:
                                 left_wrap.style("pointer-events: none;")
                                 left_panels.style("pointer-events: none;")
 
+                            # Track program panel visibility for tab flash
+                            ui_state.program_panel_visible = (
+                                side_tabs.value == "program"
+                            )
+
                         side_tabs.on(
                             "update:model-value", lambda e: update_left_layout()
-                        )
-                        side_tabs.on(
-                            "update:modelValue", lambda e: update_left_layout()
                         )
 
                         # Handle tab switching via PanelResize module
@@ -729,9 +734,7 @@ def build_page_content() -> None:
                         left_wrap.classes(remove="bottom-open-non-program")
                         bottom_panels.classes(remove="is-open")
 
-                # Bind to both event casings to ensure compatibility
                 bottom_tabs.on("update:model-value", lambda _: update_bottom_layout())
-                bottom_tabs.on("update:modelValue", lambda _: update_bottom_layout())
 
                 # Initial sync on load to avoid stale half-height state
                 update_bottom_layout()
@@ -741,9 +744,6 @@ def build_page_content() -> None:
 
         # Bottom-right HUD: control panel
         control_panel.build("br")
-
-        # Bottom-center HUD: playback overlay (floating scrub bar)
-        playback_overlay.build()
 
         # Configure panel resize module with app-specific settings
         ui.run_javascript(f"PanelResize.configure({json.dumps(PANEL_RESIZE_CONFIG)})")
@@ -836,14 +836,67 @@ def _register_handlers() -> None:
 
     @ng_app.on_shutdown
     async def _on_shutdown() -> None:
-        """NiceGUI shutdown hook - ensure controller is stopped."""
+        """NiceGUI shutdown hook - ensure controller and child processes are stopped."""
         logging.debug("Nicegui Shutting Down...")
+
+        # Stop any running script processes first
+        try:
+            if (
+                editor_panel
+                and editor_panel.script_running
+                and editor_panel.script_handle
+            ):
+                logging.info("Stopping running script process during shutdown...")
+                from parol_commander.services.script_runner import stop_script
+
+                await stop_script(editor_panel.script_handle, timeout=2.0)
+                editor_panel.script_handle = None
+                editor_panel.script_running = False
+                # Clean up stepping controller if active
+                if hasattr(editor_panel, "_cleanup_stepping"):
+                    editor_panel._cleanup_stepping()
+        except Exception as e:
+            logging.warning("Error stopping script during shutdown: %s", e)
+
         stop_controller()
         await client.close()
 
 
 # Register handlers at module load
 _register_handlers()
+
+
+def _cleanup_script_processes_sync() -> None:
+    """Synchronously kill any running script subprocess.
+
+    This is called from atexit and signal handlers as a last-resort cleanup.
+    """
+    try:
+        if editor_panel and editor_panel.script_handle:
+            proc = editor_panel.script_handle.get("proc")
+            if proc and proc.returncode is None:
+                logging.info("Killing orphaned script process (PID: %s)", proc.pid)
+                try:
+                    # On Unix, try to kill the entire process group
+                    if sys.platform != "win32" and proc.pid:
+                        try:
+                            pgid = os.getpgid(proc.pid)
+                            os.killpg(pgid, signal.SIGKILL)
+                            logging.debug("Killed process group %s", pgid)
+                        except (ProcessLookupError, OSError):
+                            proc.kill()
+                    else:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    logging.debug("Error killing script process: %s", e)
+    except Exception as e:
+        logging.debug("Error in script cleanup: %s", e)
+
+
+# Register atexit cleanup for last-resort process termination
+atexit.register(_cleanup_script_processes_sync)
 
 
 @ui.page("/")
@@ -923,9 +976,8 @@ async def index_page():
 async def _status_consumer() -> None:
     """Consume multicast status and update shared robot_state."""
     try:
-        # Wait for server to be responsive with active streaming
-        # require_streaming=True ensures SERIAL=1 (status cache fresh, first_frame received)
-        await client.wait_for_server_ready(timeout=5.0, require_streaming=True)
+        # Wait for server to be responsive before subscribing to multicast
+        await client.wait_for_server_ready(timeout=5.0)
         async for status in client.status_stream():
             try:
                 angles = status.get("angles") or []
@@ -986,9 +1038,9 @@ async def _status_consumer() -> None:
                 if callable(getattr(control_panel, "refresh_joint_enablement", None)):
                     control_panel.refresh_joint_enablement()
                 if callable(
-                    getattr(control_panel, "refresh_cartesian_enablement", None)
+                    getattr(control_panel, "sync_cartesian_button_states", None)
                 ):
-                    control_panel.refresh_cartesian_enablement()
+                    control_panel.sync_cartesian_button_states()
             except Exception as e:
                 logging.debug("Status consumer parse error: %s", e)
     except asyncio.CancelledError:
@@ -1083,7 +1135,7 @@ def main():
         title="PAROL6 NiceGUI Commander",
         host=config.server_host,
         port=config.server_port,
-        reload=True,
+        reload=False,
         show=False,
         loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",

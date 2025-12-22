@@ -17,7 +17,6 @@ repos:
         additional_dependencies:
           - types-requests
           - pytest
-          - nicegui>=2.0.0
         args: [--install-types, --non-interactive]
 
   # Built-in hooks for file quality

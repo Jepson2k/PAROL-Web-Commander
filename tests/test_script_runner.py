@@ -103,7 +103,7 @@ for i in range(100):
     # Give it time to start
     import asyncio
 
-    await asyncio.sleep(0.2)
+    await asyncio.sleep(0)
 
     # Stop the script
     await stop_script(handle, timeout=2.0)

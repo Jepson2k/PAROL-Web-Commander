@@ -97,6 +97,8 @@ def _run_simulation_isolated(
     # Local collectors (not shared with main process)
     local_segments: list[dict] = []
     local_targets: list[dict] = []
+    # Track final state (updated by client on each motion)
+    final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
     error_message: str | None = None
 
@@ -128,6 +130,7 @@ def _run_simulation_isolated(
                 super().__init__("parol6")
                 self._segments = local_segments
                 self._targets = local_targets
+                self._final_state = final_state
                 self._initial_joints = initial_joints_rad
                 self._initial_pose = initial_pose_m
 
@@ -136,10 +139,14 @@ def _run_simulation_isolated(
                 """Return a DryRunRobotClient class that uses local collectors."""
                 segments = self._segments
                 targets = self._targets
+                state = self._final_state
                 init_joints = self._initial_joints
                 init_pose = self._initial_pose
 
                 class LocalDryRunRobotClient(DryRunRobotClient):
+                    # Class-level reference to final_state (set before __init__)
+                    _final_state_ref = state
+
                     def __init__(self, *args, **kwargs):
                         # Ignore host/port args, use local collectors and initial state
                         super().__init__(
@@ -149,6 +156,12 @@ def _run_simulation_isolated(
                             initial_pose=init_pose,
                         )
 
+                    def _update_pose_from_joints(self):
+                        """Override to also update final_state."""
+                        super()._update_pose_from_joints()
+                        # Update final state whenever joints change
+                        self._final_state_ref["joints_rad"] = list(self._current_joints)
+
                 return LocalDryRunRobotClient
 
             @property
@@ -156,12 +169,23 @@ def _run_simulation_isolated(
                 """Return an AsyncDryRunRobotClient class that uses local collectors."""
                 segments = self._segments
                 targets = self._targets
+                state = self._final_state
                 init_joints = self._initial_joints
                 init_pose = self._initial_pose
 
+                class LocalSyncClientForAsync(DryRunRobotClient):
+                    """Sync client with final_state tracking for async wrapper."""
+
+                    _final_state_ref = state
+
+                    def _update_pose_from_joints(self):
+                        super()._update_pose_from_joints()
+                        self._final_state_ref["joints_rad"] = list(self._current_joints)
+
                 class LocalAsyncDryRunRobotClient(AsyncDryRunRobotClient):
                     def __init__(self, *args, **kwargs):
-                        super().__init__(
+                        # Create sync client with final_state tracking
+                        self._sync_client = LocalSyncClientForAsync(
                             segment_collector=segments,
                             target_collector=targets,
                             initial_joints=init_joints,
@@ -333,6 +357,7 @@ def _run_simulation_isolated(
         "truncated": truncated,
         "error": error_message,
         "total_steps": len(local_segments),
+        "final_joints_rad": final_state.get("joints_rad"),
     }
 
 
@@ -343,12 +368,19 @@ class PathVisualizer:
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
 
-    async def update_path_visualization(self, program_text: str) -> str | None:
+    async def update_path_visualization(
+        self, program_text: str, tab_id: str | None = None
+    ) -> str | None:
         """
         Run the dry-run simulation for the given program text and update SimulationState.
 
         Executes simulation in an isolated subprocess for safety, then applies
-        the results to the global simulation state.
+        the results to the originating tab and (if still active) global simulation state.
+
+        Args:
+            program_text: The Python program to simulate
+            tab_id: Optional tab ID that triggered this simulation. Results will be
+                stored in this tab. If None, uses active tab.
 
         Returns:
             Error message if simulation failed, None otherwise.
@@ -451,26 +483,40 @@ class PathVisualizer:
                     sim_id,
                 )
 
-            # Convert dicts to objects and update state
-            simulation_state.path_segments = [
-                PathSegment.from_dict(d) for d in result["segments"]
-            ]
-            simulation_state.targets = [
-                ProgramTarget.from_dict(d) for d in result["targets"]
-            ]
-            simulation_state.total_steps = result["total_steps"]
-
             logger.info(
                 "Simulation complete (sim_id=%d). Generated %d path segments.",
                 sim_id,
-                len(simulation_state.path_segments),
+                len(result["segments"]),
             )
 
-            # Also store results in active tab for per-tab isolation
-            active_tab = editor_tabs_state.get_active_tab()
-            if active_tab:
-                active_tab.path_segments = list(simulation_state.path_segments)
-                active_tab.targets = list(simulation_state.targets)
+            # Store results in the originating tab (or active tab if no tab_id)
+            target_tab = None
+            if tab_id:
+                target_tab = editor_tabs_state.find_tab_by_id(tab_id)
+            if not target_tab:
+                target_tab = editor_tabs_state.get_active_tab()
+
+            if target_tab:
+                # Store simulation results in the tab
+                target_tab.path_segments = [
+                    PathSegment.from_dict(d) for d in result["segments"]
+                ]
+                target_tab.targets = [
+                    ProgramTarget.from_dict(d) for d in result["targets"]
+                ]
+                target_tab.final_joints_rad = result.get("final_joints_rad")
+
+                # Only update global simulation_state if this tab is still active
+                if target_tab.id == editor_tabs_state.active_tab_id:
+                    simulation_state.path_segments = list(target_tab.path_segments)
+                    simulation_state.targets = list(target_tab.targets)
+                    simulation_state.total_steps = len(target_tab.path_segments)
+                else:
+                    logger.debug(
+                        "Simulation for tab %s complete, but tab no longer active - "
+                        "skipping global state update",
+                        tab_id,
+                    )
 
             # Reset scene tracking counter and clear old path objects
             if ui_state.urdf_scene and hasattr(

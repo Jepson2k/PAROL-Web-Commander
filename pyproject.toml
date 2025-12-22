@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Web interface for PAROL robot control"
 requires-python = ">=3.11"
 dependencies = [
-  "nicegui<=4.0.0",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@feature/additional_scene_features",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
   "scipy>=1.10",
@@ -60,7 +60,6 @@ addopts = [
     "--strict-config",
     "-ra",  # show short test summary for all but passes
     "-p nicegui.testing.user_plugin",
-    "-nauto",  # parallel test execution (use -n0 to disable)
 ]
 # Global per-test timeout
 timeout = 30
@@ -70,6 +69,7 @@ markers = [
     "integration: Integration tests",
     "rate: Control-rate cadence tests",
     "module_under_test: NiceGUI main module under test for the user fixture",
+    "browser: Browser tests requiring Selenium",
 ]
 # nicegui.testing expects a path to the app's entrypoint for the user fixture
 main_file = "parol_commander/main.py"

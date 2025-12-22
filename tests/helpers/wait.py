@@ -5,9 +5,13 @@ making tests more reliable and faster.
 """
 
 import asyncio
-from typing import Callable
+import time
+from typing import TYPE_CHECKING, Callable
 
 from nicegui.testing import User
+
+if TYPE_CHECKING:
+    from nicegui.testing.screen import Screen
 
 
 async def simulate_click(user: User, marker: str, hold_ms: float = 50) -> None:
@@ -546,3 +550,291 @@ async def wait_for_panel_resize_ready(user: User, timeout_s: float = 3.0) -> Non
         await asyncio.sleep(interval)
 
     raise TimeoutError(f"PanelResize not ready after {timeout_s}s")
+
+
+# ============================================================================
+# Synchronous Screen (Selenium) Wait Helpers
+# ============================================================================
+
+
+def screen_wait_for_condition(
+    screen: "Screen",
+    condition_js: str,
+    timeout_s: float = 5.0,
+    poll_interval: float = 0.1,
+    label: str = "condition",
+) -> bool:
+    """Wait for a JavaScript condition to become true.
+
+    Args:
+        screen: Selenium screen fixture
+        condition_js: JavaScript expression that returns a boolean
+        timeout_s: Maximum time to wait
+        poll_interval: Time between polls
+        label: Description for logging
+
+    Returns:
+        True if condition became true, False if timeout
+    """
+    import logging
+
+    start = time.time()
+    deadline = start + timeout_s
+    while time.time() < deadline:
+        result = screen.selenium.execute_script(f"return {condition_js}")
+        if result:
+            elapsed = time.time() - start
+            logging.debug(f"screen_wait: {label} ready after {elapsed:.3f}s")
+            return True
+        time.sleep(poll_interval)
+    elapsed = time.time() - start
+    logging.debug(f"screen_wait: {label} TIMEOUT after {elapsed:.3f}s")
+    return False
+
+
+def screen_wait_for_element(
+    screen: "Screen",
+    selector: str,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Wait for an element to exist in the DOM."""
+    return screen_wait_for_condition(
+        screen,
+        f"document.querySelector('{selector}') !== null",
+        timeout_s,
+        label=f"element '{selector}'",
+    )
+
+
+def screen_wait_for_element_visible(
+    screen: "Screen",
+    selector: str,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Wait for an element to be visible (has dimensions)."""
+    js = f"""(() => {{
+        const el = document.querySelector('{selector}');
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }})()"""
+    return screen_wait_for_condition(
+        screen, js, timeout_s, label=f"visible '{selector}'"
+    )
+
+
+def screen_wait_for_element_hidden(
+    screen: "Screen",
+    selector: str,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Wait for an element to be hidden or removed."""
+    js = f"""(() => {{
+        const el = document.querySelector('{selector}');
+        if (!el) return true;
+        const rect = el.getBoundingClientRect();
+        return rect.width === 0 || rect.height === 0;
+    }})()"""
+    return screen_wait_for_condition(
+        screen, js, timeout_s, label=f"hidden '{selector}'"
+    )
+
+
+def screen_wait_for_class(
+    screen: "Screen",
+    selector: str,
+    class_name: str,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Wait for an element to have a specific class."""
+    js = f"""(() => {{
+        const el = document.querySelector('{selector}');
+        return el && el.classList.contains('{class_name}');
+    }})()"""
+    return screen_wait_for_condition(
+        screen, js, timeout_s, label=f"class '{class_name}' on '{selector}'"
+    )
+
+
+def screen_wait_for_no_class(
+    screen: "Screen",
+    selector: str,
+    class_name: str,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Wait for an element to NOT have a specific class."""
+    js = f"""(() => {{
+        const el = document.querySelector('{selector}');
+        return el && !el.classList.contains('{class_name}');
+    }})()"""
+    return screen_wait_for_condition(
+        screen, js, timeout_s, label=f"no class '{class_name}' on '{selector}'"
+    )
+
+
+def screen_wait_for_codemirror_ready(screen: "Screen", timeout_s: float = 10.0) -> None:
+    """Wait for CodeMirror editor to be interactive."""
+    js = """(() => {
+        const cm = document.querySelector('.cm-editor');
+        if (!cm) return false;
+        const content = cm.querySelector('.cm-content');
+        if (!content) return false;
+        return content.getAttribute('contenteditable') === 'true';
+    })()"""
+    if not screen_wait_for_condition(screen, js, timeout_s, label="CodeMirror ready"):
+        raise AssertionError(f"CodeMirror not ready after {timeout_s}s")
+
+
+def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 10.0) -> None:
+    """Wait for Three.js 3D scene to be fully initialized.
+
+    Checks that canvas exists and data-initializing attribute is removed,
+    indicating the scene has finished loading.
+    """
+    js = """(() => {
+        const canvas = document.querySelector('canvas');
+        if (!canvas) return false;
+        const sceneEl = canvas.closest('[data-initializing]');
+        // Once initialized, data-initializing is removed
+        return sceneEl === null && canvas.parentElement;
+    })()"""
+    if not screen_wait_for_condition(screen, js, timeout_s, label="3D scene ready"):
+        raise AssertionError(f"3D scene not ready after {timeout_s}s")
+
+
+def screen_get_scene_object(screen: "Screen", name: str) -> dict | None:
+    """Find a Three.js object by name in the scene.
+
+    Args:
+        screen: Selenium screen fixture
+        name: Name of the object to find (e.g., "tcp:ball")
+
+    Returns:
+        Dict with object info (name, type, visible, position), or None if not found
+    """
+    result = screen.selenium.execute_script(
+        """
+        const name = arguments[0];
+        const sceneDiv = document.querySelector('.nicegui-scene');
+        if (!sceneDiv) return null;
+
+        const sceneId = sceneDiv.id;
+        const scene = window['scene_' + sceneId];
+        if (!scene) return null;
+
+        let found = null;
+        scene.traverse(function(obj) {
+            if (obj.name === name) {
+                found = {
+                    name: obj.name,
+                    type: obj.type,
+                    visible: obj.visible,
+                    position: obj.position ? {
+                        x: obj.position.x,
+                        y: obj.position.y,
+                        z: obj.position.z
+                    } : null
+                };
+            }
+        });
+        return found;
+    """,
+        name,
+    )
+    return result
+
+
+def screen_list_scene_objects(screen: "Screen") -> list[dict]:
+    """List all named objects in the Three.js scene for debugging.
+
+    Args:
+        screen: Selenium screen fixture
+
+    Returns:
+        List of dicts with object name, type, and visibility
+    """
+    result = screen.selenium.execute_script(
+        """
+        const sceneDiv = document.querySelector('.nicegui-scene');
+        if (!sceneDiv) return [];
+
+        const sceneId = sceneDiv.id;
+        const scene = window['scene_' + sceneId];
+        if (!scene) return [];
+
+        const objects = [];
+        scene.traverse(function(obj) {
+            if (obj.name) {
+                objects.push({
+                    name: obj.name,
+                    type: obj.type,
+                    visible: obj.visible
+                });
+            }
+        });
+        return objects;
+    """
+    )
+    return result or []
+
+
+def screen_wait_for_tcp_ball(screen: "Screen", timeout_s: float = 10.0) -> dict | None:
+    """Wait for TCP ball to exist in the Three.js scene.
+
+    Args:
+        screen: Selenium screen fixture
+        timeout_s: Maximum time to wait
+
+    Returns:
+        TCP ball object info, or None if timeout
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        tcp_ball = screen_get_scene_object(screen, "tcp:ball")
+        if tcp_ball is not None:
+            return tcp_ball
+        time.sleep(0.1)
+    return None
+
+
+def screen_wait_for_button_icon(
+    screen: "Screen",
+    icon_name: str,
+    timeout_s: float = 5.0,
+) -> bool:
+    """Wait for a button with a specific Material icon to be visible."""
+    js = f"""(() => {{
+        const buttons = document.querySelectorAll('button');
+        for (const btn of buttons) {{
+            const icon = btn.querySelector('i');
+            if (icon && icon.innerText === '{icon_name}') {{
+                const rect = btn.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            }}
+        }}
+        return false;
+    }})()"""
+    return screen_wait_for_condition(
+        screen, js, timeout_s, label=f"button icon '{icon_name}'"
+    )
+
+
+def screen_wait_for_tab_inactive(
+    screen: "Screen",
+    icon_name: str,
+    timeout_s: float = 3.0,
+) -> bool:
+    """Wait for a tab (identified by icon) to become inactive."""
+    js = f"""(() => {{
+        const tabs = document.querySelectorAll('.q-tab');
+        for (const tab of tabs) {{
+            const icon = tab.querySelector('i');
+            if (icon && icon.innerText === '{icon_name}') {{
+                return !tab.classList.contains('q-tab--active');
+            }}
+        }}
+        return false;
+    }})()"""
+    return screen_wait_for_condition(
+        screen, js, timeout_s, label=f"tab '{icon_name}' inactive"
+    )

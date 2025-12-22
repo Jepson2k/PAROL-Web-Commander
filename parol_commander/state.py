@@ -260,6 +260,9 @@ class UiState:
     # Editor panel reference for script stopping
     editor_panel: Any = None
 
+    # Program panel visibility (tracked for tab flash when panel closed)
+    program_panel_visible: bool = False
+
 
 @dataclass
 class EditorTab:
@@ -275,6 +278,7 @@ class EditorTab:
         default_factory=list
     )  # Per-tab simulation paths
     targets: list[ProgramTarget] = field(default_factory=list)  # Per-tab targets
+    final_joints_rad: list[float] | None = None  # Final joint position from simulation
     created_at: float = 0.0  # Timestamp
 
     @property
@@ -304,6 +308,10 @@ class EditorTabsState:
         if file_path is None:
             return None
         return next((t for t in self.tabs if t.file_path == file_path), None)
+
+    def find_tab_by_id(self, tab_id: str) -> EditorTab | None:
+        """Find a tab by its ID."""
+        return next((t for t in self.tabs if t.id == tab_id), None)
 
     def add_tab(self, tab: EditorTab) -> None:
         """Add a new tab."""

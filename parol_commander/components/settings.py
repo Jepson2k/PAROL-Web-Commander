@@ -136,7 +136,7 @@ class SettingsContent:
             ui.switch(
                 value=prefs["show_route"],
                 on_change=_on_show_route_change,
-            ).props("dense")
+            ).props("dense").mark("switch-show-route")
 
         # Sync initial state
         simulation_state.paths_visible = prefs["show_route"]
@@ -167,7 +167,7 @@ class SettingsContent:
                 options={"auto": "Auto", "on": "On", "off": "Off"},
                 value=prefs["envelope_mode"],
                 on_change=_on_envelope_mode_change,
-            ).classes("w-24").props("dense")
+            ).classes("w-24").props("dense").mark("select-envelope-mode")
 
         # Sync initial state
         simulation_state.envelope_mode = prefs["envelope_mode"]
@@ -215,7 +215,7 @@ class SettingsContent:
                 options=tool_options,
                 value=stored_tool,
                 on_change=_on_tool_change,
-            ).classes("w-32").props("dense")
+            ).classes("w-32").props("dense").mark("select-tool")
 
         # Sync initial tool state
         if stored_tool and stored_tool != "none":

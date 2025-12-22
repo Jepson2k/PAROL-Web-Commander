@@ -6,7 +6,9 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Optional, List
+from parol_commander.state import editor_tabs_state
 
+import numpy as np
 from nicegui import ui
 
 from parol_commander.state import (
@@ -101,6 +103,58 @@ class MotionRecorder:
         else:
             self._start_recording()
 
+    def _should_insert_anchor(self) -> bool:
+        """Check if anchor move_joints is needed using cached simulation results.
+
+        Uses the pre-computed final_joints_rad from the active tab's simulation
+        instead of running a blocking subprocess. This makes recording start instant.
+
+        Returns:
+            True if anchor should be inserted (positions differ), False otherwise.
+        """
+        if not robot_state.angles:
+            return True
+
+        current_angles_deg = self._get_current_angles()
+
+        # Get cached final position from active tab
+        active_tab = editor_tabs_state.get_active_tab()
+        if not active_tab:
+            return True
+
+        if active_tab.final_joints_rad is None:
+            return True
+
+        simulated_angles_deg = np.rad2deg(active_tab.final_joints_rad).tolist()
+        return self._compare_positions(simulated_angles_deg, current_angles_deg)
+
+    def _compare_positions(
+        self, script_end_deg: List[float], current_deg: List[float]
+    ) -> bool:
+        """Compare script end position with current robot position.
+
+        Returns:
+            True if anchor is needed (positions differ), False otherwise.
+        """
+        deltas = [script - cur for script, cur in zip(script_end_deg, current_deg)]
+        max_delta = max(abs(d) for d in deltas)
+
+        logger.info(
+            "Anchor check:\n"
+            "  Script ends at: [%s]\n"
+            "  Robot now at:   [%s]\n"
+            "  Deltas:         [%s]\n"
+            "  Max delta: %.2f deg (threshold: 0.5)",
+            ", ".join(f"{a:.1f}" for a in script_end_deg),
+            ", ".join(f"{a:.1f}" for a in current_deg),
+            ", ".join(f"{d:+.2f}" for d in deltas),
+            max_delta,
+        )
+
+        if max_delta > 0.5:
+            return True
+        return False
+
     def _start_recording(self) -> None:
         """Start a new recording session."""
         recording_state.is_recording = True
@@ -128,9 +182,9 @@ class MotionRecorder:
                 robot_state.rz or 0.0,
             )
 
-        # Insert anchor move_joints command with current position
-        # This establishes the starting point for subsequent moves in the recording
-        if robot_state.angles:
+        # Insert anchor move_joints command only if current position differs from
+        # where the script would end (simulated using dry run client)
+        if robot_state.angles and self._should_insert_anchor():
             angles = self._get_current_angles()
             args = ", ".join(f"{a:.2f}" for a in angles)
             anchor_snippet = (
@@ -342,7 +396,7 @@ class MotionRecorder:
         self._notify("Captured current pose", color="positive")
 
     def _insert_snippet(self, snippet: str) -> None:
-        """Insert code snippet into the editor."""
+        """Insert code snippet into the editor and flash the new line."""
         editor = ui_state.editor_panel
         if not editor:
             logger.warning("Cannot insert snippet: editor_panel not set in ui_state")
@@ -352,6 +406,10 @@ class MotionRecorder:
         if hasattr(editor, "program_textarea") and editor.program_textarea:
             textarea = editor.program_textarea
             val = textarea.value or ""
+
+            # Count lines before insertion for flash highlighting
+            lines_before = len(val.splitlines()) if val else 0
+
             if val and not val.endswith("\n"):
                 val += "\n"
             new_value = val + snippet + "\n"
@@ -359,7 +417,10 @@ class MotionRecorder:
             # This will trigger the editor's on_change -> debounced simulation
             textarea.value = new_value
 
-            logger.info("Inserted snippet into editor: %s", snippet[:50])
+            # Flash the newly added line
+            new_line_number = lines_before + 1
+            if hasattr(editor, "_flash_editor_lines"):
+                editor._flash_editor_lines([new_line_number])
         else:
             logger.warning("Editor textarea not ready - open Program tab first")
             self._notify("Open Program tab first to insert code", color="warning")

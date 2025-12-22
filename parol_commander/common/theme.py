@@ -346,6 +346,25 @@ def inject_layout_css() -> None:
   transition: transform 40ms linear, filter 40ms linear, outline-color 40ms linear;
 }
 
+/* CodeMirror line flash animation for newly added lines */
+@keyframes cm-line-flash {
+  0% { background-color: rgba(46, 204, 113, 0.6); }
+  100% { background-color: transparent; }
+}
+.cm-line.cm-line-flash {
+  animation: cm-line-flash 1.5s ease-out forwards;
+}
+
+/* Editor tab flash animation for new content */
+@keyframes tab-flash {
+  0%, 50% { background-color: rgba(46, 204, 113, 0.4); }
+  25%, 75% { background-color: transparent; }
+  100% { background-color: transparent; }
+}
+.tab-flash {
+  animation: tab-flash 1s ease-out 2;
+}
+
 /* Joint control bars with integrated pill buttons */
 .joint-bar {
   border-radius: 9999px !important;
@@ -837,20 +856,6 @@ body.body--light .cm-scroller::-webkit-scrollbar-thumb:hover {
     width: calc(100vw - 300px);
     min-width: 500px;
   }
-}
-
-/* Playback overlay at bottom-center */
-.playback-overlay {
-  pointer-events: auto;
-}
-
-.playback-overlay .overlay-card {
-  min-width: 400px;
-  max-width: 600px;
-}
-
-.playback-overlay .q-slider {
-  min-width: 150px;
 }
 
 /* ========== Multi-Tab Editor Styles ========== */

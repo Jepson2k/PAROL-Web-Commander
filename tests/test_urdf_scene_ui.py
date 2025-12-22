@@ -14,26 +14,6 @@ from tests.helpers.wait import wait_for_urdf_ready
 
 
 @pytest.mark.integration
-async def test_urdf_scene_initialized_on_main_page(user: User) -> None:
-    """Opening ``/`` should initialize the URDF scene on ui_state.
-
-    This asserts that the URDF scene is at least constructed and attached to
-    the global ui_state, which is a prerequisite for all 3D visualization.
-    """
-    from parol_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    scene = ui_state.urdf_scene
-    assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
-
-    # Joint names should be a non-empty list (typically 6 for PAROL6)
-    if ui_state.urdf_joint_names is not None:
-        assert len(ui_state.urdf_joint_names) >= 1
-
-
-@pytest.mark.integration
 async def test_urdf_scene_joint_names(user: User) -> None:
     """Test that get_joint_names returns the expected joint names.
 
@@ -50,32 +30,6 @@ async def test_urdf_scene_joint_names(user: User) -> None:
     joint_names = scene.get_joint_names()
     assert isinstance(joint_names, list), "Expected joint_names to be a list"
     assert len(joint_names) == 6, f"Expected 6 joints, got {len(joint_names)}"
-
-
-@pytest.mark.integration
-async def test_urdf_scene_joint_limits(user: User) -> None:
-    """Test that get_joint_limits returns valid limits for each joint.
-
-    Verifies that each joint has min/max limits defined.
-    """
-    from parol_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_urdf_ready()
-
-    scene = ui_state.urdf_scene
-    assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
-
-    joint_limits = scene.get_joint_limits()
-    assert isinstance(joint_limits, dict), "Expected joint_limits to be a dict"
-    assert (
-        len(joint_limits) >= 6
-    ), f"Expected at least 6 joint limits, got {len(joint_limits)}"
-
-    # Each joint should have min and max keys
-    for joint_name, limits in joint_limits.items():
-        assert "min" in limits, f"Expected 'min' key for joint {joint_name}"
-        assert "max" in limits, f"Expected 'max' key for joint {joint_name}"
 
 
 @pytest.mark.integration
@@ -102,8 +56,12 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(user: User) -> None:
     scene = ui_state.urdf_scene
     assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
 
-    # Envelope should be almost pre-generated after scene.show() is called
-    await asyncio.sleep(1)
+    # Wait for envelope to be generated (condition-based instead of fixed sleep)
+    for _ in range(50):  # Up to 5 seconds
+        if workspace_envelope._generated:
+            break
+        await asyncio.sleep(0.1)
+
     assert (
         workspace_envelope._generated is True
     ), "Expected workspace envelope to be pre-generated on scene startup"

@@ -237,21 +237,28 @@ class DryRunRobotClient:
         }
         self.segment_collector.append(segment)
 
-        # Conditionally create interactive target
+        # Create interactive target for moves with literal args
+        # Targets allow 3D editing of positions in the scene
         marker_id = self._extract_target_marker(source_line)
         has_literal_args = self._has_literal_list_args(source_line)
 
-        if marker_id and has_literal_args:
+        if has_literal_args:
+            # Use explicit marker or auto-generate one for literal moves
+            target_id = marker_id or f"auto_{line_no}"
             target = {
-                "id": marker_id,
+                "id": target_id,
                 "line_number": line_no,
                 "pose": list(end_pose),
                 "move_type": move_type,
                 "scene_object_id": "",
             }
             self.target_collector.append(target)
-            logger.debug(f"Created interactive target {marker_id} at line {line_no}")
-        elif marker_id and not has_literal_args:
+            if marker_id:
+                logger.debug(f"Created target {target_id} at line {line_no}")
+            else:
+                logger.debug(f"Auto-generated target {target_id} at line {line_no}")
+        elif marker_id:
+            # Has marker but uses variables - can't create editable target
             logger.debug(
                 f"Skipped target {marker_id} - line has variable args (not editable)"
             )

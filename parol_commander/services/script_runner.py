@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -46,6 +47,7 @@ async def run_script(
     cfg: ScriptRunConfig,
     on_stdout: Callable[[str], None],
     on_stderr: Callable[[str], None],
+    session_id: str | None = None,
 ) -> ScriptProcessHandle:
     """
     Start a Python script as a subprocess and stream output to callbacks.
@@ -54,6 +56,7 @@ async def run_script(
         cfg: Configuration for the script run
         on_stdout: Callback for stdout lines
         on_stderr: Callback for stderr lines
+        session_id: Optional stepping session ID for GUI-controlled execution
 
     Returns:
         Handle for managing the process
@@ -75,16 +78,35 @@ async def run_script(
     if not Path(python_exe).exists():
         raise FileNotFoundError(f"Python executable not found: {python_exe}")
 
+    # Build environment variables
+    env = {**cfg.get("env", {})}
+    if session_id:
+        env["PAROL_STEP_SESSION"] = session_id
+
+    # Determine which script to run
+    if session_id:
+        # Use bootstrap script to inject stepping wrapper
+        bootstrap_path = Path(__file__).parent / "stepping_bootstrap.py"
+        if not bootstrap_path.exists():
+            raise FileNotFoundError(f"Bootstrap script not found: {bootstrap_path}")
+        exec_args = [python_exe, "-u", str(bootstrap_path), str(script_path)]
+    else:
+        # Run script directly
+        exec_args = [python_exe, "-u", str(script_path)]
+
     # Create the subprocess
-    proc = await asyncio.create_subprocess_exec(
-        python_exe,
-        "-u",  # unbuffered output
-        str(script_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cfg["cwd"],
-        env={**cfg.get("env", {})},
-    )
+    # On Unix, create a new process group so we can kill the entire tree
+    kwargs: dict = {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "cwd": cfg["cwd"],
+        "env": env,
+    }
+    if sys.platform != "win32":
+        # Create new process group on Unix
+        kwargs["start_new_session"] = True
+
+    proc = await asyncio.create_subprocess_exec(*exec_args, **kwargs)
 
     # Start streaming tasks
     if proc.stdout:
@@ -125,14 +147,36 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
         return
 
     try:
-        # Graceful termination
-        proc.terminate()
+        # On Unix, terminate the entire process group
+        if sys.platform != "win32" and proc.pid:
+            try:
+                # Send SIGTERM to the process group
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, 15)  # SIGTERM
+                logging.debug("Sent SIGTERM to process group %s", pgid)
+            except (ProcessLookupError, OSError):
+                # Fall back to regular terminate if process group doesn't exist
+                proc.terminate()
+        else:
+            # Graceful termination
+            proc.terminate()
+
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout)
             logging.info("Script process terminated gracefully")
         except asyncio.TimeoutError:
             # Force kill if graceful termination failed
-            proc.kill()
+            if sys.platform != "win32" and proc.pid:
+                try:
+                    # Send SIGKILL to the process group
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, 9)  # SIGKILL
+                    logging.debug("Sent SIGKILL to process group %s", pgid)
+                except (ProcessLookupError, OSError):
+                    # Fall back to regular kill
+                    proc.kill()
+            else:
+                proc.kill()
             await proc.wait()
             logging.warning("Script process force-killed after timeout")
 

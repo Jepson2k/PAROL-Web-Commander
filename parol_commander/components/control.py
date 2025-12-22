@@ -35,6 +35,9 @@ class ControlPanel:
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
         self._joint_right_btns: dict[int, ui.button] = {}
+        self._joint_limit_btns: dict[
+            tuple[int, str], ui.button
+        ] = {}  # (joint_idx, "min"/"max") -> button
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
         # Jog state tracking
@@ -334,7 +337,7 @@ class ControlPanel:
             self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
             self._set_strong_disabled(self._joint_left_btns.get(j), not minus_allowed)
 
-    def refresh_cartesian_enablement(self) -> None:
+    def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons using CART_EN for current frame and mirror to 3D gizmo."""
         axis_order = [
             "X+",
@@ -380,6 +383,9 @@ class ControlPanel:
             self._set_strong_disabled(btn, is_editing)
         for btn in self._joint_right_btns.values():
             self._set_strong_disabled(btn, is_editing)
+        # Disable joint limit buttons (go-to-limit)
+        for btn in self._joint_limit_btns.values():
+            self._set_strong_disabled(btn, is_editing)
         # Disable cartesian slot elements
         for elem in self._cart_slot_elems.values():
             self._set_strong_disabled(elem, is_editing)
@@ -409,7 +415,7 @@ class ControlPanel:
         if is_pressed:
             motion_recorder.on_jog_start("joint", axis_info)
         else:
-            motion_recorder.on_jog_end()
+            asyncio.create_task(self._wait_and_record_jog_end())
 
         # Visual feedback target
         target = (
@@ -575,7 +581,7 @@ class ControlPanel:
         if is_pressed:
             motion_recorder.on_jog_start("cartesian", axis)
         else:
-            motion_recorder.on_jog_end()
+            asyncio.create_task(self._wait_and_record_jog_end())
 
         # Check backend-reported enablement for this axis in current frame
         axis_order = [
@@ -701,12 +707,6 @@ class ControlPanel:
 
         # Priority 1: TransformControls drag actively providing absolute poses
         if self._tcp_drag_active and self._tcp_latest_pose:
-            # Watchdog: If no drag events for 0.5s, assume drag ended (missed END event)
-            if time.time() - self._last_drag_event_ts > 0.5:
-                logging.debug("TCP Drag: Watchdog timeout - auto-ending drag")
-                self._handle_tcp_cartesian_move_end()
-                return
-
             # Only send if pose has changed (avoid flooding with duplicates)
             if self._tcp_last_sent_pose is not None:
                 # Compare with small epsilon for floating-point tolerance
@@ -803,11 +803,11 @@ class ControlPanel:
             t.active = True
 
     def _handle_tcp_cartesian_move_end(self) -> None:
-        """End of a TCP TransformControls drag: stop recording and possibly timer."""
+        """End of a TCP TransformControls drag: wait for motion to stop, then record."""
         logging.debug("TCP Drag: END event received")
         if self._tcp_drag_active:
-            motion_recorder.on_jog_end()
             self._tcp_drag_active = False
+            asyncio.create_task(self._wait_and_record_jog_end())
         # Clear last sent pose so next drag starts fresh
         self._tcp_last_sent_pose = None
         # If no cart axis buttons are pressed, allow timer to stop
@@ -815,6 +815,17 @@ class ControlPanel:
         if t:
             any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
             t.active = bool(any_pressed)
+
+    async def _wait_and_record_jog_end(self) -> None:
+        """Wait for robot motion to stop, then record the jog end position."""
+        try:
+            # Wait for motion to stop (non-blocking)
+            await self.client.wait_until_stopped(timeout=5.0, settle_window=0.2)
+            logging.debug("TCP Drag: Motion stopped, recording position")
+        except Exception as e:
+            logging.warning("TCP Drag: wait_until_stopped failed: %s", e)
+        # Record final position after motion has stopped
+        motion_recorder.on_jog_end()
 
     async def move_joint_to_angle(self, joint_index: int, target_deg: float) -> None:
         """Move a single joint to the specified angle (deg) while holding others."""
@@ -843,6 +854,10 @@ class ControlPanel:
 
     async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
         """Move to min or max joint limit for a specific joint while holding others."""
+        # Skip if in editing mode (target editor controls robot)
+        if robot_state.editing_mode:
+            return
+
         # Check if movement is allowed
         if not robot_state.simulator_active and not robot_state.connected:
             ui.notify(
@@ -885,7 +900,7 @@ class ControlPanel:
             else:
                 self.set_axis_orientation("Y", "X", "Z")
             # Apply enablement visuals for current frame
-            self.refresh_cartesian_enablement()
+            self.sync_cartesian_button_states()
 
             # Register Cartesian move callback for direct TCP position moves (primary approach)
             ui_state.urdf_scene.on_tcp_cartesian_move(self._handle_tcp_cartesian_move)
@@ -915,7 +930,7 @@ class ControlPanel:
                 # World frame: X horizontal (lr), Y vertical (ud1), Z vertical (ud2)
                 self.set_axis_orientation("Y", "X", "Z")
             # Apply enablement visuals for current frame
-            self.refresh_cartesian_enablement()
+            self.sync_cartesian_button_states()
             # Update TCP TransformControls space (local for TRF, world for WRF)
             ui_state.urdf_scene.set_tcp_transform_frame(new_frame)
         else:
@@ -1171,10 +1186,9 @@ class ControlPanel:
     def render_jog_content(self) -> None:
         """Render jog controls (tabs + grids) and settings."""
         with ui.tabs().props("dense") as jog_mode_tabs:
-            joint_tab = ui.tab("Joint Jog")
-            cart_tab = ui.tab("Cartesian Jog")
-            settings_tab = ui.tab("Settings")
-            settings_tab.mark("tab-settings")
+            joint_tab = ui.tab("Joint Jog").mark("tab-joint")
+            cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
+            settings_tab = ui.tab("Settings").mark("tab-settings")
         jog_mode_tabs.value = joint_tab
         self._jog_mode_tabs = jog_mode_tabs
 
@@ -1368,22 +1382,30 @@ class ControlPanel:
                             self._joint_left_btns[idx] = left_btn
                             self._joint_right_btns[idx] = right_btn
                         with ui.row().classes("justify-end gap-1"):
-                            ui.button(
-                                icon="first_page",
-                                on_click=lambda e, i=idx: asyncio.create_task(
-                                    self.go_to_joint_limit(i, "min")
-                                ),
-                            ).props("round dense").tooltip(
-                                "Move to minimum joint limit"
-                            ).mark(f"btn-j{idx + 1}-min-limit")
-                            ui.button(
-                                icon="last_page",
-                                on_click=lambda e, i=idx: asyncio.create_task(
-                                    self.go_to_joint_limit(i, "max")
-                                ),
-                            ).props("round dense").tooltip(
-                                "Move to maximum joint limit"
-                            ).mark(f"btn-j{idx + 1}-max-limit")
+                            min_btn = (
+                                ui.button(
+                                    icon="first_page",
+                                    on_click=lambda e, i=idx: asyncio.create_task(
+                                        self.go_to_joint_limit(i, "min")
+                                    ),
+                                )
+                                .props("round dense")
+                                .tooltip("Move to minimum joint limit")
+                                .mark(f"btn-j{idx + 1}-min-limit")
+                            )
+                            max_btn = (
+                                ui.button(
+                                    icon="last_page",
+                                    on_click=lambda e, i=idx: asyncio.create_task(
+                                        self.go_to_joint_limit(i, "max")
+                                    ),
+                                )
+                                .props("round dense")
+                                .tooltip("Move to maximum joint limit")
+                                .mark(f"btn-j{idx + 1}-max-limit")
+                            )
+                            self._joint_limit_btns[(idx, "min")] = min_btn
+                            self._joint_limit_btns[(idx, "max")] = max_btn
 
                 for i, n in enumerate(joint_names):
                     make_joint_row(i, n)

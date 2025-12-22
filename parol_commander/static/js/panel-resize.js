@@ -728,6 +728,12 @@
                     wrap.classList.remove(config.stateClasses.bottomOpenNonProgram);
                     wrap.style.removeProperty('height');
                 }
+
+                // Remove max-height constraint from program panel when bottom closes
+                const programPanel = getPanelById('program');
+                if (programPanel) {
+                    programPanel.style.removeProperty('max-height');
+                }
             }
         }
     }

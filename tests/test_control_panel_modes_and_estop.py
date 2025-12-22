@@ -14,79 +14,53 @@ from tests.helpers.wait import wait_for_page_ready
 
 
 @pytest.mark.integration
-async def test_home_requires_sim_or_connection(
-    user: User, robot_state, reset_robot_state
+async def test_home_command_behavior(
+    user: User, robot_state, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """HOME should be blocked when neither simulator nor hardware is active.
+    """HOME command should be blocked without connection, allowed with simulator.
 
-    We force both simulator_active and connected to False *after* the page
-    is loaded (to override the default auto-simulator behavior) and then
-    assert that an error notification is shown and no "Sent HOME" message
-    is emitted.
+    Tests both:
+    1. HOME is blocked when neither simulator nor hardware is active
+    2. HOME is allowed and sends command when simulator is active
     """
     await user.open("/")
     await wait_for_page_ready()
 
+    # --- Part 1: HOME blocked without connection ---
     # Override state after page load so HOME guard sees both flags as False
     robot_state.simulator_active = False
     robot_state.connected = False
 
-    # Click home button
     user.find(marker="btn-home").click()
-
-    # Give time for handler
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0)
 
     # Should see an error notification
     await user.should_see("Robot mode requires a hardware connection")
-
     # And we should not see the success message
     assert not any("Sent HOME" in m for m in user.notify.messages)
 
-
-@pytest.mark.integration
-async def test_home_sends_command_in_simulator_mode(
-    user: User, robot_state, reset_robot_state, caplog: pytest.LogCaptureFixture
-) -> None:
-    """HOME should be sent successfully when simulator mode is active.
-
-    Verifies that when simulator is active, HOME commands are allowed and
-    the corresponding log message is emitted.
-    """
-    # Enable simulator mode
-    await user.open("/")
-    await wait_for_page_ready()
+    # --- Part 2: HOME allowed with simulator ---
+    # Enable simulator mode and try again
     robot_state.simulator_active = True
 
-    # Click home button
     user.find(marker="btn-home").click()
-
-    # Give time for handler
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0)
 
     # Assert that success log message was emitted
     assert any("HOME sent" in r.message for r in caplog.get_records("call"))
 
 
 @pytest.mark.integration
-async def test_digital_estop_shows_dialog(
-    user: User, robot_state, reset_robot_state
-) -> None:
-    """Clicking E-STOP should show the digital E-STOP dialog.
-
-    We keep this test focused on the E-STOP activation path: STOP command
-    and dialog appearance. The resume/enable flow is exercised implicitly
-    in normal app usage and would be fragile to assert in tests that rely
-    on the real controller.
-    """
+async def test_digital_estop_shows_dialog(user: User, robot_state) -> None:
+    """Clicking E-STOP should show the digital E-STOP dialog."""
     await user.open("/")
     await wait_for_page_ready()
 
     # Click E-STOP button
     user.find(marker="btn-estop").click()
 
-    # Give time for handler
-    await asyncio.sleep(0.3)
+    # Yield to handler
+    await asyncio.sleep(0)
 
     # Should see E-STOP notification and dialog
     await user.should_see("Digital E-STOP activated - robot disabled")
@@ -126,8 +100,8 @@ while True:
         on_stderr=lambda line: None,
     )
 
-    # Give it time to start
-    await asyncio.sleep(0.2)
+    # Yield to handler
+    await asyncio.sleep(0)
 
     # Verify script is running
     assert handle["proc"].returncode is None, "Expected script to still be running"

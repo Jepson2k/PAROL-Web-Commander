@@ -1,44 +1,113 @@
+"""Tests for UI enablement behavior based on robot state and limits."""
+
 import asyncio
 import pytest
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_page_ready
+from tests.helpers.wait import (
+    wait_for_page_ready,
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    wait_for_motion_stable,
+    wait_for_motion_start,
+)
 
 
 @pytest.mark.integration
-async def test_cartesian_disabled_blocks_jog(user: User, monkeypatch):
-    """When CART_EN reports axis disabled, ControlPanel should ignore presses (no jog sent)."""
-    # Open app
+async def test_joint_at_limit_disables_direction(user: User, robot_state) -> None:
+    """Test that when a joint reaches its limit, the jog button for that direction is disabled.
+
+    When a joint is at or near its maximum limit, the positive direction
+    button should be disabled to prevent motion beyond the limit.
+    """
+    from parol_commander.constants import JOINT_LIMITS_DEG
+
     await user.open("/")
     await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
 
-    # Set BOTH WRF and TRF arrays to all zeros to disable all cart axes
-    # (WRF is the default frame, so we must disable WRF axes)
-    from parol_commander.state import robot_state
+    # Get J1 limits
+    j1_min, j1_max = JOINT_LIMITS_DEG[0]
 
-    robot_state.cart_en_wrf = [0] * 12
-    robot_state.cart_en_trf = [0] * 12
-
-    # Patch AsyncRobotClient.jog_cartesian to record calls
-    calls = []
-
-    async def _record_jog_cartesian(self, frame, axis, speed_percentage, duration):  # type: ignore[no-redef]
-        calls.append((frame, axis, speed_percentage, duration))
-        return True
-
-    from parol6.client.async_client import AsyncRobotClient
-
-    monkeypatch.setattr(
-        AsyncRobotClient, "jog_cartesian", _record_jog_cartesian, raising=True
+    # Move J1 to its max limit using the limit button
+    user.find(marker="btn-j1-max-limit").click()
+    await wait_for_motion_start(robot_state)
+    final_j1 = await wait_for_motion_stable(
+        lambda: robot_state.angles[0], timeout_s=15.0
     )
 
-    # Try to press X+
-    user.find(marker="axis-xplus").trigger("mousedown")
+    # Verify we're at or near max limit
+    assert (
+        abs(final_j1 - j1_max) < 2.0
+    ), f"J1 should be near max limit {j1_max}°, got {final_j1:.2f}°"
+
+    # At max limit, positive direction should be blocked
+    # The robot's joint_en array should reflect this
+    # J1 positive enable is at index 0 (even indices are positive)
+    # Note: joint_en updates may take a moment
+    await asyncio.sleep(0.1)
+
+    # Check that J1+ is disabled (index 0 in joint_en)
+    j1_plus_enabled = robot_state.joint_en[0] if len(robot_state.joint_en) > 0 else 1
+    assert (
+        j1_plus_enabled == 0
+    ), f"J1+ should be disabled at max limit, joint_en[0]={j1_plus_enabled}"
+
+
+@pytest.mark.integration
+async def test_cartesian_at_workspace_limit_disables_axis(
+    user: User, robot_state
+) -> None:
+    """Test that when near workspace limits, cartesian axis buttons become disabled.
+
+    When the robot TCP approaches the edge of the reachable workspace,
+    certain cartesian directions should become disabled.
+    """
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
+
+    # Extend the arm by moving J2 to its limit (stretches arm outward)
+    # This quickly reaches the cartesian workspace boundary
+    user.find(marker="btn-j2-max-limit").click()
+    await wait_for_motion_start(robot_state)
+    await wait_for_motion_stable(lambda: robot_state.angles[1], timeout_s=15.0)
+
+    # Wait for enablement arrays to update
     await asyncio.sleep(0.2)
-    user.find(marker="axis-xplus").trigger("mouseup")
 
-    # Give control loop a moment
-    await asyncio.sleep(0.3)
+    # At extended position, some cartesian directions should be disabled
+    # The cart_en_wrf array contains enable flags for each axis
+    # Check that at least one direction is disabled (value 0)
+    disabled_count = sum(1 for v in robot_state.cart_en_wrf if v == 0)
+    assert disabled_count > 0, (
+        f"At extended arm position, some cartesian directions should be disabled. "
+        f"cart_en_wrf={list(robot_state.cart_en_wrf)}"
+    )
 
-    # Expect no jog_cartesian calls due to disabled axis
-    assert calls == []
+
+@pytest.mark.integration
+async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
+    """Test that joint enable flags update during motion.
+
+    As the robot moves, the joint_en array should update to reflect
+    which directions are still valid for motion.
+    """
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
+
+    # Verify joint_en array has expected structure (12 values: 6 joints * 2 directions)
+    assert (
+        len(robot_state.joint_en) == 12
+    ), f"Expected 12 joint_en values, got {len(robot_state.joint_en)}"
+
+    # At home position, most directions should be enabled (value 1)
+    # At least one direction per joint should be enabled
+    enabled_count = sum(1 for v in robot_state.joint_en if v == 1)
+    assert (
+        enabled_count >= 6
+    ), f"At home position, at least 6 directions should be enabled, got {enabled_count}"
