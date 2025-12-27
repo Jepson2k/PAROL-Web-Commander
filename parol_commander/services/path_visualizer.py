@@ -7,6 +7,7 @@ execution. Results are collected and applied to SimulationState in the main proc
 
 import asyncio
 import logging
+import os
 import traceback
 from types import ModuleType
 from typing import Any
@@ -23,6 +24,7 @@ from parol_commander.state import (
     editor_tabs_state,
 )
 from parol_commander.common.logging_config import TRACE_ENABLED
+from parol_commander.common.theme import MOVE_TYPE_COLORS
 
 logger = logging.getLogger(__name__)
 
@@ -31,19 +33,36 @@ MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
 
-# Color constants for different move types (CVD-aware palette)
-MOVE_TYPE_COLORS = {
-    "cartesian": "#2faf7a",  # Green - Cartesian/linear moves
-    "move_cartesian": "#2faf7a",
-    "joints": "#4a63e0",  # Blue - Joint moves
-    "move_joints": "#4a63e0",
-    "pose": "#e67e22",  # Orange - Pose/point targets
-    "move_pose": "#e67e22",
-    "smooth": "#9b59b6",  # Purple - Smooth/interpolated moves
-    "smooth_cartesian": "#9b59b6",
-    "invalid": "#e74c3c",  # Red - Invalid/error moves
-    "unknown": "#95a5a6",  # Gray - Unknown move types
-}
+def _warm_worker() -> bool:
+    """Import heavy modules in subprocess worker. Called once per worker at startup."""
+    # These imports take ~3 seconds but only happen once per worker process
+    import parol6.PAROL6_ROBOT  # noqa: F401 - triggers RTB/spatialmath imports
+    from parol_commander.services.dry_run_client import DryRunRobotClient  # noqa: F401
+
+    return True
+
+
+async def warm_process_pool() -> None:
+    """Pre-warm all process pool workers by importing heavy modules.
+
+    This should be called once at app startup. Each worker process will import
+    roboticstoolbox/spatialmath once, and subsequent simulations will be fast
+    since workers are reused by ProcessPoolExecutor.
+    """
+    run.setup()  # Ensure pool exists
+
+    # ProcessPoolExecutor uses cpu_count() workers by default
+    worker_count = os.cpu_count() or 4
+    logger.info("Warming %d process pool workers (importing RTB)...", worker_count)
+
+    try:
+        # Run warm-up in parallel across all workers
+        # Each worker will import RTB once and stay warm
+        futures = [run.cpu_bound(_warm_worker) for _ in range(worker_count)]
+        await asyncio.gather(*futures)
+        logger.info("Process pool workers warmed successfully")
+    except Exception as e:
+        logger.warning("Failed to warm process pool workers: %s", e)
 
 
 def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:

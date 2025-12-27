@@ -9,7 +9,7 @@ import sys
 import time
 import contextlib
 import argparse
-from typing import cast
+from typing import cast, Callable
 from spatialmath import SO3
 import numpy as np
 
@@ -30,9 +30,10 @@ from parol_commander.common.theme import (
     get_theme,
     inject_layout_css,
     PANEL_RESIZE_CONFIG,
+    SceneColors,
+    StatusColors,
 )
 from parol_commander.constants import (
-    PAROL6_OFFICIAL_DOC_URL,
     config,
 )
 
@@ -48,11 +49,14 @@ from parol_commander.components.settings import SettingsContent
 from parol_commander.components.control import ControlPanel
 from parol_commander.components.readout import ReadoutPanel
 from parol_commander.components.editor import EditorPanel
+from parol_commander.components.help_menu import help_menu
 from parol_commander.services.urdf_scene import (
     UrdfScene,
     UrdfSceneConfig,
     ToolPose,
 )
+from parol_commander.services.keybindings import keybindings_manager, Keybinding
+from parol_commander.services.path_visualizer import warm_process_pool
 from importlib.resources import files as pkg_files
 
 
@@ -126,8 +130,14 @@ async def initialize_urdf_scene() -> None:
         # Detect theme and set appropriate colors
         mode = get_theme()
         is_dark = mode != "light"
-        bg_color = "#212121" if is_dark else "#eeeeee"
-        material_color = "#9ca3af" if is_dark else "#666666"
+        bg_color = (
+            SceneColors.BACKGROUND_DARK_HEX
+            if is_dark
+            else SceneColors.BACKGROUND_LIGHT_HEX
+        )
+        material_color = (
+            SceneColors.MATERIAL_DARK_HEX if is_dark else SceneColors.MATERIAL_LIGHT_HEX
+        )
 
         # Create tool pose resolver to bridge PAROL6 TOOL_CONFIGS
         def tool_pose_resolver(tool: str) -> ToolPose | None:
@@ -161,7 +171,7 @@ async def initialize_urdf_scene() -> None:
             # Appearance settings
             material=material_color,
             background_color=bg_color,
-            sim_color="#c77d28",
+            sim_color=SceneColors.SIM_AMBER_HEX,
             sim_opacity=0.9,
             # Kinematic mapping settings (defaults are fine for PAROL6)
         )
@@ -204,9 +214,15 @@ async def initialize_urdf_scene() -> None:
 
             # Add large world coordinate frame at origin (fixed)
             world_axes_size = 0.30
-            scene.line([0, 0, 0], [world_axes_size, 0, 0]).material("#ff0000")  # X
-            scene.line([0, 0, 0], [0, world_axes_size, 0]).material("#00ff00")  # Y
-            scene.line([0, 0, 0], [0, 0, world_axes_size]).material("#0000ff")  # Z
+            scene.line([0, 0, 0], [world_axes_size, 0, 0]).material(
+                SceneColors.AXIS_X_HEX
+            )  # X
+            scene.line([0, 0, 0], [0, world_axes_size, 0]).material(
+                SceneColors.AXIS_Y_HEX
+            )  # Y
+            scene.line([0, 0, 0], [0, 0, world_axes_size]).material(
+                SceneColors.AXIS_Z_HEX
+            )  # Z
 
     # Cache joint names for mapping
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
@@ -351,7 +367,7 @@ async def start_controller(com_port: str | None) -> None:
             controller_status_label.text = "CTRL"
             if ctrl_tooltip:
                 ctrl_tooltip.text = tip
-            controller_status_label.style("color: #21BA45")
+            controller_status_label.style(f"color: {StatusColors.POSITIVE}")
         logging.info("Controller started")
     except Exception as e:
         logging.error("Start controller failed: %s", e)
@@ -394,7 +410,11 @@ async def check_ping() -> None:
         robot_status_label.text = "ROBOT"
         if robot_tooltip:
             robot_tooltip.text = "connected" if last_ping_ok else "disconnected"
-        robot_status_label.style("color: #21BA45" if last_ping_ok else "color: #DB2828")
+        robot_status_label.style(
+            f"color: {StatusColors.POSITIVE}"
+            if last_ping_ok
+            else f"color: {StatusColors.NEGATIVE}"
+        )
 
 
 # --------------- UI Update Functions ---------------
@@ -517,6 +537,8 @@ def build_page_content() -> None:
     ui.add_head_html(
         '<script type="module" defer src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>'
     )
+    # Add keybindings focus detection script
+    ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
 
     with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
         with ui.column().classes("absolute inset-0 z-0"):
@@ -528,18 +550,15 @@ def build_page_content() -> None:
 
             ui.timer(0.05, _init, once=True)
 
-        # Main content area - flex column to share space between left and bottom panels
+        # Main content area - contains overlay panels and UI elements
         with (
-            ui.column()
-            .classes("absolute inset-0 z-20 flex flex-col")
-            .style("pointer-events: none;")
+            ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
         ):
-            # Left-side vertical tabs and panels - grows to fill available space
-            with (
-                ui.row()
-                .classes("flex-1 min-h-0 relative")
-                .style("pointer-events: none;")
-            ):
+            # Wrapper div for panel coupling state (CSS class toggling)
+            with ui.element("div").classes("panels-wrap absolute inset-0 z-30").style(
+                "pointer-events: none;"
+            ) as panels_wrap:
+                # Top tab bar - positioned independently
                 with ui.tabs().props("vertical").classes(
                     "side-tab-bar absolute left-0 top-0 z-40"
                 ) as side_tabs:
@@ -554,190 +573,149 @@ def build_page_content() -> None:
                         ui.image("/static/icons/robotic-claw.svg").classes(
                             "gripper-icon"
                         ).style(
-                            "width: 24px; height: 24px; transform: rotate(180deg); filter: brightness(0) invert(1);"
+                            "width: 24px; height: 24px; transform: rotate(180deg); filter: brightness(0) invert(1) opacity(0.8);"
                         )
                     gripper_tab.mark("tab-gripper")
 
-                # Left content wrapper: reserve space for tabs and fill remaining area
-                # z-30 is lower than tab bar (z-40) so panels slide out from underneath
-                # pl-[64px] = tab bar width (52px) + tab bar margin (12px)
-                # pt-[12px] pb-[12px] match the tab bar's margins
-                with ui.column().classes(
-                    "left-wrap pl-[58px] w-full h-full overflow-hidden z-30 pt-[12px] pb-[12px]"
-                ).style("pointer-events: none;") as left_wrap:
-                    with ui.tab_panels(side_tabs, value=None).props(
-                        "vertical animated transition-prev=slide-right transition-next=slide-right"
-                    ).classes("left-panels h-auto max-h-full overflow-auto z-30").style(
-                        "pointer-events: none;"
-                    ) as left_panels:
+                # Top panels container - absolute positioned, anchored to top
+                with ui.tab_panels(side_tabs, value=None).props(
+                    "vertical animated transition-prev=slide-right transition-next=slide-right"
+                ).classes(
+                    "left-panels-container top-panels-container z-30"
+                ) as top_panels:
 
-                        def close_left_panels():
-                            side_tabs.value = None
-                            left_panels.value = None
-                            # Clean up layout classes when closing top panel
-                            left_wrap.classes(remove="bottom-open")
-                            left_wrap.classes(remove="bottom-open-non-program")
-                            # Track program panel visibility for tab flash
-                            ui_state.program_panel_visible = False
+                    def close_top_panels():
+                        side_tabs.value = None
+                        top_panels.value = None
+                        # Clean up layout classes when closing top panel
+                        panels_wrap.classes(remove="coupled")
+                        # Track program panel visibility for tab flash
+                        ui_state.program_panel_visible = False
 
-                        with ui.tab_panel("program").classes(
-                            "overlay-card overflow-hidden program-panel resizable-tab p-0"
-                        ):
-                            # Editor panel handles its own header row with title, tabs, and close button
-                            editor_panel.build(close_callback=close_left_panels)
-                            # Resize handles - JS module will attach events
-                            ui.element("div").classes("resize-handle-right")
-                            ui.element("div").classes("resize-handle-bottom")
-                            ui.element("div").classes("resize-handle-corner")
+                    with ui.tab_panel("program").classes(
+                        "overlay-card program-panel resizable-panel p-0"
+                    ):
+                        # Editor panel handles its own header row with title, tabs, and close button
+                        editor_panel.build(close_callback=close_top_panels)
+                        # Resize handles - JS module will attach events
+                        ui.element("div").classes("resize-handle-right")
+                        ui.element("div").classes("resize-handle-bottom")
+                        ui.element("div").classes("resize-handle-corner")
 
-                        with ui.tab_panel("io").classes("overlay-card overflow-hidden"):
-                            with ui.row().classes("w-full"):
-                                ui.label("I/O").classes("text-lg font-medium")
-                                ui.space()
-                                ui.button(
-                                    icon="close", on_click=close_left_panels
-                                ).props("flat round dense color=white")
-                            with ui.element("div").classes(
-                                "overflow-y-auto io-gripper-content"
-                            ):
-                                io_page = io_page or IoPage(client)
-                                io_page.build()
-
-                        with ui.tab_panel("gripper").classes(
-                            "overlay-card overflow-hidden"
-                        ):
-                            with ui.row().classes("w-full"):
-                                ui.label("Gripper").classes("text-lg font-medium")
-                                ui.space()
-                                ui.button(
-                                    icon="close", on_click=close_left_panels
-                                ).props("flat round dense color=white")
-                            with ui.element("div").classes(
-                                "overflow-y-auto io-gripper-content"
-                            ):
-                                gripper_page = gripper_page or GripperPage(client)
-                                gripper_page.build()
-
-                        # Bind left tab changes to enable only when a left panel is open
-                        def update_left_layout():
-                            has_left = bool(side_tabs.value)
-                            if has_left:
-                                # Enable interactions inside the left panels area
-                                left_wrap.style("pointer-events: auto;")
-                                left_panels.style("pointer-events: auto;")
-                            else:
-                                # Disable the entire left content area so clicks pass through to the scene
-                                left_wrap.style("pointer-events: none;")
-                                left_panels.style("pointer-events: none;")
-
-                            # Track program panel visibility for tab flash
-                            ui_state.program_panel_visible = (
-                                side_tabs.value == "program"
+                    with ui.tab_panel("io").classes("overlay-card overflow-hidden"):
+                        with ui.row().classes("w-full"):
+                            ui.label("I/O").classes("text-lg font-medium")
+                            ui.space()
+                            ui.button(icon="close", on_click=close_top_panels).props(
+                                "flat round dense color=white"
                             )
+                        io_page = io_page or IoPage(client)
+                        io_page.build()
 
-                        side_tabs.on(
-                            "update:model-value", lambda e: update_left_layout()
-                        )
-
-                        # Handle tab switching via PanelResize module
-                        def handle_tab_change(e):
-                            to_tab = e.args or ""
-                            ui.run_javascript(
-                                f"PanelResize.onTabChange('top', '{to_tab}')"
+                    with ui.tab_panel("gripper").classes(
+                        "overlay-card overflow-hidden"
+                    ):
+                        with ui.row().classes("w-full"):
+                            ui.label("Gripper").classes("text-lg font-medium")
+                            ui.space()
+                            ui.button(icon="close", on_click=close_top_panels).props(
+                                "flat round dense color=white"
                             )
+                        gripper_page = gripper_page or GripperPage(client)
+                        gripper_page.build()
 
-                        side_tabs.on("update:model-value", handle_tab_change)
+                    # Bind top panel tab changes for visibility tracking
+                    def update_top_layout():
+                        # Track program panel visibility for tab flash
+                        ui_state.program_panel_visible = side_tabs.value == "program"
 
-                        # Initial sync to avoid invisible overlay blocking scene
-                        update_left_layout()
+                    side_tabs.on("update:model-value", lambda e: update_top_layout())
 
-            # Bottom vertical tabs and panels - anchored at bottom-left
-            # Tabs positioned to match top tabs: side-tab-bar has margin: 12px
-            with ui.tabs().props("vertical").classes(
-                "side-tab-bar absolute bottom-0 left-0 z-50"
-            ) as bottom_tabs:
-                resp_tab = ui.tab(name="response", label="", icon="article")
-                resp_tab.tooltip("Log")
-                resp_tab.mark("tab-log")
-                help_tab = ui.tab(name="help", label="", icon="help_outline")
-                help_tab.tooltip("Help")
-                help_tab.mark("tab-help")
+                    # Handle tab switching via PanelResize module
+                    def handle_tab_change(e):
+                        to_tab = e.args or ""
+                        ui.run_javascript(f"PanelResize.onTabChange('top', '{to_tab}')")
 
-            # Panels positioned above tabs - styling in theme.py .bottom-panels
-            with ui.tab_panels(bottom_tabs, value=None).props(
-                "vertical animated transition-prev=slide-up transition-next=slide-down"
-            ).classes("bottom-panels") as bottom_panels:
+                    side_tabs.on("update:model-value", handle_tab_change)
 
-                def close_bottom_panels():
-                    bottom_tabs.value = None
-                    bottom_panels.value = None
-                    # Update classes to restore layout (CSS handles styling)
-                    left_wrap.classes(remove="bottom-open")
-                    bottom_panels.classes(remove="is-open")
+                    # Initial sync to avoid invisible overlay blocking scene
+                    update_top_layout()
 
-                with ui.tab_panel("response").classes(
-                    "overlay-card response-panel resizable-tab"
-                ):
-                    with ui.row().classes("w-full"):
-                        ui.label("Log").classes("text-lg font-medium")
-                        ui.space()
-                        ui.button(icon="close", on_click=close_bottom_panels).props(
-                            "flat round dense color=white"
+                # Bottom vertical tabs and panels - anchored at bottom-left
+                # Tabs positioned to match top tabs: side-tab-bar has margin: 12px
+                with ui.tabs().props("vertical").classes(
+                    "side-tab-bar absolute bottom-0 left-0 z-50"
+                ) as bottom_tabs:
+                    resp_tab = ui.tab(name="response", label="", icon="article")
+                    resp_tab.tooltip("Log")
+                    resp_tab.mark("tab-log")
+                    # Help tab opens dialog instead of panel
+                    help_tab = ui.tab(name="help", label="", icon="help_outline")
+                    help_tab.tooltip("Help")
+                    help_tab.mark("tab-help")
+                    help_tab.on("click", lambda: help_menu.show_help_dialog())
+
+                # Panels positioned above tabs - styling in theme.py .bottom-panels-container
+                with ui.tab_panels(bottom_tabs, value=None).props(
+                    "vertical animated transition-prev=slide-up transition-next=slide-down"
+                ).classes(
+                    "left-panels-container bottom-panels-container"
+                ) as bottom_panels:
+
+                    def close_bottom_panels():
+                        bottom_tabs.value = None
+                        bottom_panels.value = None
+                        # Update classes to restore layout
+                        panels_wrap.classes(remove="coupled")
+
+                    with ui.tab_panel("response").classes(
+                        "overlay-card response-panel resizable-panel"
+                    ):
+                        with ui.row().classes("w-full"):
+                            ui.label("Log").classes("text-lg font-medium")
+                            ui.space()
+                            ui.button(icon="close", on_click=close_bottom_panels).props(
+                                "flat round dense color=white"
+                            )
+                        response_log = (
+                            ui.log(max_lines=1000)
+                            .classes("w-full h-full")
+                            .classes("no-x-scroll")
+                            .style(
+                                "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
+                            )
                         )
-                    response_log = (
-                        ui.log(max_lines=1000)
-                        .classes("w-full h-full")
-                        .classes("no-x-scroll")
-                        .style(
-                            "min-height: 200px !important; width: 100% !important; background: rgba(0, 0, 0, 0.65); border-radius: 10px;"
-                        )
-                    )
-                    # Resize handles - JS module will attach events
-                    ui.element("div").classes("resize-handle-top")
-                    ui.element("div").classes("resize-handle-right")
-                    ui.element("div").classes("resize-handle-corner")
+                        # Resize handles - JS module will attach events
+                        ui.element("div").classes("resize-handle-top")
+                        ui.element("div").classes("resize-handle-right")
+                        ui.element("div").classes("resize-handle-corner")
 
-                with (
-                    ui.tab_panel("help")
-                    .classes("overlay-card")
-                    .style("height: 40vh; width: calc(50vw - 58px);")
-                ):
-                    with ui.row().classes("w-full"):
-                        ui.label("Help").classes("text-lg font-medium")
-                        ui.space()
-                        ui.button(icon="close", on_click=close_bottom_panels).props(
-                            "flat round dense color=white"
-                        )
-                    ui.link(
-                        "Open PAROL Commander Docs",
-                        PAROL6_OFFICIAL_DOC_URL,
-                        new_tab=True,
-                    ).classes("q-my-sm")
-
-                # Bind bottom tab changes to adjust layout via CSS classes
-                def update_bottom_layout():
-                    is_open = bool(bottom_tabs.value)
-                    # Check which top tab is currently active
-                    current_top_tab = side_tabs.value
-                    if is_open:
-                        # Only add bottom-open if program tab is active
-                        # For IO/Gripper tabs, use bottom-open-non-program instead
-                        if current_top_tab == "program":
-                            left_wrap.classes(add="bottom-open")
-                            left_wrap.classes(remove="bottom-open-non-program")
+                    # Bind bottom tab changes to adjust layout via CSS classes
+                    def update_bottom_layout():
+                        is_open = bool(bottom_tabs.value)
+                        # Check if a resizable top panel is active (currently only "program")
+                        top_is_resizable = side_tabs.value == "program"
+                        if is_open and top_is_resizable:
+                            # Couple heights when both resizable panels are open
+                            panels_wrap.classes(add="coupled")
                         else:
-                            left_wrap.classes(add="bottom-open-non-program")
-                            left_wrap.classes(remove="bottom-open")
-                        bottom_panels.classes(add="is-open")
-                    else:
-                        left_wrap.classes(remove="bottom-open")
-                        left_wrap.classes(remove="bottom-open-non-program")
-                        bottom_panels.classes(remove="is-open")
+                            panels_wrap.classes(remove="coupled")
 
-                bottom_tabs.on("update:model-value", lambda _: update_bottom_layout())
+                    bottom_tabs.on(
+                        "update:model-value", lambda _: update_bottom_layout()
+                    )
 
-                # Initial sync on load to avoid stale half-height state
-                update_bottom_layout()
+                    # Handle tab switching via PanelResize module
+                    def handle_bottom_tab_change(e):
+                        to_tab = e.args or ""
+                        ui.run_javascript(
+                            f"PanelResize.onTabChange('bottom', '{to_tab}')"
+                        )
+
+                    bottom_tabs.on("update:model-value", handle_bottom_tab_change)
+
+                    # Initial sync on load to avoid stale half-height state
+                    update_bottom_layout()
 
         # Top-right HUD: Pose readouts
         readout_panel.build("tr")
@@ -749,6 +727,235 @@ def build_page_content() -> None:
         ui.run_javascript(f"PanelResize.configure({json.dumps(PANEL_RESIZE_CONFIG)})")
         # Signal app ready after NiceGUI finishes rendering
         ui.timer(0.5, lambda: ui.run_javascript("PanelResize.onAppReady()"), once=True)
+
+    # Set up global keybindings
+    _setup_keybindings()
+
+
+def _setup_keybindings() -> None:
+    """Set up global keyboard shortcuts and focus detection."""
+    # Add global keyboard handler
+    ui.keyboard(on_key=keybindings_manager.handle_key)
+
+    # Set up JavaScript callback for focus detection
+    def on_focus_change(focused: bool) -> None:
+        keybindings_manager.set_editor_focused(focused)
+
+    # Expose the callback to JavaScript and initialize the focus detector
+    ui.run_javascript(
+        """
+        if (window.KeybindingsFocusDetector) {
+            window.KeybindingsFocusDetector.init(function(focused) {
+                // Send focus state to Python
+                emitEvent('keybindings_focus_change', { focused: focused });
+            });
+        }
+        """
+    )
+
+    # Listen for focus change events from JavaScript
+    ui.on(
+        "keybindings_focus_change",
+        lambda e: on_focus_change(e.args.get("focused", False)),
+    )
+
+    # Register all keybindings
+    _register_keybindings()
+
+    # Set up first-time tutorial dialog
+    _setup_first_time_tutorial()
+
+
+def _setup_first_time_tutorial() -> None:
+    """Set up the first-time tutorial dialog for new users."""
+    # Listen for the event to show the first-time tutorial
+    ui.on("show_first_time_tutorial", lambda _: help_menu.show_dialog())
+
+    # Capture client context for background task
+    client = ui.context.client
+
+    # Check if this is a first visit after a short delay (let page render first)
+    async def check_first_visit():
+        with client:
+            help_menu.check_first_visit()
+
+    asyncio.create_task(check_first_visit())
+
+
+def _register_keybindings() -> None:
+    """Register all global keybindings."""
+
+    # Robot Control
+    keybindings_manager.register(
+        Keybinding(
+            key="h",
+            display="H",
+            description="Home robot",
+            action=lambda: asyncio.create_task(control_panel.send_home()),
+            category="Robot Control",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="Escape",
+            display="Esc",
+            description="Emergency Stop",
+            action=lambda: asyncio.create_task(control_panel.on_estop_click()),
+            category="Robot Control",
+        )
+    )
+
+    # Playback Controls
+    keybindings_manager.register(
+        Keybinding(
+            key=" ",
+            display="Space",
+            description="Play/Pause",
+            action=lambda: asyncio.create_task(editor_panel._toggle_play()),
+            category="Playback",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="s",
+            display="S",
+            description="Step forward",
+            action=lambda: editor_panel._step_forward(),
+            category="Playback",
+            # Only active when script is running
+            enabled_check=lambda: editor_panel.script_running,
+        )
+    )
+
+    # Cartesian Jog - WASD + Q/E
+    # These are holdable: click = single step, hold = continuous jog
+    _register_cartesian_jog_keybindings()
+
+    # Speed Control
+    keybindings_manager.register(
+        Keybinding(
+            key="]",
+            display="]",
+            description="Increase jog speed",
+            action=_increase_jog_speed,
+            category="Speed Control",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="[",
+            display="[",
+            description="Decrease jog speed",
+            action=_decrease_jog_speed,
+            category="Speed Control",
+        )
+    )
+
+    # Target insertion
+    keybindings_manager.register(
+        Keybinding(
+            key="t",
+            display="T",
+            description="Add target at current position",
+            action=lambda: ui_state.urdf_scene._show_unified_target_editor(
+                use_click_position=False
+            )
+            if ui_state.urdf_scene
+            else None,
+            category="Recording",
+        )
+    )
+
+
+def _register_cartesian_jog_keybindings() -> None:
+    """Register WASD + Q/E keybindings for cartesian jogging."""
+    # Map keys to axes: W/S = Y, A/D = X, Q/E = Z
+    jog_key_map = {
+        "w": "Y+",
+        "s": "Y-",
+        "a": "X-",
+        "d": "X+",
+        "q": "Z-",
+        "e": "Z+",
+    }
+
+    for key, axis in jog_key_map.items():
+        # S key is context-aware: jog when not running, step when running
+        enabled_check = (
+            (lambda: not editor_panel.script_running) if key == "s" else None
+        )
+
+        keybindings_manager.register(
+            Keybinding(
+                key=key,
+                display=key.upper(),
+                description=f"Jog {axis}",
+                action=_make_jog_action(axis),
+                on_release=_make_jog_release(axis),
+                category="Cartesian Jog",
+                holdable=True,
+                enabled_check=enabled_check,
+            )
+        )
+
+
+def _make_jog_action(axis: str) -> Callable:
+    """Create a jog action callback for the given axis."""
+
+    def action(is_press: bool = True, is_click: bool = False) -> None:
+        _handle_jog_key(axis, is_press, is_click)
+
+    return action
+
+
+def _make_jog_release(axis: str) -> Callable:
+    """Create a jog release callback for the given axis."""
+
+    def release() -> None:
+        _handle_jog_key_release(axis)
+
+    return release
+
+
+def _handle_jog_key(axis: str, is_press: bool = True, is_click: bool = False) -> None:
+    """Handle jog key press/click for cartesian movement."""
+    if is_click:
+        # Single step movement
+        asyncio.create_task(control_panel.set_axis_pressed(axis, True))
+
+        # Small delay then release
+        async def release():
+            await asyncio.sleep(0.05)
+            await control_panel.set_axis_pressed(axis, False)
+
+        asyncio.create_task(release())
+    elif is_press:
+        # Start continuous jog
+        asyncio.create_task(control_panel.set_axis_pressed(axis, True))
+
+
+def _handle_jog_key_release(axis: str) -> None:
+    """Handle jog key release to stop continuous jogging."""
+    asyncio.create_task(control_panel.set_axis_pressed(axis, False))
+
+
+def _increase_jog_speed() -> None:
+    """Increase jog speed by 10%."""
+    current = ui_state.jog_speed
+    new_speed = min(100, current + 10)
+    ui_state.jog_speed = new_speed
+    ui.notify(f"Jog speed: {new_speed}%", position="bottom-right", timeout=1000)
+
+
+def _decrease_jog_speed() -> None:
+    """Decrease jog speed by 10%."""
+    current = ui_state.jog_speed
+    new_speed = max(1, current - 10)
+    ui_state.jog_speed = new_speed
+    ui.notify(f"Jog speed: {new_speed}%", position="bottom-right", timeout=1000)
 
 
 # Guard against duplicate startup/shutdown handler registration during tests
@@ -773,6 +980,11 @@ def _register_handlers() -> None:
         is treated as a hard error so tests cannot silently proceed in a bad state.
         """
         global server_manager
+
+        # Pre-warm process pool workers with RTB imports (runs in background)
+        # This makes subsequent path visualizations fast since workers are reused
+        asyncio.create_task(warm_process_pool())
+
         # Start controller and streaming on server startup
         try:
             port = ng_app.storage.general.get("com_port", "")
@@ -1088,6 +1300,11 @@ def main():
     parser.add_argument(
         "-q", "--quiet", action="store_true", help="Enable WARNING logging"
     )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload on file changes (dev mode)",
+    )
     args, _ = parser.parse_known_args()
 
     # Apply CLI overrides to config (these take precedence over env vars)
@@ -1118,7 +1335,8 @@ def main():
     control_panel = ControlPanel(client)
     readout_panel = ReadoutPanel()
     editor_panel = EditorPanel(client)
-    # Store editor_panel in ui_state so control.py can access it for script stopping
+    # Store panels in ui_state for cross-module access
+    ui_state.control_panel = control_panel
     ui_state.editor_panel = editor_panel
     io_page = None
     gripper_page = None
@@ -1135,7 +1353,7 @@ def main():
         title="PAROL6 NiceGUI Commander",
         host=config.server_host,
         port=config.server_port,
-        reload=False,
+        reload=args.reload,
         show=False,
         loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",

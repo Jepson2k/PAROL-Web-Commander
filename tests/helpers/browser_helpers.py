@@ -119,6 +119,73 @@ def close_panel(screen: "Screen", panel_class: str) -> None:
     close_buttons[-1].click()
 
 
+def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
+    """Dismiss any open dialogs by clicking the backdrop or pressing Escape.
+
+    Waits for the tutorial dialog (which appears ~1s after page load) to appear,
+    dismisses it, then sets localStorage to prevent future dialogs.
+
+    Args:
+        screen: Selenium screen fixture
+        timeout: Max seconds to wait for dialog operations
+    """
+    from selenium.common.exceptions import TimeoutException
+
+    def has_visible_dialog() -> bool:
+        """Check if any dialog backdrop is currently visible."""
+        try:
+            backdrops = screen.selenium.find_elements(
+                By.CSS_SELECTOR, ".q-dialog__backdrop"
+            )
+            return any(b.is_displayed() for b in backdrops)
+        except Exception:
+            return False
+
+    def close_dialogs() -> None:
+        """Try to close any open dialogs."""
+        # Click the "Skip Tour" button or any close button in the dialog
+        js(
+            screen,
+            """
+            // Find and click Skip Tour or close buttons
+            const buttons = document.querySelectorAll('.q-dialog button');
+            for (const btn of buttons) {
+                const text = btn.textContent.toLowerCase();
+                if (text.includes('skip') || text.includes('close')) {
+                    btn.click();
+                    return;
+                }
+                // Also check for close icon
+                const icon = btn.querySelector('i');
+                if (icon && icon.textContent === 'close') {
+                    btn.click();
+                    return;
+                }
+            }
+            // Fallback: click the backdrop
+            const backdrop = document.querySelector('.q-dialog__backdrop');
+            if (backdrop) backdrop.click();
+            """,
+        )
+
+    # Wait for tutorial dialog to appear (it has a 1s delay after page load)
+    # Use short timeout since dialog may not appear if localStorage already set
+    try:
+        WebDriverWait(screen.selenium, timeout).until(lambda _: has_visible_dialog())
+    except TimeoutException:
+        pass  # No dialog appeared, that's fine
+
+    # If a dialog is visible, close it and wait for it to be gone
+    if has_visible_dialog():
+        close_dialogs()
+        WebDriverWait(screen.selenium, timeout).until(
+            lambda _: not has_visible_dialog()
+        )
+
+    # Set first-visit key to prevent future tutorial dialogs
+    js(screen, 'localStorage.setItem("parol_first_visit_shown", "true");')
+
+
 def wait_for_codemirror_ready(screen: "Screen", timeout: float = 10.0) -> None:
     """Wait for CodeMirror editor to be fully interactive.
 

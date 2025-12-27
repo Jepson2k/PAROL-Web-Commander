@@ -51,20 +51,49 @@ async def test_home_command_behavior(
 
 
 @pytest.mark.integration
-async def test_digital_estop_shows_dialog(user: User, robot_state) -> None:
-    """Clicking E-STOP should show the digital E-STOP dialog."""
+async def test_digital_estop_dialog_behavior(user: User, robot_state) -> None:
+    """Digital E-STOP dialog should appear with Resume button."""
     await user.open("/")
     await wait_for_page_ready()
 
-    # Click E-STOP button
+    # Click E-STOP button to trigger digital estop
     user.find(marker="btn-estop").click()
+    await asyncio.sleep(0.1)
 
-    # Yield to handler
-    await asyncio.sleep(0)
-
-    # Should see E-STOP notification and dialog
-    await user.should_see("Digital E-STOP activated - robot disabled")
+    # Dialog should appear with correct content
     await user.should_see("Digital E-STOP Active")
+    await user.should_see("Robot motion has been stopped.")
+
+    # Resume button should be present (marked for testability)
+    resume_btn = user.find(marker="btn-estop-resume")
+    assert resume_btn is not None, "Resume button should be present"
+
+    # Verify dialog has the overlay-card styling (frosted glass effect)
+    dialog_card = user.find(marker="estop-dialog")
+    assert dialog_card is not None, "E-STOP dialog card should have marker"
+
+
+@pytest.mark.integration
+async def test_digital_estop_blocked_when_physical_active(
+    user: User, robot_state
+) -> None:
+    """Digital E-STOP button click should be blocked when physical E-STOP is active."""
+    await user.open("/")
+    await wait_for_page_ready()
+
+    # Set io_estop=0 to simulate physical estop being active
+    # This blocks the digital estop click
+    robot_state.io_estop = 0
+
+    # Try to click digital estop - should be blocked
+    user.find(marker="btn-estop").click()
+    await asyncio.sleep(0.1)
+
+    # Should see warning notification about physical estop
+    await user.should_see("Physical E-STOP is active")
+
+    # Digital E-STOP dialog should NOT appear
+    await user.should_not_see("Digital E-STOP Active")
 
 
 @pytest.mark.unit

@@ -18,31 +18,13 @@ from spatialmath import SE3
 import parol6.PAROL6_ROBOT as PAROL6_ROBOT
 from parol6.utils.ik import solve_ik
 
+from parol_commander.common.theme import MOVE_TYPE_COLORS
+
 logger = logging.getLogger(__name__)
 
 # Default standby position in radians - use PAROL6's actual standby position
 # [90, -90, 180, 0, 0, 180] degrees from PAROL6_ROBOT.joint.standby
 DEFAULT_STANDBY_RAD = list(PAROL6_ROBOT.joint.standby.rad)
-
-# Color mapping for different move types
-MOVE_TYPE_COLORS: dict[str, str] = {
-    "cartesian": "#2faf7a",  # Green - Cartesian/linear moves
-    "move_cartesian": "#2faf7a",
-    "move_pose": "#2faf7a",
-    "joints": "#4a63e0",  # Blue - Joint space moves
-    "move_joints": "#4a63e0",
-    "smooth": "#9b59b6",  # Purple - Smooth/blended moves
-    "smooth_move": "#9b59b6",
-    "smooth_cartesian": "#9b59b6",
-    "smooth_joints": "#9b59b6",
-    "smooth_waypoints": "#9b59b6",
-    "smooth_spline": "#9b59b6",
-    "smooth_circle": "#9b59b6",
-    "smooth_arc": "#9b59b6",
-    "smooth_helix": "#9b59b6",
-    "invalid": "#e74c3c",  # Red - Invalid/unreachable
-    "unknown": "#95a5a6",  # Gray - Unknown move type
-}
 
 
 def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:

@@ -3,13 +3,11 @@
 import logging
 import time
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Optional, List
 from parol_commander.state import editor_tabs_state
-
 import numpy as np
-from nicegui import ui
+from spatialmath import SO3
 
 from parol_commander.state import (
     recording_state,
@@ -57,8 +55,6 @@ class MotionRecorder:
 
         Returns [x, y, z, rx, ry, rz] in mm/deg with RPY order='xyz'.
         """
-        import numpy as np
-        from spatialmath import SO3
 
         pose = robot_state.pose
         if pose and len(pose) >= 12:
@@ -196,10 +192,6 @@ class MotionRecorder:
                 [f"{a:.1f}" for a in angles],
             )
 
-        self._notify(
-            "Recording started - actions will be captured as code", color="positive"
-        )
-
     def _stop_recording(self) -> None:
         """Stop recording session."""
         # If there's an active jog, end it first
@@ -208,8 +200,6 @@ class MotionRecorder:
 
         recording_state.is_recording = False
         self._last_action_time = 0.0
-
-        self._notify("Recording stopped", color="warning")
         logger.info("Recording stopped")
 
     def record_action(self, action_type: str, **params) -> None:
@@ -373,10 +363,6 @@ class MotionRecorder:
         Args:
             move_type: "cartesian" or "joints"
         """
-        if not ui_state.editor_panel:
-            self._notify("Editor not available", color="negative")
-            return
-
         # Temporarily enable recording for single capture
         was_recording = recording_state.is_recording
         recording_state.is_recording = True
@@ -393,18 +379,11 @@ class MotionRecorder:
         # Restore recording state
         recording_state.is_recording = was_recording
 
-        self._notify("Captured current pose", color="positive")
-
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code snippet into the editor and flash the new line."""
-        editor = ui_state.editor_panel
-        if not editor:
-            logger.warning("Cannot insert snippet: editor_panel not set in ui_state")
-            self._notify("Open Program tab first to insert code", color="warning")
-            return
 
-        if hasattr(editor, "program_textarea") and editor.program_textarea:
-            textarea = editor.program_textarea
+        if ui_state.editor_panel.program_textarea:
+            textarea = ui_state.editor_panel.program_textarea
             val = textarea.value or ""
 
             # Count lines before insertion for flash highlighting
@@ -419,19 +398,9 @@ class MotionRecorder:
 
             # Flash the newly added line
             new_line_number = lines_before + 1
-            if hasattr(editor, "_flash_editor_lines"):
-                editor._flash_editor_lines([new_line_number])
+            ui_state.editor_panel._flash_editor_lines([new_line_number])
         else:
-            logger.warning("Editor textarea not ready - open Program tab first")
-            self._notify("Open Program tab first to insert code", color="warning")
-
-    def _notify(self, message: str, **kwargs) -> None:
-        """Send UI notification if in UI context, otherwise log."""
-        with suppress(RuntimeError):
-            ui.notify(message, **kwargs)
-            return
-        # If notify failed (no UI context), just log
-        logger.info(message)
+            logger.error("Editor textarea not ready - open Program tab first")
 
 
 # Singleton

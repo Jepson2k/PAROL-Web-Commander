@@ -20,6 +20,7 @@ import numpy as np
 from nicegui import ui
 from nicegui.helpers import is_user_simulation
 
+from parol_commander.common.theme import SceneColors
 from parol_commander.state import robot_state
 from .ik_solver import EditingIKSolver
 
@@ -76,6 +77,9 @@ class TCPControlsMixin:
 
         # Python-side FK/IK solver (shared for jog ball positioning and IK)
         self._tcp_fk_solver: Optional[EditingIKSolver] = None
+
+        # Editing rotation state [rx, ry, rz] in radians - tracks rotation during target editing
+        self._editing_rotation: Optional[List[float]] = None
 
     def on_tcp_cartesian_move(self, callback: Callable[[List[float]], None]) -> None:
         """Register callback to receive absolute TCP position for Cartesian moves.
@@ -323,7 +327,7 @@ class TCPControlsMixin:
                 height_segments=16,
                 wireframe=False,
             ).with_name("tcp:ball")
-            ball.material("#666666", 0.9)
+            ball.material(SceneColors.EDIT_GRAY_HEX, 0.9)
             self._tcp_ball = ball
         # Initial position/orientation based on mode
         self._update_tcp_ball_position()
@@ -451,20 +455,7 @@ class TCPControlsMixin:
                 self._tcp_cartesian_move_callback(pose_mm)
 
     def _handle_tcp_transform_for_ik(self, e) -> None:
-        """Handle TCP ball drag in EDITING mode - solve IK to update editing angles."""
-        # Get new TCP position from transform event (world coordinates)
-        new_x = getattr(e, "wx", None)
-        new_y = getattr(e, "wy", None)
-        new_z = getattr(e, "wz", None)
-
-        if new_x is None or new_y is None or new_z is None:
-            # Fallback to local coordinates
-            new_x = e.x if e.x is not None else 0.0
-            new_y = e.y if e.y is not None else 0.0
-            new_z = e.z if e.z is not None else 0.0
-
-        target_pos = np.array([float(new_x), float(new_y), float(new_z)])
-
+        """Handle TCP ball drag in EDITING mode - solve IK for position and/or orientation."""
         # Ensure FK/IK solver is initialized
         if self._tcp_fk_solver is None:
             try:
@@ -473,11 +464,45 @@ class TCPControlsMixin:
                 logging.warning("IK solver init failed: %s", err)
                 return
 
+        target_orientation = None
+
+        if self._tcp_transform_mode == "rotate":
+            # Rotation mode: get orientation from event, keep current position
+            rx = e.rx if e.rx is not None else 0.0
+            ry = e.ry if e.ry is not None else 0.0
+            rz = e.rz if e.rz is not None else 0.0
+            target_orientation = np.array([float(rx), float(ry), float(rz)])
+
+            # Store edited rotation for reference
+            self._editing_rotation = [float(rx), float(ry), float(rz)]
+
+            # Get current position from FK (maintain position while rotating)
+            fk_result = self._tcp_fk_solver.forward_kinematics(self._editing_angles)
+            target_pos = np.array([fk_result[0], fk_result[1], fk_result[2]])
+        else:
+            # Translate mode: get position from event
+            new_x = getattr(e, "wx", None)
+            new_y = getattr(e, "wy", None)
+            new_z = getattr(e, "wz", None)
+
+            if new_x is None or new_y is None or new_z is None:
+                # Fallback to local coordinates
+                new_x = e.x if e.x is not None else 0.0
+                new_y = e.y if e.y is not None else 0.0
+                new_z = e.z if e.z is not None else 0.0
+
+            target_pos = np.array([float(new_x), float(new_y), float(new_z)])
+
+            # If we have a stored rotation from previous rotate mode, use it
+            if self._editing_rotation is not None:
+                target_orientation = np.array(self._editing_rotation)
+
         # Solve IK with throttling (~30Hz)
         result = self._tcp_fk_solver.solve(
             target_pos=target_pos,
             current_angles=self._editing_angles,
             throttle=True,
+            target_orientation=target_orientation,
         )
 
         # If throttled (returns None), skip this frame

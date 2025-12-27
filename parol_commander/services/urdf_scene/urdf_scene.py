@@ -24,6 +24,7 @@ import numpy as np
 from nicegui import ui, app  # type: ignore[no-redef]
 
 from parol_commander.common.logging_config import TRACE_ENABLED
+from parol_commander.common.theme import SceneColors
 from parol_commander.state import simulation_state, robot_state
 from parol_commander.services.path_visualizer import get_color_for_move_type
 
@@ -38,16 +39,14 @@ from .loader import (
     transl_joint,
     normalize_axis,
 )
-from .editing_mode_mixin import EditingModeMixin
-from .target_editor_mixin import TargetEditorMixin
+from .editing_mixin import EditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_mixin import EnvelopeMixin, ENVELOPE_PROXIMITY_THRESHOLD
 from .path_renderer_mixin import PathRendererMixin
 
 
 class UrdfScene(
-    EditingModeMixin,
-    TargetEditorMixin,
+    EditingMixin,
     TCPControlsMixin,
     EnvelopeMixin,
     PathRendererMixin,
@@ -151,23 +150,25 @@ class UrdfScene(
         self._scene_wrapper: Any | None = None
 
         # Initialize mixin states
-        self._init_editing_mode_state()
-        self._init_target_editor_state()
+        self._init_editing_state()
         self._init_tcp_controls_state()
         self._init_envelope_state()
 
         # Register as listener for simulation state changes (event-driven updates)
         simulation_state.add_change_listener(self._update_simulation_view)
 
-    def show(self, scale_stls: float = 1.0, material=None, background_color="#004191"):
+    def show(self, scale_stls: float = 1.0, material=None, background_color=None):
         """Plot a nicegui 3D scene from loaded URDF.
 
         Args:
             scale_stls: Scale factor for all STL files (e.g., 1e-1 if designed in mm)
             material: Color for the whole URDF (overrides mesh colors in STLs if defined)
-            background_color: Scene background color
+            background_color: Scene background color (defaults to config value)
         """
         self._stl_scale = float(scale_stls)
+        # Use config background color if not specified
+        if background_color is None:
+            background_color = self.config.background_color
         # Wrap scene in element to host context menu and edit bar
         self._scene_wrapper = ui.element("div").classes("relative w-full h-full")
         with self._scene_wrapper:
@@ -190,6 +191,11 @@ class UrdfScene(
             ).classes("w-full h-[66vh]").on_transform_end(
                 self._handle_transform_event
             ) as self.scene:
+                # Ground plane for contrast with background
+                ui.scene.cylinder(
+                    default_radius, default_radius, 0.001, radial_segments=64
+                ).material(self.config.ground_color, opacity=0.5).rotate(1.5708, 0, 0)
+
                 # Base link
                 self._plot_stls(
                     self.urdf_model.base_link, scale=self._stl_scale, material=material
@@ -361,15 +367,9 @@ class UrdfScene(
                 if event_type == "transform_end":
                     from parol_commander.state import ui_state
 
-                    if ui_state.editor_panel:
-                        if hasattr(ui_state.editor_panel, "sync_code_from_target"):
-                            # Ensure pose has no None values before syncing
-                            clean_pose = [
-                                v if v is not None else 0.0 for v in target.pose
-                            ]
-                            ui_state.editor_panel.sync_code_from_target(
-                                target_id, clean_pose
-                            )
+                    # Ensure pose has no None values before syncing
+                    clean_pose = [v if v is not None else 0.0 for v in target.pose]
+                    ui_state.editor_panel.sync_code_from_target(target_id, clean_pose)
 
     def _handle_scene_click(self, e) -> None:
         """Handle mouse events for target deselection, context menu, and joint target editing."""
@@ -377,7 +377,6 @@ class UrdfScene(
         hits = getattr(e, "hits", []) or []
 
         if click_type == "mousedown":
-            clicked_target = False
             clicked_transform_controls = False
             clicked_ghost_part = False
 
@@ -399,19 +398,10 @@ class UrdfScene(
                     clicked_transform_controls = True
                     continue
 
-                # Check if clicked on a target or its group
-                if name.startswith("target:") or name.startswith("targetgroup:"):
-                    clicked_target = True
-
-            # Handle joint target editing - clicking away does NOT auto-confirm
-            if self._editing_joint_target:
+            # Handle target editing - clicking away does NOT auto-confirm
+            if self._editing_unified_target:
                 if not clicked_ghost_part and not clicked_transform_controls:
                     return  # Don't process other click handlers
-
-            if clicked_transform_controls:
-                pass
-            elif not clicked_target:
-                self._disable_all_target_transform_controls()
 
         elif click_type == "contextmenu":
             # Record position and event when contextmenu fires
@@ -988,19 +978,21 @@ class UrdfScene(
             return
         scene.line(
             translate.tolist(), (np.array([scale, 0, 0]) + translate).tolist()
-        ).material("#d94c3f")
+        ).material(SceneColors.AXIS_X_HEX)
         scene.line(
             translate.tolist(), (np.array([0, scale, 0]) + translate).tolist()
-        ).material("#2faf7a")
+        ).material(SceneColors.AXIS_Y_HEX)
         scene.line(
             translate.tolist(), (np.array([0, 0, scale]) + translate).tolist()
-        ).material("#4a63e0")
+        ).material(SceneColors.AXIS_Z_HEX)
 
     def _axis_color(self, axis_letter: str) -> str:
         """Get standard color for coordinate axis (CVD-aware palette)."""
-        return {"X": "#d94c3f", "Y": "#2faf7a", "Z": "#4a63e0"}.get(
-            axis_letter.upper(), "#888888"
-        )
+        return {
+            "X": SceneColors.AXIS_X_HEX,
+            "Y": SceneColors.AXIS_Y_HEX,
+            "Z": SceneColors.AXIS_Z_HEX,
+        }.get(axis_letter.upper(), SceneColors.MATERIAL_DARK_HEX)
 
     # Expose static methods from loader for backwards compatibility
     @classmethod

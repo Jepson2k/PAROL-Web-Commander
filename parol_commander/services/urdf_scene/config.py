@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
+from parol_commander.common.theme import SceneColors
+
 
 class RobotAppearanceMode(Enum):
     """Robot visual appearance modes.
@@ -69,19 +71,23 @@ class UrdfSceneConfig:
     """Function to resolve tool name to TCP pose dynamically."""
 
     # --- Appearance settings ---
-    material: str = "#888"
+    # Colors from theme.py SceneColors
+    material: str = SceneColors.MATERIAL_DARK_HEX
     """Default material color for robot meshes."""
 
-    background_color: str = "#eee"
+    background_color: str = SceneColors.BACKGROUND_DARK_HEX
     """Scene background color."""
 
-    sim_color: str = "#c77d28"
+    ground_color: str = SceneColors.GROUND_DARK_HEX
+    """Ground plane color (contrasts with background)."""
+
+    sim_color: str = SceneColors.SIM_AMBER_HEX
     """Color for robot in simulator mode (amber ghost)."""
 
     sim_opacity: float = 0.9
     """Opacity for robot in simulator mode."""
 
-    edit_color: str = "#666666"
+    edit_color: str = SceneColors.EDIT_GRAY_HEX
     """Color for robot in editing mode (grey ghost)."""
 
     edit_opacity: float = 0.4

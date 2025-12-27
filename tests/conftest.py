@@ -49,6 +49,21 @@ def chrome_options():
     return _webdriver.ChromeOptions()
 
 
+@pytest.fixture
+def nicegui_chrome_options():
+    """Chrome options fixture for local nicegui's screen_plugin.
+
+    The local nicegui/ checkout expects this fixture name.
+    """
+    options = _webdriver.ChromeOptions()
+    if not os.environ.get("HEADED"):
+        options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    return options
+
+
 # Window size for screen tests - full HD for proper layout
 TEST_WINDOW_WIDTH = 1920
 TEST_WINDOW_HEIGHT = 1080
@@ -171,6 +186,11 @@ def class_screen(
             # Navigate to app once for all tests in class
             # Tests should wait for specific elements/conditions they need
             screen_instance.open("/", timeout=15.0)
+
+            # Dismiss any startup dialogs (e.g., tutorial)
+            from tests.helpers.browser_helpers import dismiss_dialogs
+
+            dismiss_dialogs(screen_instance)
 
             yield screen_instance
 
@@ -424,18 +444,25 @@ async def controller_reset(
 
     Runs automatically before each test that uses user or screen fixtures.
     Much faster than full controller restart (~0.001s vs ~4s).
+
+    Note: class_screen tests share browser state across all tests in the class,
+    so we only reset/home once when the class_screen fixture is set up.
     """
     from parol6 import AsyncRobotClient
 
-    # Only reset for tests that use NiceGUI app (user, screen, or class_screen fixture)
-    if (
-        "user" in request.fixturenames
-        or "screen" in request.fixturenames
-        or "class_screen" in request.fixturenames
-    ):
+    # Skip reset for class_screen tests - they share state across tests in a class
+    # The controller is reset once when the class_screen fixture sets up
+    if "class_screen" in request.fixturenames:
+        yield
+        return
+
+    # Only reset for tests that use NiceGUI app (user or screen fixture)
+    if "user" in request.fixturenames or "screen" in request.fixturenames:
         controller_port, _ = _get_test_ports()
         # Create a fresh client on this test's event loop
         async with AsyncRobotClient(host="127.0.0.1", port=controller_port) as client:
             await client.reset()
             await client.enable()
+            # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
+            await client.home(wait=True, timeout=5.0)
     yield

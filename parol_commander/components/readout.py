@@ -2,6 +2,7 @@
 
 from nicegui import ui
 
+from parol_commander.common.theme import StatusColors
 from parol_commander.state import robot_state, controller_state
 
 
@@ -124,26 +125,26 @@ class ReadoutPanel:
 
                     def _style_chip(el: ui.label, on: bool) -> None:
                         el.style(
-                            f"{chip_pad}background:#21BA45;color:white;"
+                            f"{chip_pad}background:{StatusColors.POSITIVE};color:white;"
                             if on
-                            else f"{chip_pad}background:rgba(255,255,255,0.12);color:#bbb;"
+                            else f"{chip_pad}background:rgba(255,255,255,0.12);color:{StatusColors.MUTED};"
                         )
 
                     def _update_conn_io():
                         # CTRL color
                         ctrl.style(
-                            "color: #21BA45"
+                            f"color: {StatusColors.POSITIVE}"
                             if controller_state.running
-                            else "color: #DB2828"
+                            else f"color: {StatusColors.NEGATIVE}"
                         )
                         # ROBOT color - grey out in simulator mode
                         if robot_state.simulator_active:
-                            robot.style("color: #888888")
+                            robot.style(f"color: {StatusColors.MUTED}")
                         else:
                             robot.style(
-                                "color: #21BA45"
+                                f"color: {StatusColors.POSITIVE}"
                                 if robot_state.connected
-                                else "color: #DB2828"
+                                else f"color: {StatusColors.NEGATIVE}"
                             )
                         # IO chip colors
                         _style_chip(io_in1, bool(robot_state.io_in1))

@@ -126,14 +126,17 @@ class EditingIKSolver:
         target_pos: np.ndarray,
         current_angles: List[float],
         throttle: bool = True,
+        target_orientation: Optional[np.ndarray] = None,
     ) -> Optional[IKResult]:
         """
-        Solve IK for the target position.
+        Solve IK for the target position and optionally orientation.
 
         Args:
             target_pos: Target TCP position [x, y, z] in meters (world frame)
             current_angles: Current joint angles in radians
             throttle: If True, skip solving if called too frequently
+            target_orientation: Target orientation [rx, ry, rz] in radians (XYZ Euler).
+                               If None, maintains current orientation.
 
         Returns:
             IKResult with computed angles, or None if throttled
@@ -155,8 +158,16 @@ class EditingIKSolver:
         # Get current end effector orientation to maintain it
         T_current = cast(Any, self.robot).fkine(q0)
 
-        # Create target pose with current orientation but new position
-        T_target = SE3.Rt(T_current.R, target)
+        # Create target pose with specified or current orientation
+        if target_orientation is not None:
+            # Build rotation matrix from XYZ Euler angles
+            T_target = SE3.Rt(
+                SE3.RPY(target_orientation, order="xyz").R,
+                target,
+            )
+        else:
+            # Maintain current orientation
+            T_target = SE3.Rt(T_current.R, target)
 
         # Use PAROL6 IK helper exclusively to enforce safety and unwrapping
         parol_result = parol6_solve_ik(

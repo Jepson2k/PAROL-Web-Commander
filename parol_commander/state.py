@@ -8,7 +8,10 @@ from typing_extensions import dataclass_transform
 
 # Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
 if TYPE_CHECKING:
+    from nicegui.elements.timer import Timer
     from parol_commander.services.urdf_scene import UrdfScene
+    from parol_commander.components.editor import EditorPanel
+    from parol_commander.components.control import ControlPanel
 
     @dataclass_transform(field_specifiers=(field,))
     def bindable_dataclass(cls=None, /, **kwargs):
@@ -253,15 +256,54 @@ class UiState:
     frame: str = "WRF"
     gizmo_visible: bool = True
 
-    # Timers (set post-build)
-    joint_jog_timer: Any = None
-    cart_jog_timer: Any = None
-
-    # Editor panel reference for script stopping
-    editor_panel: Any = None
+    # Private storage for timers and panels (set post-build)
+    _joint_jog_timer: Any = None
+    _cart_jog_timer: Any = None
+    _editor_panel: Any = None
+    _control_panel: Any = None
 
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
+
+    @property
+    def editor_panel(self) -> "EditorPanel":
+        """Get editor panel, asserting it's initialized."""
+        assert self._editor_panel is not None, "editor_panel not initialized"
+        return self._editor_panel
+
+    @editor_panel.setter
+    def editor_panel(self, value: "EditorPanel") -> None:
+        self._editor_panel = value
+
+    @property
+    def control_panel(self) -> "ControlPanel":
+        """Get control panel, asserting it's initialized."""
+        assert self._control_panel is not None, "control_panel not initialized"
+        return self._control_panel
+
+    @control_panel.setter
+    def control_panel(self, value: "ControlPanel") -> None:
+        self._control_panel = value
+
+    @property
+    def joint_jog_timer(self) -> "Timer":
+        """Get joint jog timer, asserting it's initialized."""
+        assert self._joint_jog_timer is not None, "joint_jog_timer not initialized"
+        return self._joint_jog_timer
+
+    @joint_jog_timer.setter
+    def joint_jog_timer(self, value: "Timer") -> None:
+        self._joint_jog_timer = value
+
+    @property
+    def cart_jog_timer(self) -> "Timer":
+        """Get cart jog timer, asserting it's initialized."""
+        assert self._cart_jog_timer is not None, "cart_jog_timer not initialized"
+        return self._cart_jog_timer
+
+    @cart_jog_timer.setter
+    def cart_jog_timer(self, value: "Timer") -> None:
+        self._cart_jog_timer = value
 
 
 @dataclass

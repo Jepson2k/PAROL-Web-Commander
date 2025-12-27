@@ -31,6 +31,7 @@ class ControlPanel:
     def __init__(self, client: AsyncRobotClient) -> None:
         """Initialize control panel with jog state and required robot client."""
         self.client = client
+        self._ui_client: Any = None  # NiceGUI client for background task UI ops
 
         # Jog UI references
         self._joint_left_btns: dict[int, ui.button] = {}
@@ -98,6 +99,7 @@ class ControlPanel:
         self._estop_dialog: ui.dialog | None = None
         self._estop_dialog_is_physical: bool = False
         self._last_estop_state: int = 1  # Track previous io_estop value
+        self._digital_estop_active: bool = False  # Track if digital estop was active
 
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
@@ -109,6 +111,7 @@ class ControlPanel:
 
         # Step input widget reference for dynamic suffix/tooltip
         self._step_input: ui.number | None = None
+        self._step_input_tooltip: ui.tooltip | None = None
         self._jog_mode_tabs: Any = None
 
     # ---- Helper methods ----
@@ -443,11 +446,9 @@ class ControlPanel:
                     self._jog_pressed_neg[j] = True
 
             self._holding_active.add(key)
-            t = ui_state.joint_jog_timer
-            if t:
-                if not t.active:
-                    self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-                t.active = True
+            if not ui_state.joint_jog_timer.active:
+                self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+            ui_state.joint_jog_timer.active = True
 
             tm = self._hold_timers.pop(key, None)
             if tm:
@@ -516,10 +517,8 @@ class ControlPanel:
             ):
                 self._jog_pressed_neg[j] = False
             self._holding_active.discard(key)
-            t = ui_state.joint_jog_timer
-            if t:
-                any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
-                t.active = bool(any_pressed)
+            any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
+            ui_state.joint_jog_timer.active = bool(any_pressed)
             return
 
         if was_holding:
@@ -536,12 +535,10 @@ class ControlPanel:
             ):
                 self._jog_pressed_neg[j] = False
             self._holding_active.discard(key)
-            t = ui_state.joint_jog_timer
-            if t:
-                any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
-                if any_pressed and not t.active:
-                    self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-                t.active = bool(any_pressed)
+            any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
+            if any_pressed and not ui_state.joint_jog_timer.active:
+                self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+            ui_state.joint_jog_timer.active = bool(any_pressed)
 
     async def jog_tick(self) -> None:
         """Timer callback: send/update joint streaming jog if any button is pressed."""
@@ -636,10 +633,11 @@ class ControlPanel:
             if tm_prev:
                 tm_prev.active = False
             # Ensure we have a client context when creating UI elements
-            with ui.context.client:
-                self._hold_timers_cart[key] = ui.timer(
-                    self.CLICK_HOLD_THRESHOLD_S, _start_streaming, once=True
-                )
+            if self._ui_client:
+                with self._ui_client:
+                    self._hold_timers_cart[key] = ui.timer(
+                        self.CLICK_HOLD_THRESHOLD_S, _start_streaming, once=True
+                    )
             return
 
         tm = self._hold_timers_cart.pop(key, None)
@@ -820,7 +818,7 @@ class ControlPanel:
         """Wait for robot motion to stop, then record the jog end position."""
         try:
             # Wait for motion to stop (non-blocking)
-            await self.client.wait_until_stopped(timeout=5.0, settle_window=0.2)
+            await self.client.wait_motion_complete(timeout=5.0, settle_window=0.2)
             logging.debug("TCP Drag: Motion stopped, recording position")
         except Exception as e:
             logging.warning("TCP Drag: wait_until_stopped failed: %s", e)
@@ -973,8 +971,18 @@ class ControlPanel:
             is_physical: True for physical E-STOP (persistent until released),
                         False for digital E-STOP (with Resume button)
         """
+        if not self._ui_client:
+            return
 
-        with ui.context.client:
+        with self._ui_client:
+            # If replacing a digital estop dialog with physical, remember digital is pending
+            if (
+                is_physical
+                and self._estop_dialog
+                and not self._estop_dialog_is_physical
+            ):
+                self._digital_estop_active = True
+
             # Close existing dialog if open
             if self._estop_dialog:
                 self._estop_dialog.close()
@@ -984,11 +992,12 @@ class ControlPanel:
             self._estop_dialog = ui.dialog()
             self._estop_dialog_is_physical = is_physical
 
-            # Make dialog persistent for physical E-STOP
-            if is_physical:
-                self._estop_dialog.props("persistent")
+            # Both dialog types are persistent - physical requires button release, digital requires Resume
+            self._estop_dialog.props("persistent")
 
-            with self._estop_dialog, ui.card().classes("gap-4 items-center"):
+            with self._estop_dialog, ui.card().classes(
+                "overlay-card gap-4 items-center"
+            ).mark("estop-dialog"):
                 # Ensure lottie-player web component is loaded
                 ui.html(
                     """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
@@ -996,9 +1005,6 @@ class ControlPanel:
                 ).classes("w-96")
 
                 if is_physical:
-                    # Optional immediate feedback toast
-                    ui.notify("Physical E-STOP activated", color="negative")
-
                     # Physical E-STOP: persistent message
                     ui.label("Physical E-STOP Active").classes(
                         "text-xl font-bold text-negative text-center"
@@ -1019,26 +1025,28 @@ class ControlPanel:
                     async def resume():
                         try:
                             await self.client.start()
-                            ui.notify(
-                                "Robot enabled - E-STOP cleared", color="positive"
+                            self._digital_estop_active = (
+                                False  # Clear digital estop state
                             )
                             if self._estop_dialog:
                                 self._estop_dialog.close()
                                 self._estop_dialog = None
                         except Exception as e:
-                            ui.notify(f"Resume failed: {e}", color="negative")
                             logging.error("Resume after digital E-STOP failed: %s", e)
 
                     with ui.row().classes("gap-2 justify-center w-full mt-4"):
                         ui.button("Resume", on_click=resume).props(
                             "color=positive size=lg"
-                        )
+                        ).mark("btn-estop-resume")
 
             self._estop_dialog.open()
 
     def close_estop_dialog(self) -> None:
         """Close the E-STOP dialog if open."""
-        with ui.context.client:
+        if not self._ui_client:
+            return
+
+        with self._ui_client:
             if self._estop_dialog:
                 self._estop_dialog.close()
                 self._estop_dialog = None
@@ -1063,6 +1071,9 @@ class ControlPanel:
             # Physical E-STOP was just released
             if self._estop_dialog and self._estop_dialog_is_physical:
                 self.close_estop_dialog()
+                # If digital estop was active before physical, restore digital dialog
+                if self._digital_estop_active:
+                    self.show_estop_dialog(is_physical=False)
 
         # Update last state
         self._last_estop_state = current_estop
@@ -1171,17 +1182,19 @@ class ControlPanel:
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""
-        try:
-            # Stop robot immediately
-            await self.client.stop()
-            ui.notify("Digital E-STOP activated - robot disabled", color="warning")
-            logging.warning("Digital E-STOP triggered")
+        # Don't allow digital estop while physical estop is active
+        if robot_state.io_estop == 0:
+            ui.notify("Physical E-STOP is active - release it first", color="warning")
+            return
 
-            # Show E-STOP dialog with Resume button
-            self.show_estop_dialog(is_physical=False)
-        except Exception as e:
-            logging.error("E-STOP failed: %s", e)
-            ui.notify(f"E-STOP failed: {e}", color="negative")
+        # Stop robot immediately
+        await self.client.stop()
+        self._digital_estop_active = True
+
+        # Show E-STOP dialog with Resume button (needs UI context)
+        if self._ui_client:
+            with self._ui_client:
+                self.show_estop_dialog(is_physical=False)
 
     def render_jog_content(self) -> None:
         """Render jog controls (tabs + grids) and settings."""
@@ -1202,11 +1215,13 @@ class ControlPanel:
             if "Joint" in tab_name:
                 self._step_input.props('suffix="°"')
                 self._step_input._props["suffix"] = "°"
-                self._step_input.tooltip("Step size in degrees")
+                if self._step_input_tooltip:
+                    self._step_input_tooltip.text = "Step size in degrees"
             elif "Cartesian" in tab_name:
                 self._step_input.props('suffix="mm"')
                 self._step_input._props["suffix"] = "mm"
-                self._step_input.tooltip("Step size in mm")
+                if self._step_input_tooltip:
+                    self._step_input_tooltip.text = "Step size in mm"
             self._step_input.update()
 
         jog_mode_tabs.on("update:model-value", _on_tab_change)
@@ -1389,7 +1404,7 @@ class ControlPanel:
                                         self.go_to_joint_limit(i, "min")
                                     ),
                                 )
-                                .props("round dense")
+                                .props("round dense unelevated")
                                 .tooltip("Move to minimum joint limit")
                                 .mark(f"btn-j{idx + 1}-min-limit")
                             )
@@ -1400,7 +1415,7 @@ class ControlPanel:
                                         self.go_to_joint_limit(i, "max")
                                     ),
                                 )
-                                .props("round dense")
+                                .props("round dense unelevated")
                                 .tooltip("Move to maximum joint limit")
                                 .mark(f"btn-j{idx + 1}-max-limit")
                             )
@@ -1506,9 +1521,12 @@ class ControlPanel:
         Args:
             anchor: Position anchor for the panel (e.g., "bl" for bottom-left)
         """
+        # Capture UI client for background task operations
+        self._ui_client = ui.context.client
+
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor} gap-1"):
             # Two-column layout: left column with two rows, right column with E-STOP spanning both rows
-            with ui.column().classes("gap-2 items-center"):
+            with ui.column().classes("gap-2 w-full"):
                 with ui.row().classes("items-center w-full"):
                     # Left column: Speed/Step row + Controls row
                     with ui.column().classes("gap-1 flex-grow"):
@@ -1618,12 +1636,12 @@ class ControlPanel:
                         icon="dangerous", color="negative", on_click=self.on_estop_click
                     ).props("round unelevated").classes(
                         "ml-auto glass-btn text-2xl"
-                    ).tooltip("E-Stop").mark("btn-estop")
+                    ).tooltip("E-Stop (Esc)").mark("btn-estop")
                 # Home, Robot/Simulator toggle, gizmo controls, and camera reset
                 with ui.row().classes("gap-2 items-center"):
                     ui.button(icon="home", on_click=self.send_home).props(
                         "dense round unelevated color=teal-6"
-                    ).tooltip("Home").mark("btn-home")
+                    ).tooltip("Home (H)").mark("btn-home")
 
                     # Single-button Robot/Simulator toggle (precision_manufacturing)
                     robot_btn = (
@@ -1639,7 +1657,7 @@ class ControlPanel:
                     def _update_robot_btn_visual():
                         sim = bool(getattr(robot_state, "simulator_active", False))
                         if sim:
-                            # Simulator active: amber color matching SIM_AMBER_COLOR (#c77d28)
+                            # Simulator active: amber (see theme.py SceneColors.SIM_AMBER)
                             robot_btn.props("color=amber-8")
                             robot_btn.classes("glass-btn glass-amber")
                         else:
@@ -1651,32 +1669,6 @@ class ControlPanel:
                         _update_robot_btn_visual  # store for reuse
                     )
                     _update_robot_btn_visual()
-
-                    # Frame switch (WRF/TRF)
-                    frame_buttons: dict[str, ui.button] = {}
-
-                    def _update_frame_visual(state: str):
-                        for m, btn in frame_buttons.items():
-                            btn.props("color=primary" if m == state else "color=grey-7")
-
-                    def set_frame(mode: str):
-                        mode = "WRF" if str(mode).upper() == "WRF" else "TRF"
-                        ui_state.frame = mode
-                        self.on_frame_changed(mode)
-                        _update_frame_visual(mode)
-
-                    with ui.button_group().props("rounded unelevated dense"):
-                        frame_buttons["WRF"] = (
-                            ui.button("WRF", on_click=lambda e: set_frame("WRF"))
-                            .props("round unelevated dense")
-                            .tooltip("World Reference Frame")
-                        )
-                        frame_buttons["TRF"] = (
-                            ui.button("TRF", on_click=lambda e: set_frame("TRF"))
-                            .props("round unelevated dense")
-                            .tooltip("Tool Reference Frame")
-                        )
-                    _update_frame_visual(ui_state.frame)
 
                     # Gizmo mode button group (rounded icons, single-select)
                     selected = {"value": "Move"}
@@ -1760,8 +1752,11 @@ class ControlPanel:
                                 'dense borderless hide-bottom-space input-style="text-align:right"'
                             )
                             .bind_value(ui_state, "joint_step_deg")
-                            .tooltip("Step size in degrees")
                         )
+                        with self._step_input:
+                            self._step_input_tooltip = ui.tooltip(
+                                "Step size in degrees"
+                            )
 
             # Jog controls (tabs + grids)
             self.render_jog_content()

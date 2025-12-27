@@ -11,7 +11,7 @@ import uuid
 
 from nicegui import ui, context, Client
 
-from parol_commander.common.theme import get_theme
+from parol_commander.common.theme import get_theme, PathColors
 from parol_commander.constants import REPO_ROOT, config
 from parol_commander.state import (
     robot_state,
@@ -29,7 +29,7 @@ from parol_commander.services.script_runner import (
 from parol_commander.services.path_visualizer import path_visualizer
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.services.stepping_client import GUIStepController
-from parol_commander.state import playback_state
+from parol_commander.state import playback_state, recording_state
 from parol6 import AsyncRobotClient
 from parol6.PAROL6_ROBOT import joint as PAROL6_JOINT
 
@@ -146,6 +146,9 @@ class EditorPanel:
         # Bottom playback bar elements
         self.playback_bar: ui.element | None = None
         self._play_btn: ui.button | None = None
+        self._play_btn_tooltip: ui.tooltip | None = (
+            None  # Stored to update text, not recreate
+        )
         self._stop_btn: ui.button | None = None
         self._next_btn: ui.button | None = None  # Step forward button
         self._scrub_container: ui.element | None = None  # Segmented scrub bar container
@@ -178,6 +181,13 @@ class EditorPanel:
         # Debounce timer for auto-simulation on code change
         self._simulation_debounce_timer: ui.timer | None = None
         self._debounce_delay: float = 0.375  # 375ms delay before running simulation
+
+        # Recording notification
+        self._recording_notification: ui.notification | None = None
+
+        # Tooltip references (to update text without recreating)
+        self._record_btn_tooltip: ui.tooltip | None = None
+        self._log_toggle_btn_tooltip: ui.tooltip | None = None
 
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
@@ -470,6 +480,7 @@ print(f"Robot status: {{status}}")
         # Check if editor panel is visible (not collapsed)
         if self._is_editor_panel_visible():
             # Use NiceGUI CodeMirror's highlight_lines method
+            # Auto-removal is handled by the decorations system
             self.program_textarea.highlight_lines(
                 line_numbers,
                 css_class="cm-line-flash",
@@ -1063,19 +1074,42 @@ print(f"Robot status: {{status}}")
         """Toggle motion recording on/off."""
         motion_recorder.toggle_recording()
         # Update button visual
-        if hasattr(self, "record_btn") and self.record_btn:
-            from parol_commander.state import recording_state
-
-            if recording_state.is_recording:
-                self.record_btn.props("color=warning")
-                self.record_btn.tooltip("Stop Recording")
-                # Disable playback controls during recording
-                self._set_playbar_enabled(False)
-            else:
-                self.record_btn.props("color=negative")
-                self.record_btn.tooltip("Start Recording")
-                # Re-enable playback controls
-                self._set_playbar_enabled(True)
+        if recording_state.is_recording:
+            self.record_btn.props("color=warning")
+            if self._record_btn_tooltip:
+                self._record_btn_tooltip.text = "Stop Recording"
+            # Disable playback controls during recording
+            self._set_playbar_enabled(False)
+            # Show recording notification at top of screen
+            try:
+                client = self._ui_client or context.client
+                with client:
+                    self._recording_notification = ui.notification(
+                        message="Recording",
+                        type="negative",
+                        icon="fiber_manual_record",
+                        position="top",
+                        timeout=0,  # Persistent until dismissed
+                        close_button=False,
+                        classes="recording-notification",
+                    )
+            except RuntimeError:
+                pass  # No client context available
+        else:
+            self.record_btn.props("color=negative")
+            if self._record_btn_tooltip:
+                self._record_btn_tooltip.text = "Start Recording"
+            # Re-enable playback controls
+            self._set_playbar_enabled(True)
+            # Dismiss recording notification
+            if self._recording_notification is not None:
+                try:
+                    client = self._ui_client or context.client
+                    with client:
+                        self._recording_notification.dismiss()
+                except RuntimeError:
+                    pass  # No client context available
+                self._recording_notification = None
 
     def _set_playbar_enabled(self, enabled: bool) -> None:
         """Enable or disable playback controls (except record button)."""
@@ -1105,7 +1139,8 @@ print(f"Robot status: {{status}}")
             self.editor_splitter.set_value(self._splitter_value_when_expanded)
         if self.log_toggle_btn:
             self.log_toggle_btn.props("icon=expand_less")
-            self.log_toggle_btn.tooltip("Hide Output")
+            if self._log_toggle_btn_tooltip:
+                self._log_toggle_btn_tooltip.text = "Hide Output"
 
     def _collapse_log(self) -> None:
         """Collapse the shared log panel by adjusting splitter."""
@@ -1114,7 +1149,8 @@ print(f"Robot status: {{status}}")
             self.editor_splitter.set_value(94)  # 94% to editor (collapsed)
         if self.log_toggle_btn:
             self.log_toggle_btn.props("icon=expand_more")
-            self.log_toggle_btn.tooltip("Show Output")
+            if self._log_toggle_btn_tooltip:
+                self._log_toggle_btn_tooltip.text = "Show Output"
 
     def _on_splitter_change(self, e) -> None:
         """Handle splitter drag changes to update log expanded state."""
@@ -1125,13 +1161,15 @@ print(f"Robot status: {{status}}")
             self._log_expanded = False
             if self.log_toggle_btn:
                 self.log_toggle_btn.props("icon=expand_more")
-                self.log_toggle_btn.tooltip("Show Output")
+                if self._log_toggle_btn_tooltip:
+                    self._log_toggle_btn_tooltip.text = "Show Output"
         else:
             self._log_expanded = True
             self._splitter_value_when_expanded = value  # Remember user's preference
             if self.log_toggle_btn:
                 self.log_toggle_btn.props("icon=expand_less")
-                self.log_toggle_btn.tooltip("Hide Output")
+                if self._log_toggle_btn_tooltip:
+                    self._log_toggle_btn_tooltip.text = "Hide Output"
 
     # ---- Tab Management Methods ----
 
@@ -1182,13 +1220,13 @@ print(f"Robot status: {{status}}")
 
     def _show_save_confirmation(self, tab: EditorTab) -> None:
         """Show save confirmation dialog for dirty tab."""
-        dlg = ui.dialog()
+        dlg = ui.dialog().classes("save-dialog")
 
         def dont_save():
             dlg.close()
             self._do_close_tab(tab)
 
-        with dlg, ui.card().classes("overlay-card"):
+        with dlg, ui.card().classes("overlay-card w-80"):
             ui.label(f"Save changes to {tab.filename}?").classes(
                 "text-lg font-medium mb-2"
             )
@@ -1255,7 +1293,6 @@ print(f"Robot status: {{status}}")
 
     def _switch_to_tab(self, tab_id: str) -> None:
         """Switch to a specific tab (blocked during recording/playback)."""
-        from parol_commander.state import recording_state
 
         # Block tab switching during recording or playback
         if recording_state.is_recording:
@@ -1359,6 +1396,7 @@ print(f"Robot status: {{status}}")
                             icon="close", on_click=lambda _e, t=tab: self._close_tab(t)
                         )
                         .props("flat round dense size=xs")
+                        .classes("text-white")
                         .tooltip("Close tab")
                     )
                     close_btn.mark(f"editor-tab-close-{tab.id}")
@@ -1523,11 +1561,13 @@ print(f"Robot status: {{status}}")
             if self.script_running and playback_state.is_playing:
                 # Script running and playing - show pause icon
                 self._play_btn.props("icon=pause")
-                self._play_btn.tooltip("Pause")
+                if self._play_btn_tooltip:
+                    self._play_btn_tooltip.text = "Pause (Space)"
             else:
                 # Script not running OR paused - show play icon
                 self._play_btn.props("icon=play_arrow")
-                self._play_btn.tooltip("Play")
+                if self._play_btn_tooltip:
+                    self._play_btn_tooltip.text = "Play (Space)"
 
         if self._stop_btn:
             # Stop button visible only when script is running
@@ -1621,7 +1661,7 @@ print(f"Robot status: {{status}}")
         with self._scrub_container:
             for idx, segment in enumerate(segments):
                 # Get segment color (default to gray if not set)
-                color = segment.color if segment.color else "#808080"
+                color = segment.color if segment.color else PathColors.CARTESIAN
 
                 # Determine if this is first/last for rounded corners
                 is_first = idx == 0
@@ -1659,7 +1699,9 @@ print(f"Robot status: {{status}}")
             if simulation_state.path_segments and idx < len(
                 simulation_state.path_segments
             ):
-                color = simulation_state.path_segments[idx].color or "#808080"
+                color = (
+                    simulation_state.path_segments[idx].color or PathColors.CARTESIAN
+                )
 
                 # Determine if this is first/last for rounded corners
                 is_first = idx == 0
@@ -1691,11 +1733,11 @@ print(f"Robot status: {{status}}")
             self.playback_bar = bar
 
             # 1. Play/Pause button - starts script or toggles play/pause
-            self._play_btn = (
-                ui.button(icon="play_arrow", on_click=self._toggle_play)
-                .props("round dense color=positive unelevated")
-                .tooltip("Play")
-            )
+            self._play_btn = ui.button(
+                icon="play_arrow", on_click=self._toggle_play
+            ).props("round dense color=positive unelevated")
+            with self._play_btn:
+                self._play_btn_tooltip = ui.tooltip("Play (Space)")
             self._play_btn.mark("editor-play-btn")
             self.run_btn = self._play_btn
 
@@ -1712,7 +1754,7 @@ print(f"Robot status: {{status}}")
             self._next_btn = (
                 ui.button(icon="skip_next", on_click=self._step_forward)
                 .props("round dense flat")
-                .tooltip("Next step")
+                .tooltip("Next step (S)")
             )
             self._next_btn.mark("editor-step-next")
             self._next_btn.set_visibility(
@@ -1732,22 +1774,20 @@ print(f"Robot status: {{status}}")
                 # Segments will be populated by _update_scrub_segments()
 
             # 5. Speed FAB (dropdown with speed options)
-            with ui.fab(icon="speed", color="amber").props(
-                "dense unelevated round size=sm direction=up"
+            with ui.fab(icon="sym_o_acute", color="amber", direction="up").props(
+                "dense unelevated round size=sm"
             ).tooltip("Playback Speed") as speed_fab:
                 self.speed_fab = speed_fab
-                ui.fab_action("0.25x", on_click=lambda: self._set_speed(0.25))
-                ui.fab_action("0.5x", on_click=lambda: self._set_speed(0.5))
-                ui.fab_action("1x", on_click=lambda: self._set_speed(1.0))
-                ui.fab_action("2x", on_click=lambda: self._set_speed(2.0))
-                ui.fab_action("4x", on_click=lambda: self._set_speed(4.0))
+                ui.fab_action("sym_o_speed_0_5x", on_click=lambda: self._set_speed(0.5))
+                ui.fab_action("1x_mobiledata", on_click=lambda: self._set_speed(1.0))
+                ui.fab_action("sym_o_speed_2x", on_click=lambda: self._set_speed(2.0))
 
             # 6. Record button
-            self.record_btn = (
-                ui.button(icon="fiber_manual_record", on_click=self._toggle_recording)
-                .props("round dense color=negative unelevated")
-                .tooltip("Start Recording")
-            )
+            self.record_btn = ui.button(
+                icon="fiber_manual_record", on_click=self._toggle_recording
+            ).props("round dense color=negative unelevated")
+            with self.record_btn:
+                self._record_btn_tooltip = ui.tooltip("Start Recording")
             self.record_btn.mark("editor-record-btn")
 
             # 7. Capture position
@@ -1763,8 +1803,10 @@ print(f"Robot status: {{status}}")
             self.log_toggle_btn = (
                 ui.button(icon="expand_more", on_click=self._toggle_log)
                 .props("round dense flat")
-                .tooltip("Show Output")
+                .classes("text-white")
             )
+            with self.log_toggle_btn:
+                self._log_toggle_btn_tooltip = ui.tooltip("Show Output")
             self.log_toggle_btn.mark("editor-log-toggle")
 
     def build(self, close_callback: Callable | None = None) -> None:

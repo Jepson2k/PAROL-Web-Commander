@@ -11,7 +11,7 @@ import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
-from tests.helpers.browser_helpers import click_tab, close_panel, js
+from tests.helpers.browser_helpers import click_tab, close_panel, dismiss_dialogs, js
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -98,12 +98,15 @@ class TestPanelResize:
     ) -> None:
         """Closing any top-level tab should not shift the bottom panel."""
         wait_ready(class_screen)
+        dismiss_dialogs(class_screen)  # Dismiss first-time tutorial dialog if present
         clear_storage(class_screen, STORAGE_KEY)
 
         click_tab(class_screen, "program")
         click_tab(class_screen, "log")
 
-        bottom = class_screen.selenium.find_element(By.CSS_SELECTOR, ".bottom-panels")
+        bottom = class_screen.selenium.find_element(
+            By.CSS_SELECTOR, ".bottom-panels-container"
+        )
         initial_height = bottom.rect["height"]
 
         close_panel(class_screen, "program-panel")
@@ -117,7 +120,9 @@ class TestPanelResize:
         click_tab(class_screen, "program")
         click_tab(class_screen, "log")
 
-        bottom = class_screen.selenium.find_element(By.CSS_SELECTOR, ".bottom-panels")
+        bottom = class_screen.selenium.find_element(
+            By.CSS_SELECTOR, ".bottom-panels-container"
+        )
         initial = bottom.rect
 
         click_tab(class_screen, "io")
@@ -125,24 +130,6 @@ class TestPanelResize:
         final = bottom.rect
         assert abs(final["y"] + final["height"] - initial["y"] - initial["height"]) < 50
         assert abs(final["height"] - initial["height"]) < 20
-
-    def test_coupling_classes_change_with_tab_type(
-        self, class_screen: "Screen"
-    ) -> None:
-        """Coupling classes reflect tab type (program vs non-program)."""
-        click_tab(class_screen, "program")
-        click_tab(class_screen, "log")
-
-        wrapper = class_screen.selenium.find_element(By.CSS_SELECTOR, ".left-wrap")
-        assert "bottom-open" in get_classes(wrapper)
-
-        click_tab(class_screen, "io")
-        classes = get_classes(wrapper)
-        assert "bottom-open-non-program" in classes
-        assert "bottom-open" not in classes
-
-        click_tab(class_screen, "program")
-        assert "bottom-open" in get_classes(wrapper)
 
     def test_resize_panel_dimensions(self, class_screen: "Screen") -> None:
         """Resize handles change panel dimensions."""
@@ -155,7 +142,9 @@ class TestPanelResize:
         assert panel.rect["width"] > initial_width
 
         click_tab(class_screen, "log")
-        bottom = class_screen.selenium.find_element(By.CSS_SELECTOR, ".bottom-panels")
+        bottom = class_screen.selenium.find_element(
+            By.CSS_SELECTOR, ".bottom-panels-container"
+        )
         initial_height = bottom.rect["height"]
         drag(class_screen, ".response-panel .resize-handle-top", dy=-50)
         final_height = bottom.rect["height"]
@@ -201,7 +190,9 @@ class TestPanelResize:
         click_tab(class_screen, "program")
         click_tab(class_screen, "log")
 
-        bottom = class_screen.selenium.find_element(By.CSS_SELECTOR, ".bottom-panels")
+        bottom = class_screen.selenium.find_element(
+            By.CSS_SELECTOR, ".bottom-panels-container"
+        )
         before_height = bottom.rect["height"]
         drag(class_screen, ".program-panel .resize-handle-bottom", dy=80)
         assert bottom.rect["height"] <= before_height + 10
@@ -221,7 +212,9 @@ class TestPanelResize:
         clear_storage(class_screen, STORAGE_KEY)
 
         click_tab(class_screen, "log")
-        bottom = class_screen.selenium.find_element(By.CSS_SELECTOR, ".bottom-panels")
+        bottom = class_screen.selenium.find_element(
+            By.CSS_SELECTOR, ".bottom-panels-container"
+        )
         initial_height = bottom.rect["height"]
 
         click_tab(class_screen, "program")

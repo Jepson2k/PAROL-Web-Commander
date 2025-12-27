@@ -16,6 +16,7 @@ import numpy as np
 from nicegui import ui, run
 from nicegui.events import SceneClipPlane
 
+from parol_commander.common.theme import SceneColors
 from parol_commander.state import simulation_state, robot_state
 
 
@@ -311,7 +312,7 @@ class EnvelopeMixin:
                             height_segments=32,
                             wireframe=True,
                         ).with_name("envelope:sphere")
-                        self.envelope_object.material("#4488ff", 0.3)
+                        self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.3)
                     self._envelope_visible = True
                 except Exception as e:
                     logging.error(f"Failed to create envelope sphere: {e}")
@@ -378,7 +379,7 @@ class EnvelopeMixin:
                             height_segments=32,
                             wireframe=True,
                         ).with_name("envelope:sphere")
-                        self.envelope_object.material("#4488ff", 0.3)
+                        self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.3)
                     self._envelope_visible = True
                     logging.debug(
                         f"Created envelope sphere with radius {effective_radius:.3f}m "

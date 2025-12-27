@@ -688,9 +688,14 @@ def screen_wait_for_codemirror_ready(screen: "Screen", timeout_s: float = 10.0) 
 def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 10.0) -> None:
     """Wait for Three.js 3D scene to be fully initialized.
 
-    Checks that canvas exists and data-initializing attribute is removed,
-    indicating the scene has finished loading.
+    Dismisses any startup dialogs (tutorial), then checks that canvas exists
+    and data-initializing attribute is removed, indicating scene has finished loading.
     """
+    from tests.helpers.browser_helpers import dismiss_dialogs
+
+    # Dismiss any startup dialogs first (tutorial dialog blocks the scene)
+    dismiss_dialogs(screen)
+
     js = """(() => {
         const canvas = document.querySelector('canvas');
         if (!canvas) return false;

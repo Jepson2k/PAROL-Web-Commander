@@ -6,44 +6,169 @@ from nicegui import app, ui
 ThemeMode = Literal["light", "dark", "system"]
 
 
+# =============================================================================
+# Centralized Color Constants
+# =============================================================================
+# Browser CSS uses Tailwind v4 CSS variables.
+# Three.js/scene colors use hex values (Three.js can't read CSS variables).
+
+
+# Semantic status colors (for notifications, badges, status indicators)
+class StatusColors:
+    """Status indicator colors using Tailwind variables."""
+
+    POSITIVE = "var(--color-emerald-500)"  # Success, connected, enabled
+    NEGATIVE = "var(--color-red-500)"  # Error, disconnected, danger
+    WARNING = "var(--color-yellow-500)"  # Warning, caution
+    INFO = "var(--color-sky-500)"  # Information, neutral action
+    ACCENT = "var(--color-sky-500)"  # Brand accent (same as info)
+    MUTED = "var(--color-neutral-400)"  # Disabled, inactive
+
+
+# 3D Scene / visualization colors (hex for Three.js)
+class SceneColors:
+    """Colors for 3D scene elements and visualizations.
+
+    Axis colors are CVD-aware (colorblind-friendly) and follow robotics convention.
+    """
+
+    # Axis colors (X=red, Y=green, Z=blue) - CVD-aware values
+    AXIS_X_HEX = "#d94c3f"
+    AXIS_Y_HEX = "#2faf7a"
+    AXIS_Z_HEX = "#4a63e0"
+    # Lighter variants for rotational axes
+    AXIS_RX_HEX = "#f1a79f"
+    AXIS_RY_HEX = "#aee5cf"
+    AXIS_RZ_HEX = "#aeb9f3"
+
+    # Background colors
+    BACKGROUND_DARK_HEX = "#151515"
+    BACKGROUND_LIGHT_HEX = "#e0e0e0"
+
+    # Ground plane color (contrasts with background)
+    GROUND_DARK_HEX = "#202020"
+    GROUND_LIGHT_HEX = "#d4d4d4"
+
+    # Material colors (robot mesh)
+    MATERIAL_DARK_HEX = "#a3a3a3"
+    MATERIAL_LIGHT_HEX = "#737373"
+
+    # Simulator mode amber
+    SIM_AMBER_HEX = "#c77d28"
+
+    # Edit mode / inactive gray
+    EDIT_GRAY_HEX = "#525252"
+
+    # Derived colors (reference base colors)
+    ENVELOPE_HEX = AXIS_Z_HEX
+    TCP_ACTIVE_HEX = AXIS_Z_HEX
+    TCP_INACTIVE_HEX = EDIT_GRAY_HEX
+
+
+# Path visualization colors - 3 colors only
+class PathColors:
+    """Colors for path/trajectory visualization."""
+
+    CARTESIAN = "#10b981"  # emerald-500 - cartesian/linear moves
+    JOINTS = "#2563eb"  # blue-600 - joint space moves
+    SMOOTH = "#a855f7"  # purple-500 - smooth/blended moves
+
+
+# Move type to color mapping (for path_visualizer and dry_run_client)
+MOVE_TYPE_COLORS: dict[str, str] = {
+    # Cartesian moves (green)
+    "cartesian": PathColors.CARTESIAN,
+    "move_cartesian": PathColors.CARTESIAN,
+    "move_pose": PathColors.CARTESIAN,
+    "pose": PathColors.CARTESIAN,
+    "invalid": PathColors.CARTESIAN,
+    "unknown": PathColors.CARTESIAN,
+    # Joint moves (blue)
+    "joints": PathColors.JOINTS,
+    "move_joints": PathColors.JOINTS,
+    # Smooth moves (purple)
+    "smooth": PathColors.SMOOTH,
+    "smooth_move": PathColors.SMOOTH,
+    "smooth_cartesian": PathColors.SMOOTH,
+    "smooth_joints": PathColors.SMOOTH,
+    "smooth_waypoints": PathColors.SMOOTH,
+    "smooth_spline": PathColors.SMOOTH,
+    "smooth_circle": PathColors.SMOOTH,
+    "smooth_arc": PathColors.SMOOTH,
+    "smooth_helix": PathColors.SMOOTH,
+}
+
+
 def get_palette(mode: ThemeMode) -> dict[str, str]:
     """Return CTk-mapped palette tokens for the given mode."""
+    # Semantic colors are the same for light/dark - use StatusColors
+    semantic = {
+        "accent": StatusColors.ACCENT,
+        "positive": StatusColors.POSITIVE,
+        "negative": StatusColors.NEGATIVE,
+        "info": StatusColors.INFO,
+        "warning": StatusColors.WARNING,
+    }
+
     if mode == "dark":
         return {
-            "primary": "#1F538D",  # acceptable alternative "#1F6AA5"
-            "primary_hover": "#14375E",  # acceptable alternative "#144870"
-            "background": "#1A1A1A",
-            "surface": "#212121",
-            "surface_top": "#292929",
-            "text": "#D6D6D6",  # acceptable "#DCE4EE"
-            "muted": "#949A9F",
-            "seg_unselected": "#4A4A4A",
-            "on_primary": "#DCE4EE",
-            # Accent/hard-coded semantic colors
-            "accent": "#2AA8DE",
-            "positive": "#2EAD77",
-            "negative": "#D6493E",
-            "info": "#2AA8DE",
-            "warning": "#F4C21E",
+            "primary": "var(--color-sky-700)",
+            "primary_hover": "var(--color-sky-800)",
+            "background": "var(--color-neutral-900)",
+            "surface": "var(--color-neutral-800)",
+            "surface_top": "var(--color-neutral-700)",
+            "text": "var(--color-neutral-300)",
+            "muted": "var(--color-neutral-400)",
+            "seg_unselected": "var(--color-neutral-600)",
+            "on_primary": "var(--color-slate-100)",
+            **semantic,
         }
-    # light
     return {
-        "primary": "#3B8ED0",
-        "primary_hover": "#36719F",
-        "background": "#EBEBEB",
-        "surface": "#DBDBDB",
-        "surface_top": "#CFCFCF",
-        "text": "#1A1A1A",
-        "muted": "#A6A6A6",
-        "seg_unselected": "#979DA2",
-        "on_primary": "#DCE4EE",
-        # Accent/hard-coded semantic colors
-        "accent": "#2AA8DE",
-        "positive": "#2EAD77",
-        "negative": "#D6493E",
-        "info": "#2AA8DE",
-        "warning": "#F4C21E",
+        "primary": "var(--color-sky-700)",
+        "primary_hover": "var(--color-sky-800)",
+        "background": "var(--color-neutral-200)",
+        "surface": "var(--color-neutral-300)",
+        "surface_top": "var(--color-neutral-400)",
+        "text": "var(--color-neutral-900)",
+        "muted": "var(--color-neutral-500)",
+        "seg_unselected": "var(--color-neutral-400)",
+        "on_primary": "var(--color-slate-100)",
+        **semantic,
     }
+
+
+def _inject_tailwind_colors() -> None:
+    """Inject hidden element with Tailwind classes to force JIT to generate color vars."""
+    # Tailwind JIT only generates CSS for classes that are used.
+    # This hidden element forces generation of --color-* variables we reference.
+    colors = [
+        "slate",
+        "gray",
+        "zinc",
+        "neutral",
+        "stone",
+        "red",
+        "orange",
+        "amber",
+        "yellow",
+        "lime",
+        "green",
+        "emerald",
+        "teal",
+        "cyan",
+        "sky",
+        "blue",
+        "indigo",
+        "violet",
+        "purple",
+        "fuchsia",
+        "pink",
+        "rose",
+    ]
+    shades = [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]
+    classes = ["bg-white", "bg-black"]
+    classes.extend(f"bg-{color}-{shade}" for color in colors for shade in shades)
+    ui.add_head_html(f'<div style="display:none" class="{" ".join(classes)}"></div>')
 
 
 def _inject_css_vars(p: dict[str, str]) -> None:
@@ -61,67 +186,76 @@ def _inject_css_vars(p: dict[str, str]) -> None:
   --ctk-on-primary: {p["on_primary"]};
   --ctk-seg-unselected: {p["seg_unselected"]};
 
-  /* Axis/TCP colors (fallbacks first, then OKLCH overrides) */
-  --axis-x: #d94c3f; --axis-rx: #f1a79f;
-  --axis-y: #2faf7a; --axis-ry: #aee5cf;
-  --axis-z: #4a63e0; --axis-rz: #aeb9f3;
+  /* Axis/TCP colors - CVD-aware (from SceneColors) */
+  --axis-x: {SceneColors.AXIS_X_HEX};
+  --axis-rx: {SceneColors.AXIS_RX_HEX};
+  --axis-y: {SceneColors.AXIS_Y_HEX};
+  --axis-ry: {SceneColors.AXIS_RY_HEX};
+  --axis-z: {SceneColors.AXIS_Z_HEX};
+  --axis-rz: {SceneColors.AXIS_RZ_HEX};
 
-  --axis-x: oklch(0.51 0.15 28);
-  --axis-rx: oklch(0.82 0.09 28);
-  --axis-y: oklch(0.56 0.11 161);
-  --axis-ry: oklch(0.86 0.08 165);
-  --axis-z: oklch(0.62 0.20 265);
-  --axis-rz: oklch(0.86 0.07 265);
+  /* Glass tint colors (swapped in light mode) */
+  --glass-tint: var(--color-neutral-100);
+  --glass-shadow-tint: var(--color-neutral-900);
 
-  /* Glass defaults (dark-mode baseline) */
+  /* Glass defaults (computed from tint) */
   --glass-blur: 36px;
-  --glass-bg-1: rgba(255,255,255,0.16);
-  --glass-bg-2: rgba(255,255,255,0.08);
-  --glass-border: rgba(255,255,255,0.18);
-  --glass-shadow: rgba(0,0,0,0.35);
+  --glass-bg-1: color-mix(in srgb, var(--glass-tint) 16%, transparent);
+  --glass-bg-2: color-mix(in srgb, var(--glass-tint) 8%, transparent);
+  --glass-border: color-mix(in srgb, var(--glass-tint) 18%, transparent);
+  --glass-shadow: color-mix(in srgb, var(--glass-shadow-tint) 35%, transparent);
   --glass-fg: var(--ctk-text);
-  --glass-hover: rgba(255,255,255,0.08);
+  --glass-hover: color-mix(in srgb, var(--glass-tint) 8%, transparent);
 
-  /* OKLCH overrides for glass (dark baseline) */
-  --glass-bg-1: oklch(0.93 0.01 230 / 0.16);
-  --glass-bg-2: oklch(0.93 0.01 230 / 0.08);
-  --glass-border: oklch(0.93 0.01 230 / 0.18);
-
-  /* Unified overlay variables (dark baseline) */
-  --overlay-bg-1: oklch(0.93 0.01 230 / 0.20);
-  --overlay-bg-2: oklch(0.93 0.01 230 / 0.10);
-  --overlay-border: var(--glass-border);
-  --overlay-shadow: var(--glass-shadow);
-  --overlay-blur: var(--glass-blur);
-  --overlay-stroke-light: #ffffff;
-  --overlay-stroke-dark: #000000;
+  /* Unified overlay variables (computed from tint) */
+  --overlay-bg-1: color-mix(in srgb, var(--glass-tint) 20%, transparent);
+  --overlay-bg-2: color-mix(in srgb, var(--glass-tint) 10%, transparent);
+  --overlay-stroke-light: var(--color-white);
+  --overlay-stroke-dark: var(--color-black);
   --overlay-reflex-light: 1;
   --overlay-reflex-dark: 0.6;
   --overlay-saturation: 150%;
 
-  /* Semantic brand tokens (fallbacks then OKLCH) */
-  --sem-danger: #D6493E;
-  --sem-warning: #F4C21E;
-  --sem-success: #2EAD77;
-  --sem-info: #2AA8DE;
-  --brand-accent: #2AA8DE;
+  /* Shared glass box-shadow (liquid-glass reflex effect) */
+  --glass-box-shadow:
+    inset -0.3px -1px 4px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 12%), transparent),
+    inset -1.5px 2.5px 0 -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
+    inset 0 3px 4px -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
+    0 6px 16px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 8%), transparent);
 
-  --sem-danger: oklch(0.62 0.24 28);
-  --sem-warning: oklch(0.88 0.14 95);
-  --sem-success: oklch(0.72 0.18 150);
-  --sem-info: oklch(0.80 0.15 220);
-  --brand-accent: oklch(0.80 0.15 220);
+  /* Shared backdrop-filter for glass elements */
+  --glass-backdrop: blur(var(--glass-blur)) saturate(var(--overlay-saturation));
+
+  /* UI element colors (handles, tabs, scrollbars) - swapped in light mode */
+  --ui-tint: #fff;
+  --ui-tint-muted: #aaa;
+  --handle-bg: rgba(255, 255, 255, 0.2);
+  --handle-bg-hover: rgba(255, 255, 255, 0.45);
+  --tab-bg: rgba(255, 255, 255, 0.08);
+  --tab-bg-hover: rgba(255, 255, 255, 0.12);
+  --tab-bg-active: rgba(255, 255, 255, 0.18);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+
+  /* Flash animation color */
+  --flash-color: var(--color-emerald-500);
+
+  /* Semantic brand tokens - using Tailwind v4 CSS variables */
+  --sem-danger: var(--color-red-500);
+  --sem-warning: var(--color-amber-400);
+  --sem-success: var(--color-emerald-500);
+  --sem-info: var(--color-sky-500);
+  --brand-accent: var(--color-sky-500);
 
   /* Simulator mode amber - used for arm ghosting and toggle button */
-  --sim-amber: #c77d28;
-  --sim-amber: oklch(0.62 0.15 65);
+  --sim-amber: var(--color-amber-600);
 
   /* On-color defaults for legibility */
-  --on-danger: #ffffff;
-  --on-warning: #1a1a1a;
-  --on-success: #0b1612;
-  --on-info: #0b141a;
-  --on-accent: #0b141a;
+  --on-danger: var(--color-white);
+  --on-warning: var(--color-neutral-900);
+  --on-success: var(--color-neutral-900);
+  --on-info: var(--color-neutral-900);
+  --on-accent: var(--color-neutral-900);
 
   /* Joint bar height */
   --joint-bar-h: 33px;
@@ -129,36 +263,33 @@ def _inject_css_vars(p: dict[str, str]) -> None:
 
 body, .q-page {{ background: var(--ctk-bg); color: var(--ctk-text); }}
 
-/* Flip glass to dark-tinted in light mode */
+/* Flip colors in light mode */
 body.body--light {{
-  --glass-bg-1: rgba(0,0,0,0.32);
-  --glass-bg-2: rgba(0,0,0,0.18);
-  --glass-border: rgba(0,0,0,0.22);
-  --glass-shadow: rgba(0,0,0,0.18);
-  --glass-fg: #F2F5F7;
-  --glass-hover: rgba(255,255,255,0.10);
-
-  --glass-bg-1: oklch(0.28 0.02 260 / 0.32);
-  --glass-bg-2: oklch(0.28 0.02 260 / 0.18);
-  --glass-border: oklch(0.28 0.02 260 / 0.22);
-
-  /* Unified overlay variables (light overrides) */
-  --overlay-bg-1: oklch(0.28 0.02 260 / 0.22);
-  --overlay-bg-2: oklch(0.28 0.02 260 / 0.12);
-  --overlay-border: oklch(0.28 0.02 260 / 0.18);
+  /* Glass tints */
+  --glass-tint: var(--color-neutral-900);
+  --glass-shadow-tint: var(--color-neutral-900);
+  --glass-fg: var(--color-slate-100);
   --overlay-reflex-light: 0.6;
   --overlay-reflex-dark: 1.2;
   --overlay-saturation: 160%;
+
+  /* UI element colors (inverted for light mode) */
+  --ui-tint: #000;
+  --ui-tint-muted: #666;
+  --handle-bg: rgba(0, 0, 0, 0.15);
+  --handle-bg-hover: rgba(0, 0, 0, 0.35);
+  --tab-bg: rgba(0, 0, 0, 0.06);
+  --tab-bg-hover: rgba(0, 0, 0, 0.10);
+  --tab-bg-active: rgba(0, 0, 0, 0.14);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.35);
 }}
 
 /* Ensure component-scoped dark contexts inherit glass defaults */
 .q-dark {{
-  --glass-bg-1: oklch(0.93 0.01 230 / 0.16);
-  --glass-bg-2: oklch(0.93 0.01 230 / 0.08);
-  --glass-border: oklch(0.93 0.01 230 / 0.18);
-  --glass-shadow: rgba(0,0,0,0.35);
+  --glass-tint: var(--color-neutral-100);
+  --glass-shadow-tint: var(--color-neutral-900);
   --glass-fg: var(--ctk-text);
-  --glass-hover: rgba(255,255,255,0.08);
 }}
 """
     )
@@ -248,6 +379,9 @@ def apply_theme(mode: ThemeMode) -> None:
     else:
         ui.dark_mode().disable()
 
+    # Inject Tailwind color vars (forces JIT to generate them)
+    _inject_tailwind_colors()
+
     # Inject variables and overrides
     _inject_css_vars(pal)
     _inject_component_overrides()
@@ -286,9 +420,9 @@ def toggle_theme() -> ThemeMode:
 PANEL_RESIZE_CONFIG = {
     "storageKey": "parol_panel_sizes",
     "selectors": {
-        "wrap": ".left-wrap",
-        "topContainer": ".left-panels",
-        "bottomContainer": ".bottom-panels",
+        "wrap": ".panels-wrap",
+        "topContainer": ".top-panels-container",
+        "bottomContainer": ".bottom-panels-container",
     },
     "constraints": {
         "viewportMarginX": 80,
@@ -298,33 +432,112 @@ PANEL_RESIZE_CONFIG = {
         "totalMargin": 36,
     },
     "stateClasses": {
-        "bottomOpen": "bottom-open",
-        "bottomOpenNonProgram": "bottom-open-non-program",
-        "panelOpen": "is-open",
+        "coupled": "coupled",
     },
     "panels": {
         "program": {
-            "selector": ".left-panels .program-panel",
-            "minWidth": 400,
+            "selector": ".top-panels-container .program-panel",
+            "minWidth": 450,
             "minHeight": 300,
             "group": "top",
-            "pushTarget": "response",
         },
         "response": {
-            "selector": ".bottom-panels .response-panel",
+            "selector": ".bottom-panels-container .response-panel",
             "minWidth": 300,
             "minHeight": 100,
             "group": "bottom",
-            "pushTarget": "program",
         },
     },
 }
+
+
+def _generate_resize_handle_css() -> str:
+    """Generate resize handle CSS for all panel positions."""
+    # Minimal config for handles
+    specs = {
+        "side": {"size": "12px", "indicator": "4px", "len": "50px"},
+        "corner": {"size": "16px", "indicator": "8px"},
+    }
+
+    # Define container handles: (handle_name, ...)
+    containers = {
+        ".top-panels-container": ["right", "bottom", "corner"],
+        ".bottom-panels-container": ["right", "top", "corner"],
+    }
+
+    css_parts = []
+    for container, handles in containers.items():
+        for name in handles:
+            if name == "corner":
+                # Corner logic
+                s, i = specs["corner"]["size"], specs["corner"]["indicator"]
+                # Determine vertical position based on container type (top vs bottom)
+                v_pos = "bottom" if "top" in container else "top"
+                cursor = "nwse-resize" if "top" in container else "nesw-resize"
+
+                css_parts.append(
+                    f"""
+{container} .resizable-panel .resize-handle-{name} {{
+  right: -4px; {v_pos}: -4px;
+  width: {s}; height: {s};
+  cursor: {cursor};
+  z-index: 101;
+}}
+{container} .resizable-panel .resize-handle-{name}::after {{
+  width: {i}; height: {i};
+  transition: background 0.15s ease, width 0.15s ease, height 0.15s ease;
+}}"""
+                )
+            else:
+                # Side handle logic (infer orientation from name)
+                is_vert = name in ("left", "right")
+                dim_prop, len_prop = (
+                    ("width", "height") if is_vert else ("height", "width")
+                )
+                pos_spread = "top: 0; bottom: 0" if is_vert else "left: 0; right: 0"
+                cursor = "ew-resize" if is_vert else "ns-resize"
+
+                s = specs["side"]["size"]
+                i_thick, i_len = specs["side"]["indicator"], specs["side"]["len"]
+
+                css_parts.append(
+                    f"""
+{container} .resizable-panel .resize-handle-{name} {{
+  {name}: -4px; {pos_spread};
+  {dim_prop}: {s};
+  cursor: {cursor};
+}}
+{container} .resizable-panel .resize-handle-{name}::after {{
+  {dim_prop}: {i_thick}; {len_prop}: {i_len};
+  transition: background 0.15s ease, width 0.15s ease, height 0.15s ease;
+}}
+{container} .resizable-panel .resize-handle-{name}:hover::after {{
+  {len_prop}: 70px;
+}}
+{container} .resizable-panel .resize-handle-{name}.dragging::after {{
+  {len_prop}: 90px;
+}}"""
+                )
+
+    return "\n".join(css_parts)
 
 
 def inject_layout_css() -> None:
     """Injects the app's layout and component CSS previously embedded in main.py."""
     ui.add_css(
         """
+/* Prevent full-page scrollbar flash globally */
+html, body {
+  overflow: hidden !important;
+  height: 100%;
+  width: 100%;
+}
+
+.q-page { overflow: hidden !important; }
+
+/* Main app container should also clip */
+.q-layout, .q-page-container { overflow: hidden !important; }
+
 /* Compact input field styling */
 .q-field .q-field__control {
   max-height: 3em !important;
@@ -338,31 +551,23 @@ def inject_layout_css() -> None:
     top: 12px !important;
 }
 
+/* Axis/TCP colors */
+.tcp-x  { color: var(--axis-x); }
+.tcp-rx { color: var(--axis-rx); }
+.tcp-y  { color: var(--axis-y); }
+.tcp-ry { color: var(--axis-ry); }
+.tcp-z  { color: var(--axis-z); }
+.tcp-rz { color: var(--axis-rz); }
+
+
+/* ========== Controls ========== */
+
 /* Pressed visual feedback for jog controls */
 .is-pressed {
   transform: scale(0.96);
   filter: brightness(1.2);
   outline: 1px solid var(--q-accent);
   transition: transform 40ms linear, filter 40ms linear, outline-color 40ms linear;
-}
-
-/* CodeMirror line flash animation for newly added lines */
-@keyframes cm-line-flash {
-  0% { background-color: rgba(46, 204, 113, 0.6); }
-  100% { background-color: transparent; }
-}
-.cm-line.cm-line-flash {
-  animation: cm-line-flash 1.5s ease-out forwards;
-}
-
-/* Editor tab flash animation for new content */
-@keyframes tab-flash {
-  0%, 50% { background-color: rgba(46, 204, 113, 0.4); }
-  25%, 75% { background-color: transparent; }
-  100% { background-color: transparent; }
-}
-.tab-flash {
-  animation: tab-flash 1s ease-out 2;
 }
 
 /* Joint control bars with integrated pill buttons */
@@ -378,7 +583,7 @@ def inject_layout_css() -> None:
   padding: 0;
   border-radius: 9999px;
   background: transparent !important;
-  color: #fff !important;
+  color: var(--ui-tint) !important;
   font-size: 19px;
 }
 
@@ -387,10 +592,19 @@ def inject_layout_css() -> None:
 }
 
 .joint-cap.q-btn--disabled {
-  color: #aaa !important;
+  color: var(--ui-tint-muted) !important;
   pointer-events: none;
 }
 
+/* Control panel jog tabs: zero padding only here */
+.cp-jog-panels .q-tab-panels,
+.cp-jog-panels .q-tab-panel {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+
+/* ========== Overlays ========== */
 
 /* Overlay panels with frosted glass effect */
 .overlay-panel { position: absolute; z-index: 10; pointer-events: auto; }
@@ -398,15 +612,10 @@ def inject_layout_css() -> None:
   padding: 10px;
   border-radius: 10px;
   background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
-  backdrop-filter: blur(var(--overlay-blur)) saturate(var(--overlay-saturation));
-  -webkit-backdrop-filter: blur(var(--overlay-blur)) saturate(var(--overlay-saturation));
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
   border: 0 !important;
-  /* Layered light/dark reflex for liquid-glass feel */
-  box-shadow:
-    inset -0.3px -1px 4px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 12%), transparent),
-    inset -1.5px 2.5px 0 -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    inset 0 3px 4px -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    0 6px 16px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 8%), transparent);
+  box-shadow: var(--glass-box-shadow);
   isolation: isolate;
 }
 
@@ -426,80 +635,138 @@ def inject_layout_css() -> None:
   z-index: 12;
 }
 
-/* Resizable panel areas - scoped tab panel styling */
-/* .left-panels and .bottom-panels ARE the q-tab-panels containers */
-.left-panels,
-.bottom-panels {
-  background: transparent !important;
+
+/* ========== Left Tabs ========== */
+
+/* Reduce vertical tab padding to match right side panel margins (12px) */
+.q-tabs--vertical .q-tab {
+  padding: 8px 12px !important;
+  min-height: 44px !important;
+}
+
+/* Make left tab column narrower */
+.q-tabs--vertical {
+  width: 52px !important;
+}
+
+/* Side tab bar with frosted glass effect - unified bar appearance */
+.side-tab-bar {
+  background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  border: 0 !important;
+  border-radius: 10px;
+  box-shadow: var(--glass-box-shadow);
+  isolation: isolate;
+  margin: 12px;
+  padding: 4px 0;
+  pointer-events: auto;
+  height: auto !important;
+  min-height: 0 !important;
+}
+
+/* Ensure tabs inside the bar have proper sizing */
+.side-tab-bar .q-tab {
+  min-height: 44px !important;
+  padding: 8px 12px !important;
+}
+
+/* Editor tab flash animation for new content */
+@keyframes tab-flash {
+  0%, 50% { background-color: color-mix(in srgb, var(--flash-color) 40%, transparent); }
+  25%, 75% { background-color: transparent; }
+  100% { background-color: transparent; }
+}
+.tab-flash {
+  animation: tab-flash 1s ease-out 2;
+}
+
+/* Shared left-side panel container base styling */
+.left-panels-container {
+  position: absolute;
+  left: 58px;
+  max-width: calc(100vw - 80px);
   overflow: hidden !important;
-  scrollbar-width: none !important; /* Firefox */
-  -ms-overflow-style: none !important; /* IE/Edge */
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
 
-.left-panels::-webkit-scrollbar,
-.bottom-panels::-webkit-scrollbar {
-  display: none !important; /* Chrome, Safari, Opera */
+.left-panels-container::-webkit-scrollbar { display: none !important; }
+
+.top-panels-container { top: 12px;}
+
+.bottom-panels-container { bottom: 12px; }
+
+.resizable-panel { overflow: hidden !important; }
+
+/* Panel content is interactive when visible */
+.left-panels-container .overlay-card { pointer-events: auto; }
+
+/* Tab panels appear to come from underneath with left edge shadow */
+.top-panels-container .q-tab-panel.overlay-card {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 12px !important;
+  box-shadow:
+    inset 4px 0 8px -4px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 25%), transparent),
+    var(--glass-box-shadow);
 }
 
-/* Prevent scrollbar flash during tab transitions - scoped to resizable areas */
-.left-panels > .q-tab-panel--inactive,
-.bottom-panels > .q-tab-panel--inactive {
-  overflow: hidden !important;
+/* Bottom panels appear to come from underneath the tab bar */
+.bottom-panels-container .q-tab-panel.overlay-card {
+  border-bottom-left-radius: 0 !important;
 }
 
-/* Hide scrollbars on resizable tab panels during transitions */
-.left-panels > .q-tab-panel,
-.bottom-panels > .q-tab-panel {
-  scrollbar-width: none !important; /* Firefox */
-  -ms-overflow-style: none !important; /* IE/Edge */
+/* Custom slide animations for left panels - override Quasar transitions */
+/* These ensure panels always slide in from left and out to left */
+@keyframes panel-slide-enter {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
-.left-panels > .q-tab-panel::-webkit-scrollbar,
-.bottom-panels > .q-tab-panel::-webkit-scrollbar {
-  display: none !important; /* Chrome, Safari, Opera */
+@keyframes panel-slide-leave {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
 }
 
-/* Prevent full-page scrollbar flash globally */
-html, body {
-  overflow: hidden !important;
-  height: 100%;
-  width: 100%;
+/* Apply custom animations to left panel transitions - target .q-panel.scroll */
+.left-panels-container .q-panel.scroll[class*="q-transition--slide"] {
+  animation-duration: 0.3s !important;
+  animation-timing-function: ease-out !important;
 }
 
-.q-page {
-  overflow: hidden !important;
+/* Entering panel - slide in from left */
+.left-panels-container .q-panel.scroll.q-transition--slide-right-enter-active,
+.left-panels-container .q-panel.scroll.q-transition--slide-left-enter-active {
+  animation-name: panel-slide-enter !important;
 }
 
-/* Main app container should also clip */
-.q-layout, .q-page-container {
-  overflow: hidden !important;
+/* Leaving panel - slide out to left */
+.left-panels-container .q-panel.scroll.q-transition--slide-right-leave-active,
+.left-panels-container .q-panel.scroll.q-transition--slide-left-leave-active {
+  animation-name: panel-slide-leave !important;
 }
 
-/* Control panel jog tabs: zero padding only here */
-.cp-jog-panels .q-tab-panels,
-.cp-jog-panels .q-tab-panel {
-  padding: 0 !important;
-  overflow: hidden;
+/* Also handle vertical transitions (slide-up/slide-down) that Quasar uses for first tab open */
+.left-panels-container .q-panel.scroll.q-transition--slide-up-enter-active,
+.left-panels-container .q-panel.scroll.q-transition--slide-down-enter-active {
+  animation-name: panel-slide-enter !important;
 }
 
-/* IO and Gripper tab content - fixed max-height to prevent shrinking on small screens */
-.io-gripper-content {
-  max-height: min(calc(100vh - 120px), 600px);
-  min-height: 200px;
-}
-
-/* Axis/TCP colors */
-.tcp-x  { color: var(--axis-x); }
-.tcp-rx { color: var(--axis-rx); }
-.tcp-y  { color: var(--axis-y); }
-.tcp-ry { color: var(--axis-ry); }
-.tcp-z  { color: var(--axis-z); }
-.tcp-rz { color: var(--axis-rz); }
-
-/* smaller expansion header */
-.q-expansion-item .q-item {
-  min-height: 34px;
-  padding: 4px 10px;
+.left-panels-container .q-panel.scroll.q-transition--slide-up-leave-active,
+.left-panels-container .q-panel.scroll.q-transition--slide-down-leave-active {
+  animation-name: panel-slide-leave !important;
 }
 
  /* Log line coloring for response log */
@@ -515,356 +782,29 @@ html, body {
    border-radius: 3px;
  }
 
-/* Program editor panel - full width, can expand to push right side cards */
-.left-panels {
-  /* Use CSS variable for width persistence, with max constraint */
-  max-width: calc(100vw - 60px) !important;
-  transition: max-width 0.2s ease;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+/* ========== Resize Handles ========== */
 
-/* Ensure tab panels fill and constrain height properly */
-.left-panels .q-tab-panels {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: 100%;
-  overflow: hidden;
-}
-
-/* Default tab panel styling - small fixed size for non-program tabs */
-.left-panels .q-tab-panel {
-  height: auto;
-  max-height: calc(100vh - 100px);
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  width: auto;
-  min-width: 300px;
-}
-
-/* Program tab panel - large resizable, can expand to push readouts */
-/* Uses CSS variables set by JS for persistence across page refresh */
-.left-panels .q-tab-panel[name="program"],
-.left-panels .program-panel {
-  width: var(--panel-width-program, 500px);
-  max-width: calc(100vw - 80px);
-  min-width: 350px;
-  /* Use 100% height to fill parent - parent shrinks when log opens */
-  height: 100%;
-  min-height: 250px;
-}
-
-/* Program panel - shrinks to fit container, with JS resize handle */
-.program-panel {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 300px;
-  height: 100%;
-  max-height: 100%;
-  min-width: 400px;
-  max-width: calc(100vw - 80px);
-  position: relative;
-  flex: 1 1 auto;
-}
-
-/* Right edge resize handle - actual drag target */
-.program-panel .resize-handle-right {
+/* Base resize handle styles (shared by all resizable panels) */
+[class*="resize-handle-"] {
   position: absolute;
-  right: -4px;
-  top: 0;
-  bottom: 12px;
-  width: 12px;
-  cursor: ew-resize;
   z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-/* Visual indicator inside the right handle */
-.program-panel .resize-handle-right::after {
+[class*="resize-handle-"]::after {
   content: '';
-  width: 4px;
-  height: 50px;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--handle-bg);
   border-radius: 2px;
-  transition: background 0.15s ease, height 0.15s ease;
 }
 
-.program-panel .resize-handle-right:hover::after {
-  background: rgba(255, 255, 255, 0.45);
-  height: 70px;
-}
+[class*="resize-handle-"]:hover::after,
+[class*="resize-handle-"].dragging::after { background: var(--handle-bg-hover); }
 
-.program-panel .resize-handle-right.dragging::after {
-  background: var(--ctk-primary);
-  height: 90px;
-}
-
-/* Bottom edge resize handle */
-.program-panel .resize-handle-bottom {
-  position: absolute;
-  bottom: -4px;
-  left: 0;
-  right: 12px;
-  height: 12px;
-  cursor: ns-resize;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* Visual indicator inside the bottom handle */
-.program-panel .resize-handle-bottom::after {
-  content: '';
-  height: 4px;
-  width: 50px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
-  transition: background 0.15s ease, width 0.15s ease;
-}
-
-.program-panel .resize-handle-bottom:hover::after {
-  background: rgba(255, 255, 255, 0.45);
-  width: 70px;
-}
-
-.program-panel .resize-handle-bottom.dragging::after {
-  background: var(--ctk-primary);
-  width: 90px;
-}
-
-/* Corner resize handle (bottom-right) */
-.program-panel .resize-handle-corner {
-  position: absolute;
-  right: -4px;
-  bottom: -4px;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
-  z-index: 101;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.program-panel .resize-handle-corner::after {
-  content: '';
-  width: 8px;
-  height: 8px;
-  background: rgba(255, 255, 255, 0.25);
-  border-radius: 2px;
-  transition: background 0.15s ease;
-}
-
-.program-panel .resize-handle-corner:hover::after {
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.program-panel .resize-handle-corner.dragging::after {
-  background: var(--ctk-primary);
-}
-
-/* Light mode handle styling */
-body.body--light .program-panel .resize-handle-right::after,
-body.body--light .program-panel .resize-handle-bottom::after {
-  background: rgba(0, 0, 0, 0.15);
-}
-
-body.body--light .program-panel .resize-handle-right:hover::after,
-body.body--light .program-panel .resize-handle-bottom:hover::after {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-body.body--light .program-panel .resize-handle-right.dragging::after,
-body.body--light .program-panel .resize-handle-bottom.dragging::after {
-  background: var(--ctk-primary);
-}
-
-body.body--light .program-panel .resize-handle-corner::after {
-  background: rgba(0, 0, 0, 0.15);
-}
-
-body.body--light .program-panel .resize-handle-corner:hover::after {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-/* During resize, prevent text selection, scrollbars and transitions */
-body.resizing-panel {
-  cursor: ew-resize !important;
-  user-select: none !important;
-  overflow: hidden !important;
-}
-
-body.resizing-panel * {
-  cursor: ew-resize !important;
-  user-select: none !important;
-  transition: none !important;
-}
-
-body.resizing-panel .left-panels,
-body.resizing-panel .program-panel,
-body.resizing-panel .overlay-tr {
-  transition: none !important;
-}
-
-/* Prevent scrollbar flash during viewport resize */
-body.viewport-resizing {
-  overflow: hidden !important;
-}
-
-body.viewport-resizing .left-panels,
-body.viewport-resizing .program-panel,
-body.viewport-resizing .overlay-tr {
-  transition: none !important;
-}
-
-/* Make the editor splitter fill its container and be flexible */
-.program-panel .editor-splitter {
-  flex: 1 1 auto;
-  min-height: 0;
-  height: auto !important;
-  overflow: hidden;
-}
-
-/* CodeMirror editor needs to fill available space */
-.program-panel .cm-editor {
-  height: 100% !important;
-  min-height: 50px;
-  border-radius: 12px 12px 0 0;
-  overflow: hidden;
-}
-
-/* Round the top left corner of the gutter */
-.program-panel .cm-editor .cm-gutters {
-  border-top-left-radius: 12px;
-}
-
-/* Log area rounded bottom corners */
-.editor-splitter .q-splitter__after .nicegui-scroll-area {
-  border-radius: 0 0 12px 12px;
-}
-
-.editor-splitter .q-splitter__after .nicegui-log {
-  border-radius: 0 0 12px 12px;
-}
-
-/* Style CodeMirror's internal scrollbar */
-.cm-scroller::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-}
-
-.cm-scroller::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.cm-scroller::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 4px;
-}
-
-.cm-scroller::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
-}
-
-body.body--light .cm-scroller::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-}
-
-body.body--light .cm-scroller::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-/* Ensure splitter panels are flexible */
-.editor-splitter .q-splitter__panel {
-  overflow: auto;
-}
-
-/* Editor splitter styling with visible separator */
-.editor-splitter {
-  width: 100%;
-  pointer-events: auto !important;
-  overflow: visible !important;
-  min-height: 0;
-}
-
-/* Ensure splitter content can scroll but separator stays visible */
-.editor-splitter > .q-splitter__panel {
-  overflow: auto;
-}
-
-.editor-splitter .q-splitter__before {
-  overflow: auto;
-  flex-shrink: 1;  /* Allow CodeMirror panel to shrink */
-  min-height: 0;   /* Allow shrinking below content height */
-}
-
-.editor-splitter .q-splitter__after {
-  overflow: auto;
-  flex-shrink: 1;
-  min-height: 0;
-}
-
-/* Make splitter separator hold the playbar as handle */
-.editor-splitter .q-splitter__separator {
-  background: transparent !important;
-  height: auto !important;
-  min-height: 48px !important;
-  width: 100% !important;
-  cursor: row-resize !important;
-  pointer-events: auto !important;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: -16px 0;
-  flex-shrink: 0;  /* Never shrink - playbar always visible */
-  z-index: 10;
-}
-
-/* Remove any default Quasar backgrounds on separator children */
-.editor-splitter .q-splitter__separator > * {
-  background: transparent !important;
-}
-
-.editor-splitter .q-splitter__separator-area {
-  background: transparent !important;
-}
-
-/* Responsive: Adjust left panels on medium/large screens */
-@media (max-width: 1100px) {
-  .left-panels {
-    max-width: calc(100vw - 300px) !important;
-  }
-  .left-panels .q-tab-panel[name="program"] {
-    width: calc(100vw - 350px);
-    min-width: 450px;
-  }
-}
-
-/* Medium screens */
-@media (max-width: 900px) {
-  .left-panels {
-    max-width: calc(100vw - 250px) !important;
-  }
-  .left-panels .q-tab-panel[name="program"] {
-    width: calc(100vw - 300px);
-    min-width: 500px;
-  }
-}
-
-/* ========== Multi-Tab Editor Styles ========== */
+/* ========== Editor Tabs ========== */
 
 /* Editor tabs container */
-.editor-tabs {
-  background: transparent !important;
-}
-
 .editor-tabs .q-tab {
   padding: 4px 8px !important;
   min-height: 36px !important;
@@ -873,36 +813,18 @@ body.body--light .cm-scroller::-webkit-scrollbar-thumb:hover {
 
 /* Individual editor tab styling */
 .editor-tab {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tab-bg);
   border-radius: 6px 6px 0 0;
   margin-right: 2px;
   transition: background 0.15s ease;
 }
 
-.editor-tab:hover {
-  background: rgba(255, 255, 255, 0.12);
-}
+.editor-tab:hover { background: var(--tab-bg-hover); }
 
-.editor-tab.q-tab--active {
-  background: rgba(255, 255, 255, 0.18);
-}
-
-body.body--light .editor-tab {
-  background: rgba(0, 0, 0, 0.06);
-}
-
-body.body--light .editor-tab:hover {
-  background: rgba(0, 0, 0, 0.10);
-}
-
-body.body--light .editor-tab.q-tab--active {
-  background: rgba(0, 0, 0, 0.14);
-}
+.editor-tab.q-tab--active { background: var(--tab-bg-active); }
 
 /* Compact filename input in tabs */
-.editor-tab .q-field {
-  min-height: 24px !important;
-}
+.editor-tab .q-field { min-height: 24px !important; }
 
 .editor-tab .q-field__control {
   height: 24px !important;
@@ -923,17 +845,43 @@ body.body--light .editor-tab.q-tab--active {
   height: 24px !important;
 }
 
-.editor-tab .save-fab .q-icon {
-  font-size: 14px !important;
+.editor-tab .save-fab .q-icon { font-size: 14px !important; }
+
+/* Editor header scroll area - no padding */
+.program-panel .nicegui-scroll-area .q-scrollarea__content {
+  padding: 0 !important;
+  gap: 0 !important;
 }
 
-/* Editor tab panel */
-.editor-tab-panel {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 0 !important;
-  position: relative;
+
+/* ========== CodeMirror ========== */
+
+/* CodeMirror editor needs to fill available space */
+.program-panel .cm-editor { border-radius: 12px 12px 0 0; }
+
+/* Round the top left corner of the gutter */
+.program-panel .cm-editor .cm-gutters { border-top-left-radius: 12px; }
+
+/* Style CodeMirror's internal scrollbar */
+.cm-scroller::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.cm-scroller::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.cm-scroller::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+/* CodeMirror line flash animation for newly added lines */
+@keyframes cm-line-flash {
+  0% { background-color: color-mix(in srgb, var(--flash-color) 60%, transparent); }
+  100% { background-color: transparent; }
+}
+.cm-line.cm-line-flash {
+  animation: cm-line-flash 1.5s ease-out forwards;
 }
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */
@@ -942,58 +890,53 @@ body.body--light .editor-tab.q-tab--active {
   mask-image: linear-gradient(to bottom, black 0%, black calc(100% - 16px), transparent 100%);
 }
 
-/* Fade log content at top using mask - fades in from transparent */
-.editor-splitter .q-splitter__after {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 16px, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 16px, black 100%);
+
+/* ========== Editor Splitter/Playback Bar ========== */
+
+/* Editor splitter styling with visible separator */
+.editor-splitter {
+  overflow: visible !important;
+  min-height: 0;
 }
 
-/* Editor header scroll area - no padding */
-.program-panel .nicegui-scroll-area .q-scrollarea__content {
-  padding: 0 !important;
-  gap: 0 !important;
+/* Make splitter separator hold the playbar as handle */
+.editor-splitter .q-splitter__separator {
+  background: transparent !important;
+  min-height: 48px !important;
+  margin: -16px 0;
 }
+
+.editor-splitter .q-splitter__separator-area { background: transparent !important; }
 
 /* Bottom playback bar */
 .bottom-playback-bar {
   background-color: var(--overlay-bg-1) !important;
   backdrop-filter: blur(16px) saturate(var(--overlay-saturation));
   -webkit-backdrop-filter: blur(16px) saturate(var(--overlay-saturation));
-  flex-shrink: 0;
   border-radius: 9999px;
-  border: 0 !important;
-  box-shadow:
-    inset -0.3px -1px 4px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 12%), transparent),
-    inset -1.5px 2.5px 0 -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    inset 0 3px 4px -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    0 6px 16px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 8%), transparent);
-  isolation: isolate;
+  box-shadow: var(--glass-box-shadow);
   padding: 0 12px;
-  position: relative;
-  z-index: 10;
-}
-
-.bottom-playback-bar .q-slider {
-  min-width: 50px;
 }
 
 /* Ensure playbar buttons remain clickable inside splitter separator */
 .editor-splitter .bottom-playback-bar {
-  pointer-events: auto;
   cursor: default;
 }
 
-.editor-splitter .bottom-playback-bar .q-btn,
-.editor-splitter .bottom-playback-bar .q-slider,
-.editor-splitter .bottom-playback-bar .q-fab {
-  pointer-events: auto;
-  cursor: pointer;
+
+/* ========== Editor Log Area ========== */
+
+/* Log area rounded bottom corners */
+.editor-splitter .q-splitter__after .nicegui-scroll-area { border-radius: 0 0 12px 12px; }
+
+/* Fade log content at top using mask - fades in from transparent */
+.editor-splitter .q-splitter__after {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 16px, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 16px, black 100%);
 }
 
-/* Ensure readouts come back into view when tab is closed */
-.overlay-tr {
-  transition: transform 0.3s ease;
-}
+
+/* ========== Mobile Adjustments ========== */
 
 /* Phone screens - hide left tabs, center right panels */
 @media (max-width: 640px) {
@@ -1006,7 +949,7 @@ body.body--light .editor-tab.q-tab--active {
     height: 0 !important;
     overflow: hidden !important;
   }
-  .left-panels { display: none !important; }
+  .left-panels-container { display: none !important; }
 
   /* Center panels horizontally using transform */
   .overlay-tr {
@@ -1032,33 +975,21 @@ body.body--light .editor-tab.q-tab--active {
 /* Small phone screens - scale control panel to fit */
 /* Using stepped breakpoints since CSS can't compute unitless scale from viewport units */
 @media (max-width: 414px) {
-  .overlay-br {
-    transform: translateX(-50%) scale(0.95) !important;
-    transform-origin: center bottom !important;
-  }
-  .overlay-tr {
+  .overlay-br, .overlay-tr {
     transform: translateX(-50%) scale(0.95) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 380px) {
-  .overlay-br {
-    transform: translateX(-50%) scale(0.88) !important;
-    transform-origin: center bottom !important;
-  }
-  .overlay-tr {
+  .overlay-br, .overlay-tr {
     transform: translateX(-50%) scale(0.88) !important;
     transform-origin: center bottom !important;
   }
 }
 
 @media (max-width: 340px) {
-  .overlay-br {
-    transform: translateX(-50%) scale(0.8) !important;
-    transform-origin: center bottom !important;
-  }
-  .overlay-tr {
+  .overlay-br, .overlay-tr {
     transform: translateX(-50%) scale(0.8) !important;
     transform-origin: center bottom !important;
   }
@@ -1071,293 +1002,86 @@ body.body--light .editor-tab.q-tab--active {
   }
 }
 
-/* Bottom panels (response log) - resizable styling */
-.bottom-panels {
-  position: absolute;
-  bottom: 12px;
-  left: 58px;
-  height: var(--panel-height-response, 50vh);
-  width: var(--panel-width-response, calc(50vw - 58px));
-  max-width: calc(100vw - 80px);
-  pointer-events: none;
-  transition: height 0.2s ease;
+
+/* ========== Recording Notification ========== */
+/* Override parent container z-index when it contains recording notification */
+.q-notifications__list:has(.recording-notification) {
+  z-index: 15 !important;
 }
 
-.bottom-panels .q-tab-panel {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
+.recording-notification .q-notification__icon {
+  animation: recording-pulse 2s ease-in-out infinite;
 }
 
-/* Top resize handle for response panel (log) */
-.response-panel .resize-handle-top {
-  position: absolute;
-  top: -6px;
-  left: 0;
-  right: 0;
-  height: 14px;
-  cursor: ns-resize;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
 }
 
-.response-panel .resize-handle-top::after {
-  content: '';
-  height: 4px;
-  width: 50px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
-  transition: background 0.15s ease, width 0.15s ease;
-}
 
-.response-panel .resize-handle-top:hover::after {
-  background: rgba(255, 255, 255, 0.45);
-  width: 70px;
-}
-
-.response-panel .resize-handle-top.dragging::after {
-  background: var(--ctk-primary);
-  width: 90px;
-}
-
-body.body--light .response-panel .resize-handle-top::after {
-  background: rgba(0, 0, 0, 0.15);
-}
-
-body.body--light .response-panel .resize-handle-top:hover::after {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-/* Right edge resize handle for response panel */
-.response-panel .resize-handle-right {
-  position: absolute;
-  right: -4px;
-  top: 0;
-  bottom: 0;
-  width: 12px;
-  cursor: ew-resize;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-}
-
-.response-panel .resize-handle-right::after {
-  content: '';
-  width: 4px;
-  height: 50px;
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
-  transition: background 0.15s ease, height 0.15s ease;
-}
-
-.response-panel .resize-handle-right:hover::after {
-  background: rgba(255, 255, 255, 0.45);
-  height: 70px;
-}
-
-.response-panel .resize-handle-right.dragging::after {
-  background: var(--ctk-primary);
-  height: 90px;
-}
-
-body.body--light .response-panel .resize-handle-right::after {
-  background: rgba(0, 0, 0, 0.15);
-}
-
-body.body--light .response-panel .resize-handle-right:hover::after {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-/* Corner resize handle for response panel (top-right) */
-.response-panel .resize-handle-corner {
-  position: absolute;
-  right: -4px;
-  top: -4px;
-  width: 16px;
-  height: 16px;
-  cursor: nesw-resize;
-  z-index: 101;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-}
-
-.response-panel .resize-handle-corner::after {
-  content: '';
-  width: 8px;
-  height: 8px;
-  background: rgba(255, 255, 255, 0.25);
-  border-radius: 2px;
-  transition: background 0.15s ease;
-}
-
-.response-panel .resize-handle-corner:hover::after {
-  background: rgba(255, 255, 255, 0.5);
-}
-
-.response-panel .resize-handle-corner.dragging::after {
-  background: var(--ctk-primary);
-}
-
-body.body--light .response-panel .resize-handle-corner::after {
-  background: rgba(0, 0, 0, 0.15);
-}
-
-body.body--light .response-panel .resize-handle-corner:hover::after {
-  background: rgba(0, 0, 0, 0.35);
-}
-
-/* Response panel needs position relative for absolute handles */
-.response-panel {
-  position: relative;
-  overflow: hidden !important;
-}
-
-.response-panel .q-scrollarea__absolute > * {
-  max-width: 100%;
-  box-sizing: border-box;
-  overflow-x: hidden;
-  white-space: normal;
-}
-
-/* Bottom panel open/close state classes */
-.bottom-panels.is-open {
-  pointer-events: auto !important;
-}
-
-/* When program tab is active and response log is open, couple their heights */
-.left-wrap.bottom-open {
-  height: calc(100% - 50vh - 12px) !important;
-}
-
-/* When non-program tabs (IO/Gripper) are active with response log open,
-   let them stay their natural small size - no height coupling */
-.left-wrap.bottom-open-non-program {
-  height: auto !important;
-  max-height: calc(100% - 50vh - 24px) !important;
-}
-
-/* Reduce vertical tab padding to match right side panel margins (12px) */
-.q-tabs--vertical .q-tab {
-  padding: 8px 12px !important;
-  min-height: 44px !important;
-}
-
-/* Make left tab column narrower */
-.q-tabs--vertical {
-  width: 52px !important;
-}
-
-/* Side tab bar with frosted glass effect - unified bar appearance */
-.side-tab-bar {
+/* ========== Help Menu/Tutorial ========== */
+.tutorial-dialog-card {
   background: linear-gradient(135deg, var(--overlay-bg-1), var(--overlay-bg-2)) !important;
-  backdrop-filter: blur(var(--overlay-blur)) saturate(var(--overlay-saturation));
-  -webkit-backdrop-filter: blur(var(--overlay-blur)) saturate(var(--overlay-saturation));
-  border: 0 !important;
-  border-radius: 10px;
+  backdrop-filter: var(--glass-backdrop);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  width: 800px;
+  max-width: 95vw;
+  height: 85vh;
+  max-height: 900px;
+  min-height: 500px;
+  overflow: hidden;
+}
+
+.tutorial-scroll .q-scrollarea__content {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Help dialog - expand to fit content */
+.help-dialog-card {
+  max-width: 95vw;
+  max-height: 95vh;
+}
+
+/* ========== Keyboard Key Styling ========== */
+.kbd-key {
+  display: inline-block;
+  padding: 3px 8px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--ctk-text);
+  background: linear-gradient(180deg, rgba(255,255,255,0.12) 0%, rgba(255,255,255,0.04) 100%);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
   box-shadow:
-    inset -0.3px -1px 4px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 12%), transparent),
-    inset -1.5px 2.5px 0 -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    inset 0 3px 4px -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    0 6px 16px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 8%), transparent);
-  isolation: isolate;
-  margin: 12px;
-  padding: 4px 0;
-  pointer-events: auto;
-  height: auto !important;
-  min-height: 0 !important;
+    0 1px 0 rgba(0,0,0,0.3),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+  min-width: 20px;
+  text-align: center;
+  white-space: nowrap;
 }
 
-/* Ensure tabs inside the bar have proper sizing */
-.side-tab-bar .q-tab {
-  min-height: 44px !important;
-  padding: 8px 12px !important;
+.kbd-plus {
+  margin: 0 4px;
+  color: var(--ctk-muted);
+  font-size: 0.7rem;
 }
 
-/* Left panels positioned to slide out from underneath the tab bar */
-.left-panels {
-  margin-left: 0 !important;
-  padding-left: 0 !important;
-  position: relative;
+.kbd-group {
+  display: inline-flex;
+  align-items: center;
 }
 
-/* Tab panels appear to come from underneath with left edge shadow */
-.left-panels .q-tab-panel.overlay-card {
-  border-top-left-radius: 0 !important;
-  border-bottom-left-radius: 12px !important;
-  box-shadow:
-    inset 4px 0 8px -4px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 25%), transparent),
-    inset -0.3px -1px 4px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 12%), transparent),
-    inset -1.5px 2.5px 0 -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    inset 0 3px 4px -2px color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 18%), transparent),
-    0 6px 16px 0 color-mix(in srgb, var(--overlay-stroke-dark) calc(var(--overlay-reflex-dark) * 8%), transparent);
-}
+.keys-cell { padding: 6px 16px 6px 0 !important; }
 
-/* Bottom panels appear to come from underneath the tab bar */
-.bottom-panels .q-tab-panel.overlay-card {
-  border-bottom-left-radius: 0 !important;
-}
-
-/* Custom slide animations for left panels - override Quasar transitions */
-/* These ensure panels always slide in from left and out to left */
-@keyframes left-panel-enter {
-  from {
-    transform: translateX(-100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateX(0);
-    opacity: 1;
-  }
-}
-
-@keyframes left-panel-leave {
-  from {
-    transform: translateX(0);
-    opacity: 1;
-  }
-  to {
-    transform: translateX(-100%);
-    opacity: 0;
-  }
-}
-
-/* Apply custom animations to left panel transitions - target .q-panel.scroll */
-.left-panels .q-panel.scroll[class*="q-transition--slide"] {
-  animation-duration: 0.3s !important;
-  animation-timing-function: ease-out !important;
-}
-
-/* Entering panel - slide in from left */
-.left-panels .q-panel.scroll.q-transition--slide-right-enter-active,
-.left-panels .q-panel.scroll.q-transition--slide-left-enter-active {
-  animation-name: left-panel-enter !important;
-}
-
-/* Leaving panel - slide out to left */
-.left-panels .q-panel.scroll.q-transition--slide-right-leave-active,
-.left-panels .q-panel.scroll.q-transition--slide-left-leave-active {
-  animation-name: left-panel-leave !important;
-}
-
-/* Also handle vertical transitions (slide-up/slide-down) that Quasar uses for first tab open */
-.left-panels .q-panel.scroll.q-transition--slide-up-enter-active,
-.left-panels .q-panel.scroll.q-transition--slide-down-enter-active {
-  animation-name: left-panel-enter !important;
-}
-
-.left-panels .q-panel.scroll.q-transition--slide-up-leave-active,
-.left-panels .q-panel.scroll.q-transition--slide-down-leave-active {
-  animation-name: left-panel-leave !important;
-}
+.keybindings-table tbody td { border: none !important; }
 """
     )
+
+    # Add generated resize handle CSS
+    ui.add_css(_generate_resize_handle_css())
 
     # Load external JavaScript module for panel resize functionality
     ui.add_head_html('<script src="/static/js/panel-resize.js" defer></script>')

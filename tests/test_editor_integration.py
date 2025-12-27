@@ -226,6 +226,58 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
+async def test_recording_notification_appears_and_disappears(
+    user: User, robot_state
+) -> None:
+    """Test that a pulsating recording notification appears at the top of the screen.
+
+    When recording starts:
+    - A notification with "Recording" text appears at the top
+    - The notification has the recording-notification CSS class for z-index and animation
+
+    When recording stops:
+    - The notification is dismissed
+    """
+    from parol_commander.state import recording_state, ui_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None, "Editor panel should exist"
+
+    # Initially no recording notification
+    assert recording_state.is_recording is False
+    assert editor._recording_notification is None
+
+    # Click record to start
+    record_btn = user.find(marker="editor-record-btn")
+    record_btn.click()
+    await asyncio.sleep(0.1)
+
+    # Recording notification should appear
+    assert recording_state.is_recording is True
+    assert (
+        editor._recording_notification is not None
+    ), "Recording notification should exist"
+    await user.should_see("Recording")
+
+    # Click again to stop
+    record_btn.click()
+    await asyncio.sleep(0.1)
+
+    # Recording notification should be dismissed
+    assert recording_state.is_recording is False
+    assert (
+        editor._recording_notification is None
+    ), "Recording notification should be dismissed"
+
+
+@pytest.mark.integration
 async def test_panel_can_be_reopened(user: User) -> None:
     """Test that the editor panel can be closed and reopened.
 
