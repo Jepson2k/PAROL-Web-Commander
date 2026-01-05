@@ -32,9 +32,9 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
     await asyncio.sleep(0)
 
     # Assert that a SET_IO notification was emitted
-    assert any(
-        "Sent SET_IO" in m for m in user.notify.messages
-    ), "Expected SET_IO notification after HIGH click"
+    assert any("Sent SET_IO" in m for m in user.notify.messages), (
+        "Expected SET_IO notification after HIGH click"
+    )
 
     # Optionally assert that IO output changed
     new_out1 = int(getattr(robot_state, "io_out1", 0))
@@ -67,9 +67,9 @@ async def test_gripper_tab_calibrate_button_sends_notification(user: User) -> No
     await asyncio.sleep(0)
 
     # At least one new notification should have been emitted
-    assert len(user.notify.messages) > len(
-        before
-    ), "Expected a notification after clicking Calibrate gripper"
+    assert len(user.notify.messages) > len(before), (
+        "Expected a notification after clicking Calibrate gripper"
+    )
 
 
 @pytest.mark.integration
@@ -97,6 +97,6 @@ async def test_gripper_move_goto_sends_notification(user: User) -> None:
     await asyncio.sleep(0)
 
     # At least one new notification should have been emitted
-    assert len(user.notify.messages) > len(
-        before
-    ), "Expected a notification after clicking Move GoTo"
+    assert len(user.notify.messages) > len(before), (
+        "Expected a notification after clicking Move GoTo"
+    )

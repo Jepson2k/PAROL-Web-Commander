@@ -1838,9 +1838,11 @@ print(f"Robot status: {{status}}")
 
         Order: Previous | Play/Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
         """
-        with ui.row().classes("w-full items-center gap-2 bottom-playback-bar").style(
-            "min-height: 48px;"
-        ) as bar:
+        with (
+            ui.row()
+            .classes("w-full items-center gap-2 bottom-playback-bar")
+            .style("min-height: 48px;") as bar
+        ):
             self.playback_bar = bar
 
             # 1. Play/Pause button - starts script or toggles play/pause
@@ -1885,9 +1887,11 @@ print(f"Robot status: {{status}}")
                 # Segments will be populated by _update_scrub_segments()
 
             # 5. Speed FAB (dropdown with speed options)
-            with ui.fab(icon="sym_o_acute", color="amber", direction="up").props(
-                "dense unelevated round size=sm"
-            ).tooltip("Playback Speed") as speed_fab:
+            with (
+                ui.fab(icon="sym_o_acute", color="amber", direction="up")
+                .props("dense unelevated round size=sm")
+                .tooltip("Playback Speed") as speed_fab
+            ):
                 self.speed_fab = speed_fab
                 ui.fab_action("sym_o_speed_0_5x", on_click=lambda: self._set_speed(0.5))
                 ui.fab_action("1x_mobiledata", on_click=lambda: self._set_speed(1.0))
@@ -2022,14 +2026,16 @@ print(f"Robot status: {{status}}")
 
             # ---- Splitter: Editor (before) | Playbar (separator) | Log (after) ----
             # horizontal=True means vertical stacking (column layout)
-            with ui.splitter(
-                horizontal=True,
-                value=94,  # Start collapsed (94% to editor, leaves room for playbar)
-                limits=(50, 94),
-                on_change=self._on_splitter_change,
-            ).classes("w-full flex-1 editor-splitter").style(
-                "overflow: hidden;"
-            ) as splitter:
+            with (
+                ui.splitter(
+                    horizontal=True,
+                    value=94,  # Start collapsed (94% to editor, leaves room for playbar)
+                    limits=(50, 94),
+                    on_change=self._on_splitter_change,
+                )
+                .classes("w-full flex-1 editor-splitter")
+                .style("overflow: hidden;") as splitter
+            ):
                 self.editor_splitter = splitter
 
                 # ---- Tab Panels Area (CodeMirror) in splitter.before ----

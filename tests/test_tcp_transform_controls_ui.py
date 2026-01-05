@@ -440,9 +440,9 @@ class TestTCPTransformControls:
             objects = screen_list_scene_objects(class_screen)
             raise AssertionError(f"TCP ball not found. Objects in scene: {objects}")
 
-        assert (
-            tcp_ball.get("type") == "Mesh"
-        ), f"TCP ball should be a Mesh, got: {tcp_ball.get('type')}"
+        assert tcp_ball.get("type") == "Mesh", (
+            f"TCP ball should be a Mesh, got: {tcp_ball.get('type')}"
+        )
         assert tcp_ball.get("visible") is True, "TCP ball should be visible"
 
     def test_tcp_ball_at_tcp_position(self, class_screen: "Screen") -> None:
@@ -473,9 +473,9 @@ class TestTCPTransformControls:
 
         assert result is not None
         assert "error" not in result, f"Error: {result.get('error')}"
-        assert (
-            result.get("hasTransformControls") is True
-        ), f"TransformControls gizmo should exist, found types: {result.get('gizmoTypes')}"
+        assert result.get("hasTransformControls") is True, (
+            f"TransformControls gizmo should exist, found types: {result.get('gizmoTypes')}"
+        )
 
     # too flaky
     # def test_dragging_gizmo_axis_moves_robot(self, class_screen: "Screen") -> None:

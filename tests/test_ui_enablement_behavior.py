@@ -38,9 +38,9 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
     )
 
     # Verify we're at or near max limit
-    assert (
-        abs(final_j1 - j1_max) < 2.0
-    ), f"J1 should be near max limit {j1_max}°, got {final_j1:.2f}°"
+    assert abs(final_j1 - j1_max) < 2.0, (
+        f"J1 should be near max limit {j1_max}°, got {final_j1:.2f}°"
+    )
 
     # At max limit, positive direction should be blocked
     # The robot's joint_en array should reflect this
@@ -50,9 +50,9 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
 
     # Check that J1+ is disabled (index 0 in joint_en)
     j1_plus_enabled = robot_state.joint_en[0] if len(robot_state.joint_en) > 0 else 1
-    assert (
-        j1_plus_enabled == 0
-    ), f"J1+ should be disabled at max limit, joint_en[0]={j1_plus_enabled}"
+    assert j1_plus_enabled == 0, (
+        f"J1+ should be disabled at max limit, joint_en[0]={j1_plus_enabled}"
+    )
 
 
 @pytest.mark.integration
@@ -101,13 +101,13 @@ async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     # Verify joint_en array has expected structure (12 values: 6 joints * 2 directions)
-    assert (
-        len(robot_state.joint_en) == 12
-    ), f"Expected 12 joint_en values, got {len(robot_state.joint_en)}"
+    assert len(robot_state.joint_en) == 12, (
+        f"Expected 12 joint_en values, got {len(robot_state.joint_en)}"
+    )
 
     # At home position, most directions should be enabled (value 1)
     # At least one direction per joint should be enabled
     enabled_count = sum(1 for v in robot_state.joint_en if v == 1)
-    assert (
-        enabled_count >= 6
-    ), f"At home position, at least 6 directions should be enabled, got {enabled_count}"
+    assert enabled_count >= 6, (
+        f"At home position, at least 6 directions should be enabled, got {enabled_count}"
+    )

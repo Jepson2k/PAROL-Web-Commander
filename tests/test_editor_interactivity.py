@@ -163,9 +163,9 @@ def jog_joint_briefly(
     # There are 2 per joint (minus and plus), so plus buttons are at odd indices
     joint_buttons = screen.selenium.find_elements(By.CSS_SELECTOR, ".joint-cap")
     plus_btn_index = joint_index * 2 + 1  # Each joint has minus (even) and plus (odd)
-    assert (
-        len(joint_buttons) > plus_btn_index
-    ), f"Joint {joint_index} + button not found"
+    assert len(joint_buttons) > plus_btn_index, (
+        f"Joint {joint_index} + button not found"
+    )
     btn = joint_buttons[plus_btn_index]
 
     # Use ActionChains to click and hold, then release
@@ -231,18 +231,18 @@ class TestEditorInteractivity:
             new_lines = get_editor_line_count(class_screen)
 
         # Verify a new line was added
-        assert (
-            new_lines > initial_lines
-        ), f"Expected more lines after capture: {initial_lines} -> {new_lines}"
+        assert new_lines > initial_lines, (
+            f"Expected more lines after capture: {initial_lines} -> {new_lines}"
+        )
 
         # Check if the flash class is present (may have already expired)
         try:
             flashed_line = WebDriverWait(class_screen.selenium, 2).until(
                 LineFlashCondition(class_screen, min_line=initial_lines + 1)
             )
-            assert (
-                flashed_line >= initial_lines + 1
-            ), f"Flash should be on new line, got line {flashed_line}"
+            assert flashed_line >= initial_lines + 1, (
+                f"Flash should be on new line, got line {flashed_line}"
+            )
         except Exception:
             # Flash may have expired - that's acceptable
             pass
@@ -268,9 +268,9 @@ class TestEditorInteractivity:
         except Exception:
             new_lines = get_editor_line_count(class_screen)
 
-        assert (
-            new_lines > initial_lines
-        ), f"Recording should add code: {initial_lines} -> {new_lines}"
+        assert new_lines > initial_lines, (
+            f"Recording should add code: {initial_lines} -> {new_lines}"
+        )
 
     def test_tab_flashes_when_editor_closed(self, class_screen: "Screen") -> None:
         """When editor panel is closed, recording a jog flashes the tab."""
@@ -328,9 +328,9 @@ class TestEditorInteractivity:
 
         # Verify content was added
         content_before = get_codemirror_content(class_screen)
-        assert (
-            unique_marker.strip() in content_before
-        ), "Marker should be in content before refresh"
+        assert unique_marker.strip() in content_before, (
+            "Marker should be in content before refresh"
+        )
 
         # Refresh the page
         class_screen.selenium.refresh()

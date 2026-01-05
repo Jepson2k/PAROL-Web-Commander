@@ -30,9 +30,11 @@ class HelpMenu:
                 with ui.row().classes("gap-0"):
                     # Left side: vertical tabs
                     with ui.column().classes("help-tabs-column shrink-0"):
-                        with ui.tabs().props("vertical dense").classes(
-                            "help-vertical-tabs"
-                        ) as tabs:
+                        with (
+                            ui.tabs()
+                            .props("vertical dense")
+                            .classes("help-vertical-tabs") as tabs
+                        ):
                             keybindings_tab = (
                                 ui.tab(name="keybindings", label="", icon="keyboard")
                                 .classes("help-tab")
@@ -49,9 +51,11 @@ class HelpMenu:
                     # Right side: content
                     with ui.column().classes("flex-1 gap-0 overflow-hidden"):
                         # Header with close button
-                        with ui.row().classes(
-                            "w-full items-center px-4 py-2 shrink-0"
-                        ).style("border-bottom: 1px solid rgba(255,255,255,0.1);"):
+                        with (
+                            ui.row()
+                            .classes("w-full items-center px-4 py-2 shrink-0")
+                            .style("border-bottom: 1px solid rgba(255,255,255,0.1);")
+                        ):
                             ui.label("Help").classes("text-lg font-medium")
                             ui.space()
                             ui.button(icon="close", on_click=self._dialog.close).props(
@@ -59,16 +63,20 @@ class HelpMenu:
                             )
 
                         # Tab panels with vertical animation (matching vertical tabs)
-                        with ui.tab_panels(tabs, value=quickstart_tab).classes(
-                            "w-full overflow-hidden"
-                        ).props(
-                            "animated transition-prev=slide-up transition-next=slide-down"
+                        with (
+                            ui.tab_panels(tabs, value=quickstart_tab)
+                            .classes("w-full overflow-hidden")
+                            .props(
+                                "animated transition-prev=slide-up transition-next=slide-down"
+                            )
                         ):
                             with ui.tab_panel(keybindings_tab).classes("p-0"):
                                 self._build_keybindings_content()
 
-                            with ui.tab_panel(quickstart_tab).classes("p-0").style(
-                                "width: 720px; height: 700px; max-height: 85vh;"
+                            with (
+                                ui.tab_panel(quickstart_tab)
+                                .classes("p-0")
+                                .style("width: 720px; height: 700px; max-height: 85vh;")
                             ):
                                 self._build_quickstart_stepper()
 
@@ -195,9 +203,12 @@ class HelpMenu:
         ]
 
         with ui.scroll_area().classes("w-full h-full tutorial-scroll"):
-            with ui.stepper().props("vertical header-nav flat").classes("p-0").style(
-                "width: 700px;"
-            ) as self._stepper:
+            with (
+                ui.stepper()
+                .props("vertical header-nav flat")
+                .classes("p-0")
+                .style("width: 700px;") as self._stepper
+            ):
                 # Safety step (only shown on first visit)
                 if include_safety_step:
                     with ui.step("Safety Notice").classes("gap-2").mark("safety-step"):
@@ -244,8 +255,12 @@ class HelpMenu:
                 for i, step in enumerate(steps):
                     with ui.step(step["title"]).classes("gap-2"):
                         # GIF placeholder
-                        with ui.card().classes("gif-placeholder").style(
-                            "width: 100%; aspect-ratio: 16/9; background: rgba(128,128,128,0.15);"
+                        with (
+                            ui.card()
+                            .classes("gif-placeholder")
+                            .style(
+                                "width: 100%; aspect-ratio: 16/9; background: rgba(128,128,128,0.15);"
+                            )
                         ):
                             with ui.column().classes(
                                 "w-full h-full items-center justify-center"

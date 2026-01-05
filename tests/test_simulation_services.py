@@ -471,9 +471,9 @@ class TestMotionRecorder:
         delay_match = re.search(r"time\.sleep\(([\d.]+)\)", final_code)
 
         # A delay should have been inserted (since idle time > 0.5s threshold)
-        assert (
-            delay_match is not None
-        ), f"Expected time.sleep to be inserted, got: {final_code}"
+        assert delay_match is not None, (
+            f"Expected time.sleep to be inserted, got: {final_code}"
+        )
 
         delay_value = float(delay_match.group(1))
 
@@ -486,9 +486,9 @@ class TestMotionRecorder:
         )
 
         # Also verify it's a reasonable value (> 0.7s since we waited 1.5s minus 0.5s duration = 1.0s)
-        assert (
-            delay_value > 0.7
-        ), f"Delay {delay_value}s is too small - should be ~1s (1.5s wait - 0.5s duration)"
+        assert delay_value > 0.7, (
+            f"Delay {delay_value}s is too small - should be ~1s (1.5s wait - 0.5s duration)"
+        )
 
 
 # ============================================================================
@@ -589,9 +589,9 @@ class TestWorkspaceEnvelope:
 
         effective_radius = envelope.get_radius_with_tool_offset(offset)
 
-        assert (
-            effective_radius == expected
-        ), f"With offset={offset}, expected {expected}, got {effective_radius}"
+        assert effective_radius == expected, (
+            f"With offset={offset}, expected {expected}, got {effective_radius}"
+        )
 
 
 # ============================================================================
@@ -796,9 +796,9 @@ class TestSimulationCaching:
 
         # Should NOT insert anchor (positions match within tolerance)
         result = recorder._should_insert_anchor()
-        assert (
-            result is False
-        ), "Anchor should be skipped when robot matches cached position"
+        assert result is False, (
+            "Anchor should be skipped when robot matches cached position"
+        )
 
         # No cached result -> should insert anchor
         test_tab.final_joints_rad = None
@@ -822,9 +822,10 @@ class TestSimulationCaching:
         editor_tabs_state.active_tab_id = "tab2"  # Active is tab2
 
         # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
-        with patch(
-            "parol_commander.services.path_visualizer.run"
-        ) as mock_run, patch.object(simulation_state, "notify_changed"):
+        with (
+            patch("parol_commander.services.path_visualizer.run") as mock_run,
+            patch.object(simulation_state, "notify_changed"),
+        ):
             mock_run.setup = MagicMock()
             mock_run.cpu_bound = AsyncMock(
                 return_value={
@@ -916,9 +917,9 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created at least one segment
-        assert (
-            len(simulation_state.path_segments) >= 1
-        ), f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(simulation_state.path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        )
 
     @pytest.mark.asyncio
     async def test_visualizer_updates_total_steps(self):
@@ -960,33 +961,33 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created a segment
-        assert (
-            len(simulation_state.path_segments) >= 1
-        ), f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        assert len(simulation_state.path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        )
 
         # Check that end point is in meters (not mm)
         segment = simulation_state.path_segments[-1]
         end_point = segment.points[1]  # [x, y, z]
 
         # Values should be < 1 (meters), not > 100 (mm)
-        assert (
-            abs(end_point[0]) < 1.0
-        ), f"X coordinate {end_point[0]} appears to be in mm, expected meters"
-        assert (
-            abs(end_point[1]) < 1.0
-        ), f"Y coordinate {end_point[1]} appears to be in mm, expected meters"
-        assert (
-            abs(end_point[2]) < 1.0
-        ), f"Z coordinate {end_point[2]} appears to be in mm, expected meters"
+        assert abs(end_point[0]) < 1.0, (
+            f"X coordinate {end_point[0]} appears to be in mm, expected meters"
+        )
+        assert abs(end_point[1]) < 1.0, (
+            f"Y coordinate {end_point[1]} appears to be in mm, expected meters"
+        )
+        assert abs(end_point[2]) < 1.0, (
+            f"Z coordinate {end_point[2]} appears to be in mm, expected meters"
+        )
 
         # Check expected converted values (0.15, 0.1, 0.25)
-        assert (
-            abs(end_point[0] - 0.15) < 0.01
-        ), f"Expected X ~0.15m, got {end_point[0]}m"
+        assert abs(end_point[0] - 0.15) < 0.01, (
+            f"Expected X ~0.15m, got {end_point[0]}m"
+        )
         assert abs(end_point[1] - 0.1) < 0.01, f"Expected Y ~0.1m, got {end_point[1]}m"
-        assert (
-            abs(end_point[2] - 0.25) < 0.01
-        ), f"Expected Z ~0.25m, got {end_point[2]}m"
+        assert abs(end_point[2] - 0.25) < 0.01, (
+            f"Expected Z ~0.25m, got {end_point[2]}m"
+        )
 
     @pytest.mark.asyncio
     async def test_target_markers_create_targets(self):
@@ -1007,9 +1008,9 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created 2 path segments
-        assert (
-            len(simulation_state.path_segments) >= 2
-        ), f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(simulation_state.path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        )
 
         # Should have created 2 targets (one for each TARGET marker)
         assert len(simulation_state.targets) == 2, (
@@ -1019,12 +1020,12 @@ async def main():
 
         # Verify target IDs match the markers in the code
         target_ids = [t.id for t in simulation_state.targets]
-        assert (
-            "abc12345" in target_ids
-        ), f"Expected target 'abc12345' not found in {target_ids}"
-        assert (
-            "def67890" in target_ids
-        ), f"Expected target 'def67890' not found in {target_ids}"
+        assert "abc12345" in target_ids, (
+            f"Expected target 'abc12345' not found in {target_ids}"
+        )
+        assert "def67890" in target_ids, (
+            f"Expected target 'def67890' not found in {target_ids}"
+        )
 
     @pytest.mark.asyncio
     async def test_move_with_literals_auto_generates_targets(self):
@@ -1048,20 +1049,20 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created path segments (for visualization)
-        assert (
-            len(simulation_state.path_segments) >= 2
-        ), f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(simulation_state.path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        )
 
         # Should have auto-generated targets for moves with literal values
-        assert (
-            len(simulation_state.targets) >= 2
-        ), f"Expected at least 2 auto-generated targets, got {len(simulation_state.targets)}"
+        assert len(simulation_state.targets) >= 2, (
+            f"Expected at least 2 auto-generated targets, got {len(simulation_state.targets)}"
+        )
 
         # Auto-generated target IDs should be based on line numbers
         target_ids = [t.id for t in simulation_state.targets]
-        assert any(
-            tid.startswith("auto_") for tid in target_ids
-        ), f"Expected auto-generated target IDs, got {target_ids}"
+        assert any(tid.startswith("auto_") for tid in target_ids), (
+            f"Expected auto-generated target IDs, got {target_ids}"
+        )
 
     @pytest.mark.asyncio
     async def test_move_with_variables_no_target_created(self):
@@ -1088,11 +1089,11 @@ async def main():
         await visualizer.update_path_visualization(program)
 
         # Should have created path segments (visualization still works)
-        assert (
-            len(simulation_state.path_segments) >= 2
-        ), f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(simulation_state.path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        )
 
         # Should NOT have created any targets (variables not inspectable)
-        assert (
-            len(simulation_state.targets) == 0
-        ), f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"
+        assert len(simulation_state.targets) == 0, (
+            f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"
+        )

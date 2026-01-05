@@ -80,9 +80,9 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     await asyncio.sleep(0)
 
     # State should have toggled
-    assert (
-        simulation_state.paths_visible != initial_visible
-    ), f"Expected paths_visible to toggle from {initial_visible}"
+    assert simulation_state.paths_visible != initial_visible, (
+        f"Expected paths_visible to toggle from {initial_visible}"
+    )
 
 
 @pytest.mark.integration

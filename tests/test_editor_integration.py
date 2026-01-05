@@ -1,5 +1,4 @@
-"""Integration tests for the program editor via UI.
-"""
+"""Integration tests for the program editor via UI."""
 
 import asyncio
 
@@ -125,9 +124,9 @@ async def test_log_toggle_expands_log(user: User) -> None:
 
     # Check initial chevron icon is expand_more (down = "show more")
     initial_props = log_toggle_btn._props.get("icon", "")
-    assert (
-        initial_props == "expand_more"
-    ), f"Initial icon should be expand_more, got {initial_props}"
+    assert initial_props == "expand_more", (
+        f"Initial icon should be expand_more, got {initial_props}"
+    )
 
     # Click log toggle to expand
     log_toggle = user.find(marker="editor-log-toggle")
@@ -137,9 +136,9 @@ async def test_log_toggle_expands_log(user: User) -> None:
     # Log should now be expanded with expand_less icon (up chevron)
     assert editor._log_expanded is True, "Log should be expanded after click"
     expanded_props = log_toggle_btn._props.get("icon", "")
-    assert (
-        expanded_props == "expand_less"
-    ), f"Expanded icon should be expand_less, got {expanded_props}"
+    assert expanded_props == "expand_less", (
+        f"Expanded icon should be expand_less, got {expanded_props}"
+    )
 
     # Click again to collapse
     log_toggle.click()
@@ -148,9 +147,9 @@ async def test_log_toggle_expands_log(user: User) -> None:
     # Should be back to collapsed with expand_more icon
     assert editor._log_expanded is False, "Log should be collapsed after second click"
     collapsed_props = log_toggle_btn._props.get("icon", "")
-    assert (
-        collapsed_props == "expand_more"
-    ), f"Collapsed icon should be expand_more, got {collapsed_props}"
+    assert collapsed_props == "expand_more", (
+        f"Collapsed icon should be expand_more, got {collapsed_props}"
+    )
 
 
 @pytest.mark.integration
@@ -199,9 +198,9 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     record_btn_ref = editor.record_btn
     assert record_btn_ref is not None, "Record button reference should exist"
     initial_color = record_btn_ref._props.get("color", "")
-    assert (
-        initial_color == "negative"
-    ), f"Initial color should be negative (red), got {initial_color}"
+    assert initial_color == "negative", (
+        f"Initial color should be negative (red), got {initial_color}"
+    )
 
     # Click record to start
     record_btn = user.find(marker="editor-record-btn")
@@ -210,9 +209,9 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
     assert recording_state.is_recording is True, "Expected recording to start"
     recording_color = record_btn_ref._props.get("color", "")
-    assert (
-        recording_color == "warning"
-    ), f"Recording color should be warning (amber), got {recording_color}"
+    assert recording_color == "warning", (
+        f"Recording color should be warning (amber), got {recording_color}"
+    )
 
     # Click again to stop
     record_btn.click()
@@ -220,9 +219,9 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
     assert recording_state.is_recording is False, "Expected recording to stop"
     stopped_color = record_btn_ref._props.get("color", "")
-    assert (
-        stopped_color == "negative"
-    ), f"Stopped color should be negative (red), got {stopped_color}"
+    assert stopped_color == "negative", (
+        f"Stopped color should be negative (red), got {stopped_color}"
+    )
 
 
 @pytest.mark.integration
@@ -261,9 +260,9 @@ async def test_recording_notification_appears_and_disappears(
 
     # Recording notification should appear
     assert recording_state.is_recording is True
-    assert (
-        editor._recording_notification is not None
-    ), "Recording notification should exist"
+    assert editor._recording_notification is not None, (
+        "Recording notification should exist"
+    )
     await user.should_see("Recording")
 
     # Click again to stop
@@ -272,9 +271,9 @@ async def test_recording_notification_appears_and_disappears(
 
     # Recording notification should be dismissed
     assert recording_state.is_recording is False
-    assert (
-        editor._recording_notification is None
-    ), "Recording notification should be dismissed"
+    assert editor._recording_notification is None, (
+        "Recording notification should be dismissed"
+    )
 
 
 @pytest.mark.integration
@@ -380,12 +379,12 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     await asyncio.sleep(0.1)
 
     # Tab1 should now have the simulation_state data saved to it
-    assert tab1.path_segments == [
-        {"fake": "segment1"}
-    ], "Tab1 should have saved simulation_state data"
-    assert tab1.targets == [
-        {"fake": "target1"}
-    ], "Tab1 should have saved simulation_state data"
+    assert tab1.path_segments == [{"fake": "segment1"}], (
+        "Tab1 should have saved simulation_state data"
+    )
+    assert tab1.targets == [{"fake": "target1"}], (
+        "Tab1 should have saved simulation_state data"
+    )
 
     # Get second tab
     tab2 = editor_tabs_state.get_active_tab()
@@ -403,20 +402,20 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     # Manually save to tab2
     editor._save_simulation_context(tab2)
 
-    assert tab2.path_segments == [
-        {"fake": "segment2"}
-    ], "Tab2 should have its own simulation data"
-    assert tab2.targets == [
-        {"fake": "target2"}
-    ], "Tab2 should have its own simulation data"
+    assert tab2.path_segments == [{"fake": "segment2"}], (
+        "Tab2 should have its own simulation data"
+    )
+    assert tab2.targets == [{"fake": "target2"}], (
+        "Tab2 should have its own simulation data"
+    )
 
     # Tab1's data should still be preserved
-    assert tab1.path_segments == [
-        {"fake": "segment1"}
-    ], "Tab1's data should be preserved after saving tab2"
-    assert tab1.targets == [
-        {"fake": "target1"}
-    ], "Tab1's data should be preserved after saving tab2"
+    assert tab1.path_segments == [{"fake": "segment1"}], (
+        "Tab1's data should be preserved after saving tab2"
+    )
+    assert tab1.targets == [{"fake": "target1"}], (
+        "Tab1's data should be preserved after saving tab2"
+    )
 
 
 @pytest.mark.integration
@@ -446,9 +445,9 @@ async def test_create_and_remove_tab(user: User) -> None:
     await asyncio.sleep(0)
 
     # Verify new tab was created
-    assert (
-        len(editor_tabs_state.tabs) == initial_count + 1
-    ), f"Expected {initial_count + 1} tabs after creating new"
+    assert len(editor_tabs_state.tabs) == initial_count + 1, (
+        f"Expected {initial_count + 1} tabs after creating new"
+    )
 
     # Get the new tab (should be active)
     new_tab = editor_tabs_state.get_active_tab()
@@ -461,14 +460,14 @@ async def test_create_and_remove_tab(user: User) -> None:
     await asyncio.sleep(0)
 
     # Verify tab was removed
-    assert (
-        len(editor_tabs_state.tabs) == initial_count
-    ), f"Expected {initial_count} tabs after closing"
+    assert len(editor_tabs_state.tabs) == initial_count, (
+        f"Expected {initial_count} tabs after closing"
+    )
 
     # Verify the closed tab no longer exists
-    assert (
-        editor_tabs_state.find_tab_by_id(new_tab_id) is None
-    ), "Closed tab should no longer exist"
+    assert editor_tabs_state.find_tab_by_id(new_tab_id) is None, (
+        "Closed tab should no longer exist"
+    )
 
 
 @pytest.mark.integration
@@ -519,12 +518,12 @@ rbt.move_pose([150.0, 250.0, 350.0, 0.0, 0.0, 0.0])
     assert editor.script_running is True, "Script should be running"
 
     # Step button should be visible and enabled
-    assert (
-        editor._next_btn.visible is True
-    ), "Step button should be visible when script running"
-    assert (
-        editor._next_btn._props.get("disable") is not True
-    ), "Step button should be enabled"
+    assert editor._next_btn.visible is True, (
+        "Step button should be visible when script running"
+    )
+    assert editor._next_btn._props.get("disable") is not True, (
+        "Step button should be enabled"
+    )
 
     # Stop the script for cleanup
     stop_btn = user.find(marker="editor-stop-btn")
@@ -575,9 +574,9 @@ rbt.move_pose([100.0, 200.0, 300.0, 0.0, 0.0, 0.0])
 
     # Check that the content now has a TARGET marker
     updated_content = editor.program_textarea.value
-    assert (
-        "# TARGET:" in updated_content
-    ), "Move command should have TARGET marker after simulation"
+    assert "# TARGET:" in updated_content, (
+        "Move command should have TARGET marker after simulation"
+    )
 
     # Verify the marker is on the move_pose line
     lines = updated_content.splitlines()

@@ -45,11 +45,9 @@ class TCPControlsMixin:
     joint_names: List[str]
 
     # Methods from other mixins (for type checking)
-    def _sync_robot_state_from_editing(self) -> None:
-        ...
+    def _sync_robot_state_from_editing(self) -> None: ...
 
-    def _update_edit_bar_values(self, editing_type: str) -> None:
-        ...
+    def _update_edit_bar_values(self, editing_type: str) -> None: ...
 
     _current_editing_type: Optional[str]
 
@@ -61,9 +59,9 @@ class TCPControlsMixin:
         self._tcp_last_position: Optional[Tuple[float, float, float]] = None
         self._tcp_last_rotation: Optional[Tuple[float, float, float]] = None
 
-        self._tcp_cartesian_move_callback: Optional[
-            Callable[[List[float]], None]
-        ] = None
+        self._tcp_cartesian_move_callback: Optional[Callable[[List[float]], None]] = (
+            None
+        )
         self._tcp_cartesian_move_rel_trf_callback: Optional[
             Callable[[List[float]], None]
         ] = None

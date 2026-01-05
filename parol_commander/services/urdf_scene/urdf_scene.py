@@ -177,20 +177,22 @@ class UrdfScene(
             self.context_menu.on("hide", lambda: self.context_menu.clear())
             # Use polar grid with 1m radius for general workspace visualization
             default_radius = 1.0  # Default workspace radius in meters
-            with ui.scene(
-                grid=False,  # Disable rectangular grid
-                polar_grid=(default_radius, 12, 6),  # (radius, sectors, rings)
-                background_color=background_color,
-                on_click=self._handle_scene_click,
-                click_events=[
-                    "mousedown",
-                    "mouseup",
-                    "mouseleave",
-                    "contextmenu",
-                ],
-            ).classes("w-full h-[66vh]").on_transform_end(
-                self._handle_transform_event
-            ) as self.scene:
+            with (
+                ui.scene(
+                    grid=False,  # Disable rectangular grid
+                    polar_grid=(default_radius, 12, 6),  # (radius, sectors, rings)
+                    background_color=background_color,
+                    on_click=self._handle_scene_click,
+                    click_events=[
+                        "mousedown",
+                        "mouseup",
+                        "mouseleave",
+                        "contextmenu",
+                    ],
+                )
+                .classes("w-full h-[66vh]")
+                .on_transform_end(self._handle_transform_event) as self.scene
+            ):
                 # Ground plane for contrast with background
                 ui.scene.cylinder(
                     default_radius, default_radius, 0.001, radial_segments=64

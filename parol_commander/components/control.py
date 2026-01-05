@@ -103,9 +103,9 @@ class ControlPanel:
 
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
-        self._tcp_last_sent_pose: list[
-            float
-        ] | None = None  # Track last sent to avoid duplicates
+        self._tcp_last_sent_pose: list[float] | None = (
+            None  # Track last sent to avoid duplicates
+        )
         self._tcp_drag_active: bool = False
         self._last_drag_event_ts: float = 0.0
         # TRF relative move state (delta from drag start in tool frame)
@@ -1024,9 +1024,12 @@ class ControlPanel:
             # Both dialog types are persistent - physical requires button release, digital requires Resume
             self._estop_dialog.props("persistent")
 
-            with self._estop_dialog, ui.card().classes(
-                "overlay-card gap-4 items-center"
-            ).mark("estop-dialog"):
+            with (
+                self._estop_dialog,
+                ui.card()
+                .classes("overlay-card gap-4 items-center")
+                .mark("estop-dialog"),
+            ):
                 # Ensure lottie-player web component is loaded
                 ui.html(
                     """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",

@@ -140,6 +140,6 @@ while True:
     await stop_script(handle, timeout=2.0)
 
     # Verify script was stopped
-    assert (
-        handle["proc"].returncode is not None
-    ), "Expected script to be stopped after mode switch"
+    assert handle["proc"].returncode is not None, (
+        "Expected script to be stopped after mode switch"
+    )

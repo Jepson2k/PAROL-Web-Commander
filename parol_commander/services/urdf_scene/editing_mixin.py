@@ -620,7 +620,7 @@ class EditingMixin:
                 ]
                 for i, angle in enumerate(angles_deg[:6]):
                     delta = angle - orig_deg[i]
-                    ui.label(f"ΔJ{i+1}: {fmt(delta, '°')}").classes(
+                    ui.label(f"ΔJ{i + 1}: {fmt(delta, '°')}").classes(
                         f"text-xs font-mono whitespace-nowrap {color(delta)}"
                     )
             else:

@@ -155,9 +155,9 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     final_z = await wait_for_motion_stable(lambda: float(robot_state.z), tolerance=0.1)
 
     delta_z = final_z - initial_z
-    assert (
-        9.9 <= delta_z <= 10.1
-    ), f"Expected Z to move +10.0mm±0.1mm, moved {delta_z:.2f}mm"
+    assert 9.9 <= delta_z <= 10.1, (
+        f"Expected Z to move +10.0mm±0.1mm, moved {delta_z:.2f}mm"
+    )
 
     # --- Part 2: Z- translation ---
     ui_state.joint_step_deg = 5.0

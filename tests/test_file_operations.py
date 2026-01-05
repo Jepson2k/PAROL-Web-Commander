@@ -84,9 +84,9 @@ class TestFileOperations:
             # Verify the active tab has the content
             active_tab = editor_tabs_state.get_active_tab()
             assert active_tab is not None, "Should have an active tab"
-            assert (
-                active_tab.content == test_content
-            ), f"Tab content should match file. Got: {active_tab.content!r}"
+            assert active_tab.content == test_content, (
+                f"Tab content should match file. Got: {active_tab.content!r}"
+            )
         finally:
             if test_file.exists():
                 test_file.unlink()
@@ -125,9 +125,9 @@ class TestFileOperations:
             # Verify file still exists with content
             assert test_file.exists(), f"File should exist at {test_file}"
             saved_content = test_file.read_text(encoding="utf-8")
-            assert (
-                saved_content == initial_content
-            ), f"File content mismatch. Got: {saved_content!r}"
+            assert saved_content == initial_content, (
+                f"File content mismatch. Got: {saved_content!r}"
+            )
         finally:
             if test_file.exists():
                 test_file.unlink()
@@ -163,9 +163,9 @@ class TestFileOperations:
             # Verify content
             assert response.status_code == 200
             downloaded_content = response.content.decode("utf-8")
-            assert (
-                downloaded_content == test_content
-            ), f"Downloaded content mismatch. Got: {downloaded_content!r}"
+            assert downloaded_content == test_content, (
+                f"Downloaded content mismatch. Got: {downloaded_content!r}"
+            )
         finally:
             if test_file.exists():
                 test_file.unlink()
@@ -216,9 +216,9 @@ class TestFileOperations:
         user.find(marker="editor-new-tab-btn").click()
         await asyncio.sleep(0)
 
-        assert (
-            len(editor_tabs_state.tabs) == initial_tab_count + 1
-        ), "Should have one more tab"
+        assert len(editor_tabs_state.tabs) == initial_tab_count + 1, (
+            "Should have one more tab"
+        )
 
     async def test_save_and_reload_roundtrip(self, user: "User") -> None:
         """Load a file, save it, close and reload - verify content persists."""
@@ -254,9 +254,9 @@ class TestFileOperations:
 
             # Verify file was saved to disk
             saved_content = test_file.read_text(encoding="utf-8")
-            assert (
-                saved_content == test_content
-            ), f"Saved content should match. Got: {saved_content!r}"
+            assert saved_content == test_content, (
+                f"Saved content should match. Got: {saved_content!r}"
+            )
         finally:
             if test_file.exists():
                 test_file.unlink()

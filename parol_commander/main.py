@@ -552,13 +552,17 @@ def build_page_content() -> None:
             ui.column().classes("absolute inset-0 z-20").style("pointer-events: none;")
         ):
             # Wrapper div for panel coupling state (CSS class toggling)
-            with ui.element("div").classes("panels-wrap absolute inset-0 z-30").style(
-                "pointer-events: none;"
-            ) as panels_wrap:
+            with (
+                ui.element("div")
+                .classes("panels-wrap absolute inset-0 z-30")
+                .style("pointer-events: none;") as panels_wrap
+            ):
                 # Top tab bar - positioned independently
-                with ui.tabs().props("vertical").classes(
-                    "side-tab-bar absolute left-0 top-0 z-40"
-                ) as side_tabs:
+                with (
+                    ui.tabs()
+                    .props("vertical")
+                    .classes("side-tab-bar absolute left-0 top-0 z-40") as side_tabs
+                ):
                     program_tab = ui.tab(name="program", label="", icon="code")
                     program_tab.mark("tab-program")
                     io_tab = ui.tab(
@@ -575,11 +579,15 @@ def build_page_content() -> None:
                     gripper_tab.mark("tab-gripper")
 
                 # Top panels container - absolute positioned, anchored to top
-                with ui.tab_panels(side_tabs, value=None).props(
-                    "vertical animated transition-prev=slide-right transition-next=slide-right"
-                ).classes(
-                    "left-panels-container top-panels-container z-30"
-                ) as top_panels:
+                with (
+                    ui.tab_panels(side_tabs, value=None)
+                    .props(
+                        "vertical animated transition-prev=slide-right transition-next=slide-right"
+                    )
+                    .classes(
+                        "left-panels-container top-panels-container z-30"
+                    ) as top_panels
+                ):
 
                     def close_top_panels():
                         side_tabs.value = None
@@ -640,9 +648,13 @@ def build_page_content() -> None:
 
                 # Bottom vertical tabs and panels - anchored at bottom-left
                 # Tabs positioned to match top tabs: side-tab-bar has margin: 12px
-                with ui.tabs().props("vertical").classes(
-                    "side-tab-bar absolute bottom-0 left-0 z-50"
-                ) as bottom_tabs:
+                with (
+                    ui.tabs()
+                    .props("vertical")
+                    .classes(
+                        "side-tab-bar absolute bottom-0 left-0 z-50"
+                    ) as bottom_tabs
+                ):
                     resp_tab = ui.tab(name="response", label="", icon="article")
                     resp_tab.tooltip("Log")
                     resp_tab.mark("tab-log")
@@ -653,11 +665,15 @@ def build_page_content() -> None:
                     help_tab.on("click", lambda: help_menu.show_help_dialog())
 
                 # Panels positioned above tabs - styling in theme.py .bottom-panels-container
-                with ui.tab_panels(bottom_tabs, value=None).props(
-                    "vertical animated transition-prev=slide-up transition-next=slide-down"
-                ).classes(
-                    "left-panels-container bottom-panels-container"
-                ) as bottom_panels:
+                with (
+                    ui.tab_panels(bottom_tabs, value=None)
+                    .props(
+                        "vertical animated transition-prev=slide-up transition-next=slide-down"
+                    )
+                    .classes(
+                        "left-panels-container bottom-panels-container"
+                    ) as bottom_panels
+                ):
 
                     def close_bottom_panels():
                         bottom_tabs.value = None
