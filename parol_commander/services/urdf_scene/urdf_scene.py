@@ -303,6 +303,9 @@ class UrdfScene(
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
+                # Clear drag start positions
+                self._tcp_drag_start_pos = None
+                self._tcp_drag_start_rot = None
                 # Re-enable orbit controls when TCP transform ends
                 if self.scene and hasattr(self.scene, "set_orbit_enabled"):
                     self.scene.set_orbit_enabled(True)
@@ -326,6 +329,9 @@ class UrdfScene(
         if object_name in ("tcp:jog_ball", "tcp:offset"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
+                # Clear drag start positions
+                self._tcp_drag_start_pos = None
+                self._tcp_drag_start_rot = None
                 # Notify drag-end to consumers
                 cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
                 if callable(cb):

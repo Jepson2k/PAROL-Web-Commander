@@ -182,9 +182,6 @@ def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
             lambda _: not has_visible_dialog()
         )
 
-    # Set first-visit key to prevent future tutorial dialogs
-    js(screen, 'localStorage.setItem("parol_first_visit_shown", "true");')
-
 
 def wait_for_codemirror_ready(screen: "Screen", timeout: float = 10.0) -> None:
     """Wait for CodeMirror editor to be fully interactive.

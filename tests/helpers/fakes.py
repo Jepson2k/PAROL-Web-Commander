@@ -39,7 +39,7 @@ class RecordingAsyncClient:
         self,
         index: int,
         *,
-        speed_percentage: int,
+        speed: int,
         duration: float | None = None,
         distance_deg: float | None = None,
     ) -> None:
@@ -47,36 +47,36 @@ class RecordingAsyncClient:
         self._record(
             "jog_joint",
             index,
-            speed_percentage=speed_percentage,
+            speed=speed,
             duration=duration,
             distance_deg=distance_deg,
         )
 
     async def jog_cartesian(
-        self, frame: Any, axis: Any, speed_percentage: int, duration: float
+        self, frame: Any, axis: Any, speed: int, duration: float
     ) -> None:
         """Record a cartesian jog command."""
         self._record(
             "jog_cartesian",
             frame,
             axis,
-            speed_percentage=speed_percentage,
+            speed=speed,
             duration=duration,
         )
 
     async def move_joints(
-        self, target: list[float], *, speed_percentage: int = 50, **kwargs: Any
+        self, target: list[float], *, speed: int = 50, **kwargs: Any
     ) -> None:
         """Record a move_joints command."""
-        self._record("move_joints", target, speed_percentage=speed_percentage, **kwargs)
+        self._record("move_joints", target, speed=speed, **kwargs)
 
     async def move_cartesian(
         self,
         pose: list[float],
         *,
         duration: float | None = None,
-        speed_percentage: float | None = None,
-        accel_percentage: float | None = None,
+        speed: float | None = None,
+        accel: float | None = None,
         **kwargs: Any,
     ) -> bool:
         """Record a move_cartesian command."""
@@ -84,8 +84,8 @@ class RecordingAsyncClient:
             "move_cartesian",
             pose,
             duration=duration,
-            speed_percentage=speed_percentage,
-            accel_percentage=accel_percentage,
+            speed=speed,
+            accel=accel,
             **kwargs,
         )
         return True

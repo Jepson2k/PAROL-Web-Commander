@@ -70,6 +70,35 @@
         }
     }
 
+    // ========== Active Tab Storage ==========
+    const ACTIVE_TABS_KEY = 'parol_active_tabs';
+    let activeTabs = { top: null, bottom: null };
+
+    function loadActiveTabs() {
+        try {
+            const saved = localStorage.getItem(ACTIVE_TABS_KEY);
+            if (saved) {
+                activeTabs = JSON.parse(saved);
+                console.log('[PanelResize] Loaded active tabs:', activeTabs);
+            }
+        } catch (e) {
+            console.warn('[PanelResize] Could not load active tabs:', e);
+            activeTabs = { top: null, bottom: null };
+        }
+    }
+
+    function saveActiveTabs() {
+        try {
+            localStorage.setItem(ACTIVE_TABS_KEY, JSON.stringify(activeTabs));
+        } catch (e) {
+            console.warn('[PanelResize] Could not save active tabs:', e);
+        }
+    }
+
+    function getActiveTabs() {
+        return { ...activeTabs };
+    }
+
     // ========== Panel Identification ==========
 
     function getPanelId(panel) {
@@ -511,6 +540,10 @@
     function onTabChange(group, toTab) {
         console.log('[PanelResize] Tab change:', group, '->', toTab);
 
+        // Save active tab state
+        activeTabs[group] = toTab || null;
+        saveActiveTabs();
+
         const wrap = config.selectors.wrap ? document.querySelector(config.selectors.wrap) : null;
         const containerSelector = group === 'top'
             ? config.selectors.topContainer
@@ -735,12 +768,14 @@
         console.log('[PanelResize] Configured:', config);
 
         loadPanelSizes();
+        loadActiveTabs();
     }
 
     // ========== Setup ==========
 
     function init() {
         loadPanelSizes();
+        loadActiveTabs();
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', function() {
@@ -797,6 +832,7 @@
         onTabChange: onTabChange,
         onAppReady: onAppReady,
         getSavedSize: getSavedPanelSize,
+        getActiveTabs: getActiveTabs,
         clearAllSizes: function() {
             panelSizes = {};
             savePanelSizes();

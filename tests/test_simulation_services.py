@@ -58,22 +58,25 @@ class TestDryRunClient:
         with patch(
             "parol_commander.services.dry_run_client.PAROL6_ROBOT", mock_robot_module
         ):
-            # Create client with explicit collectors
-            segments: list[dict] = []
-            targets: list[dict] = []
-            client = DryRunRobotClient(
-                segment_collector=segments, target_collector=targets
-            )
+            with patch(
+                "parol_commander.services.dry_run_client.check_limits",
+                return_value=True,
+            ):
+                segments: list[dict] = []
+                targets: list[dict] = []
+                client = DryRunRobotClient(
+                    segment_collector=segments, target_collector=targets
+                )
 
-            client.move_joints([10, 20, 30, 40, 50, 60])
+                client.move_joints([10, 20, 30, 40, 50, 60])
 
-            # Verify path segment created in collector
-            assert len(segments) == 1
-            segment = segments[0]
-            assert segment["is_valid"] is True
-            assert segment["joints"] is not None
-            assert len(segment["joints"]) == 6
-            assert segment["move_type"] == "joints"
+                # Verify path segment created in collector
+                assert len(segments) == 1
+                segment = segments[0]
+                assert segment["is_valid"] is True
+                assert segment["joints"] is not None
+                assert len(segment["joints"]) == 6
+                assert segment["move_type"] == "joints"
 
     @pytest.mark.asyncio
     async def test_move_cartesian_creates_path_segment(self):
@@ -240,7 +243,7 @@ class TestMotionRecorder:
             "rbt.move_joints([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
         )
 
-    def test_toggle_recording_lifecycle(self):
+    def test_toggle_recording_lifecycle(self, mock_editor):
         """toggle_recording should toggle recording state on/off."""
         recorder = MotionRecorder()
 

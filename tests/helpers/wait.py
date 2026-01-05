@@ -128,6 +128,12 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
         user.find(marker="btn-robot-toggle").click()
         await asyncio.sleep(0.1)
 
+    # Wait for simulator_active flag to be set by the toggle handler
+    for _ in range(20):
+        if robot_state.simulator_active:
+            break
+        await asyncio.sleep(0.1)
+
     # Wait for simulator_ready event (set when STATUS arrives after toggle)
     try:
         await asyncio.wait_for(
@@ -688,12 +694,12 @@ def screen_wait_for_codemirror_ready(screen: "Screen", timeout_s: float = 10.0) 
 def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 10.0) -> None:
     """Wait for Three.js 3D scene to be fully initialized.
 
-    Dismisses any startup dialogs (tutorial), then checks that canvas exists
+    Dismisses any startup dialogs (tutorial/safety), then checks that canvas exists
     and data-initializing attribute is removed, indicating scene has finished loading.
     """
     from tests.helpers.browser_helpers import dismiss_dialogs
 
-    # Dismiss any startup dialogs first (tutorial dialog blocks the scene)
+    # Dismiss any startup dialogs first (may appear with screen fixture)
     dismiss_dialogs(screen)
 
     js = """(() => {

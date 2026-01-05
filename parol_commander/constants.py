@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from parol6.PAROL6_ROBOT import joint
+from parol6.config import LIMITS
 
 # Repository root
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
 
 # Expose as plain Python lists for UI/serialization friendliness
-JOINT_LIMITS_DEG = joint.limits.deg.tolist()
+JOINT_LIMITS_DEG = LIMITS.joint.position.deg.tolist()
 
 
 class _Config:

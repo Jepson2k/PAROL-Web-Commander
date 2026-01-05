@@ -214,19 +214,18 @@ class SteppingClientWrapper:
             # Call the actual method
             result = method(*args, **kwargs)
 
-            # Wait for robot to stop moving
-            if hasattr(self._wrapped, "wait_until_stopped"):
-                self._wrapped.wait_until_stopped()
+            # Wait for motion to complete
+            self._wrapped.wait_motion_complete()
 
             # Emit complete event
             self._step_io.emit_event("complete", name)
 
+            # Increment step counter for next command
+            self._step_io.increment_step_count()
+
             # Check if we should pause for stepping
             if self._step_io.check_should_pause():
                 self._step_io.wait_for_step_or_play()
-
-            # Increment step counter for next command
-            self._step_io.increment_step_count()
 
             return result
 

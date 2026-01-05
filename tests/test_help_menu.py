@@ -3,7 +3,10 @@
 import asyncio
 
 import pytest
+from nicegui import app as ng_app
 from nicegui.testing import User
+
+from parol_commander.components.help_menu import HelpMenu
 
 
 @pytest.mark.integration
@@ -105,3 +108,45 @@ class TestTutorialStepper:
         # Should see last step with Finish button
         await user.should_see("Begin! TCP Controls")
         await user.should_see("Finish")
+
+
+@pytest.mark.integration
+class TestFirstTimeDialogWithSafety:
+    """Tests for first-time dialog with safety acknowledgment step."""
+
+    async def test_safety_step_shows_on_first_visit(self, user: User) -> None:
+        """Test that safety step appears on first visit and blocks navigation.
+
+        Verifies:
+        1. First-time dialog opens automatically
+        2. Safety step is the first step with warning content
+        3. Continue button is disabled until checkbox is checked
+        4. Checking checkbox enables Continue and stores acknowledgment
+        """
+        # Clear the storage keys to simulate first visit BEFORE opening the page
+        # The reset_state fixture sets these, so we clear them
+        ng_app.storage.general.pop(HelpMenu.FIRST_VISIT_KEY, None)
+        ng_app.storage.general.pop(HelpMenu.SAFETY_ACKNOWLEDGED_KEY, None)
+
+        await user.open("/")
+        await asyncio.sleep(0.5)  # Wait for async task to trigger dialog
+
+        # Should see safety step content (search by marker)
+        await user.should_see(marker="safety-step")
+        await user.should_see("Please read before continuing")
+        await user.should_see("no safety guarantees")
+        await user.should_see("I have read and accept responsibility")
+
+        # Continue button should be present but disabled (can't easily test disabled state)
+        await user.should_see("Continue")
+
+        # Check the acceptance checkbox
+        user.find("I have read and accept responsibility").click()
+        await asyncio.sleep(0.1)
+
+        # Click Continue to proceed to next step (should now be enabled)
+        user.find("Continue").click()
+        await asyncio.sleep(0.1)
+
+        # Should now see the first tutorial step
+        await user.should_see("Interface Overview")

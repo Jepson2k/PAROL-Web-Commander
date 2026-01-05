@@ -204,7 +204,7 @@ class TestSteppingClientWrapper:
 
         mock_client = MagicMock()
         mock_client.move_joints = MagicMock(return_value="result")
-        mock_client.wait_until_stopped = MagicMock()
+        mock_client.wait_motion_complete = MagicMock()
 
         step_io = StepIO("test_wrapper")
         # Set up control file so we don't pause (paused=False)
@@ -216,7 +216,7 @@ class TestSteppingClientWrapper:
         result = wrapper.move_joints([0, 0, 0, 0, 0, 0])
 
         mock_client.move_joints.assert_called_once_with([0, 0, 0, 0, 0, 0])
-        mock_client.wait_until_stopped.assert_called_once()
+        mock_client.wait_motion_complete.assert_called_once()
         assert result == "result"
 
         # Verify events were emitted

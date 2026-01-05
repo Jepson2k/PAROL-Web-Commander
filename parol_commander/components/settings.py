@@ -9,6 +9,7 @@ from nicegui import ui
 from parol_commander.common.theme import set_theme
 from parol_commander.state import simulation_state, ui_state
 from parol6 import AsyncRobotClient
+from parol6.motion.trajectory import ProfileType
 from parol6.tools import TOOL_CONFIGS
 
 
@@ -47,6 +48,7 @@ class SettingsContent:
             "show_route": ng_app.storage.general.get("show_route", True),
             "envelope_mode": ng_app.storage.general.get("envelope_mode", "auto"),
             "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
+            "motion_profile": ng_app.storage.general.get("motion_profile", "TOPPRA"),
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -226,6 +228,29 @@ class SettingsContent:
 
         ui.separator().classes("my-1")
 
+        # Motion Profile Selection - dropdown
+        async def _on_motion_profile_change(e):
+            profile = e.value if hasattr(e, "value") else str(e.args)
+            ng_app.storage.general["motion_profile"] = profile
+            await self.client.set_profile(profile)
+
+        # Build profile options from ProfileType enum
+        motion_profile_options = {p.value.upper(): p.name.title() for p in ProfileType}
+
+        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
+            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
+                ui.label("Motion Profile").classes("text-sm font-medium truncate")
+                ui.label("Trajectory generation algorithm").classes(
+                    "text-xs text-gray-500 dark:text-gray-400 truncate"
+                )
+            ui.select(
+                options=motion_profile_options,
+                value=prefs["motion_profile"],
+                on_change=_on_motion_profile_change,
+            ).classes("w-32").props("dense").mark("select-motion-profile")
+
+        ui.separator().classes("my-1")
+
         # Theme Selection - dropdown
         def _on_theme_change(e):
             mode = e.value if hasattr(e, "value") else str(e.args)
@@ -244,3 +269,39 @@ class SettingsContent:
                 value=prefs["theme_mode"],
                 on_change=_on_theme_change,
             ).classes("w-24").props("dense")
+
+        ui.separator().classes("my-1")
+
+        # Translation Reference Frame (locked to WRF)
+        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
+            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
+                ui.label("Translation RF").classes("text-sm font-medium truncate")
+                ui.label("Reference frame for translation moves").classes(
+                    "text-xs text-gray-500 dark:text-gray-400 truncate"
+                )
+            # Wrap in span so tooltip works on disabled element
+            with ui.element("span").tooltip(
+                "Mode is currently locked but will be configurable in a future update"
+            ):
+                ui.select(
+                    options={"WRF": "World", "TRF": "Tool"},
+                    value="WRF",
+                ).classes("w-24").props("dense disable")
+
+        ui.separator().classes("my-1")
+
+        # Rotation Reference Frame (locked to TRF)
+        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
+            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
+                ui.label("Rotation RF").classes("text-sm font-medium truncate")
+                ui.label("Reference frame for rotation moves").classes(
+                    "text-xs text-gray-500 dark:text-gray-400 truncate"
+                )
+            # Wrap in span so tooltip works on disabled element
+            with ui.element("span").tooltip(
+                "Mode is currently locked but will be configurable in a future update"
+            ):
+                ui.select(
+                    options={"WRF": "World", "TRF": "Tool"},
+                    value="TRF",
+                ).classes("w-24").props("dense disable")

@@ -45,12 +45,10 @@ def _warm_worker() -> bool:
 async def warm_process_pool() -> None:
     """Pre-warm all process pool workers by importing heavy modules.
 
-    This should be called once at app startup. Each worker process will import
-    roboticstoolbox/spatialmath once, and subsequent simulations will be fast
-    since workers are reused by ProcessPoolExecutor.
+    This should be called once at app startup (after NiceGUI has initialized
+    the process pool). Each worker process will import roboticstoolbox/spatialmath
+    once, and subsequent simulations will be fast since workers are reused.
     """
-    run.setup()  # Ensure pool exists
-
     # ProcessPoolExecutor uses cpu_count() workers by default
     worker_count = os.cpu_count() or 4
     logger.info("Warming %d process pool workers (importing RTB)...", worker_count)
@@ -286,6 +284,7 @@ def _run_simulation_isolated(
             "__file__": "simulation_script.py",
             "__builtins__": builtins.__dict__.copy(),
             "print": lambda *args, **kwargs: None,  # Suppress print
+            "time": mock_time,  # Provide time module for scripts using time.sleep() without import
         }
 
         # Populate linecache with program source so DryRunRobotClient can find
@@ -408,9 +407,7 @@ class PathVisualizer:
             self._simulation_count += 1
             sim_id = self._simulation_count
 
-            # Ensure process pool is available (idempotent - safe to call multiple times)
-            # This handles both production (NiceGUI startup) and test contexts (pytest-xdist)
-            run.setup()
+            # Process pool is initialized by NiceGUI at startup and warmed by warm_process_pool()
 
             logger.info("Starting isolated path visualization (sim_id=%d)...", sim_id)
 

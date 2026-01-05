@@ -1,6 +1,6 @@
 """Help menu component with keybindings and quick start tutorial."""
 
-from nicegui import ui
+from nicegui import app as ng_app, ui
 
 from parol_commander.services.keybindings import keybindings_manager
 
@@ -9,11 +9,13 @@ class HelpMenu:
     """Help dialog with vertical tabs for keybindings and quick start tutorial."""
 
     FIRST_VISIT_KEY = "parol_first_visit_shown"
+    SAFETY_ACKNOWLEDGED_KEY = "parol_safety_acknowledged"
 
     def __init__(self) -> None:
         self._dialog: ui.dialog | None = None
         self._stepper: ui.stepper | None = None
         self._keybindings_container: ui.element | None = None
+        self._safety_accepted: ui.checkbox | None = None
 
     def show_help_dialog(self) -> None:
         """Show the main help dialog with vertical tabs."""
@@ -157,8 +159,13 @@ class HelpMenu:
                     """,
                     )
 
-    def _build_quickstart_stepper(self) -> None:
-        """Build quick start stepper with GIF placeholders."""
+    def _build_quickstart_stepper(self, include_safety_step: bool = False) -> None:
+        """Build quick start stepper with GIF placeholders.
+
+        Args:
+            include_safety_step: If True, prepend a safety acknowledgment step.
+                                 Used for first-time visit dialog only.
+        """
         steps = [
             {
                 "title": "Interface Overview",
@@ -191,6 +198,49 @@ class HelpMenu:
             with ui.stepper().props("vertical header-nav flat").classes("p-0").style(
                 "width: 700px;"
             ) as self._stepper:
+                # Safety step (only shown on first visit)
+                if include_safety_step:
+                    with ui.step("Safety Notice").classes("gap-2").mark("safety-step"):
+                        with ui.row().classes("items-center gap-2 mb-2"):
+                            ui.icon("warning", size="md").classes("text-amber-500")
+                            ui.label("Please read before continuing").classes(
+                                "text-lg font-medium"
+                            )
+
+                        with ui.column().classes("gap-2 ml-1"):
+                            warnings = [
+                                "This software provides no safety guarantees and assumes no liability",
+                                "User accepts full responsibility for robot operation",
+                                "Simulator mode is not physics-accurate and does not guarantee repeatability on real hardware",
+                                "The digital E-STOP is not a substitute for the hardware emergency stop",
+                                "Incorrect kinematics calculations could result in sudden robotic movements",
+                                "Keep clear of all moving parts during operation",
+                            ]
+                            for warning in warnings:
+                                with ui.row().classes("items-start gap-2"):
+                                    ui.icon("circle", size="6px").classes(
+                                        "text-amber-500 mt-2 shrink-0"
+                                    )
+                                    ui.label(warning).classes("text-sm")
+
+                        with ui.stepper_navigation().classes("mt-4"):
+                            self._safety_accepted = ui.checkbox(
+                                "I have read and accept responsibility"
+                            ).classes("mr-4")
+                            next_btn = ui.button(
+                                "Continue", on_click=self._stepper.next
+                            ).props("color=primary")
+                            next_btn.bind_enabled_from(self._safety_accepted, "value")
+
+                            # Store acknowledgment when checkbox is checked
+                            def on_accept(e):
+                                if e.args:
+                                    ng_app.storage.general[
+                                        self.SAFETY_ACKNOWLEDGED_KEY
+                                    ] = True
+
+                            self._safety_accepted.on("update:model-value", on_accept)
+
                 for i, step in enumerate(steps):
                     with ui.step(step["title"]).classes("gap-2"):
                         # GIF placeholder
@@ -223,26 +273,14 @@ class HelpMenu:
 
     def _on_finish(self) -> None:
         """Handle finish button click - mark tutorial complete and close dialog."""
-        self._mark_tutorial_complete()
+        ng_app.storage.general[self.FIRST_VISIT_KEY] = True
         if self._dialog:
             self._dialog.close()
 
-    def _mark_tutorial_complete(self) -> None:
-        """Mark tutorial as complete in localStorage."""
-        ui.run_javascript(f'localStorage.setItem("{self.FIRST_VISIT_KEY}", "true");')
-
     def check_first_visit(self) -> None:
         """Check if this is the first visit and show tutorial dialog if so."""
-        ui.run_javascript(
-            f"""
-            (function() {{
-                const seen = localStorage.getItem("{self.FIRST_VISIT_KEY}");
-                if (!seen) {{
-                    emitEvent('show_first_time_tutorial', {{}});
-                }}
-            }})();
-            """
-        )
+        if not ng_app.storage.general.get(self.FIRST_VISIT_KEY, False):
+            self.show_dialog()
 
     def show_dialog(self) -> None:
         """Show the first-time tutorial dialog (alias for backwards compatibility)."""
@@ -250,7 +288,13 @@ class HelpMenu:
 
     def create_first_time_dialog(self) -> ui.dialog:
         """Create and return the first-time tutorial dialog."""
-        self._dialog = ui.dialog()
+        # Persistent dialog - can't be dismissed by clicking outside
+        self._dialog = ui.dialog().props("persistent")
+
+        # Check if safety was already acknowledged in a previous session
+        safety_already_acknowledged = ng_app.storage.general.get(
+            self.SAFETY_ACKNOWLEDGED_KEY, False
+        )
 
         with self._dialog:
             with ui.card().classes("overlay-card tutorial-dialog-card"):
@@ -262,13 +306,21 @@ class HelpMenu:
                         "Let's get you started with a quick tour of the interface."
                     ).classes("text-sm text-gray-400 mb-3 shrink-0")
 
-                    # Quick start stepper
-                    self._build_quickstart_stepper()
+                    # Quick start stepper (with safety step only if not already acknowledged)
+                    self._build_quickstart_stepper(
+                        include_safety_step=not safety_already_acknowledged
+                    )
 
-                    # Footer with checkbox
-                    with ui.row().classes("w-full items-center pt-3 shrink-0").style(
-                        "border-top: 1px solid rgba(255,255,255,0.1);"
-                    ):
+                    # Footer - hidden until safety is acknowledged (or always visible if already acknowledged)
+                    footer = (
+                        ui.row()
+                        .classes("w-full items-center pt-3 shrink-0")
+                        .style("border-top: 1px solid rgba(255,255,255,0.1);")
+                    )
+                    if self._safety_accepted and not safety_already_acknowledged:
+                        footer.bind_visibility_from(self._safety_accepted, "value")
+
+                    with footer:
                         dont_show = ui.checkbox("Don't show this again")
                         dont_show.on(
                             "update:model-value",
@@ -282,9 +334,9 @@ class HelpMenu:
         return self._dialog
 
     def _save_dont_show_pref(self, value: bool) -> None:
-        """Save don't show again preference to localStorage."""
+        """Save don't show again preference to server storage."""
         if value:
-            self._mark_tutorial_complete()
+            ng_app.storage.general[self.FIRST_VISIT_KEY] = True
 
 
 # Singleton

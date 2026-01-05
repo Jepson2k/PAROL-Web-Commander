@@ -274,10 +274,21 @@ class TestEditorInteractivity:
 
     def test_tab_flashes_when_editor_closed(self, class_screen: "Screen") -> None:
         """When editor panel is closed, recording a jog flashes the tab."""
+        # Ensure program tab is open first (may be closed from previous tests)
+        click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
+        # Ensure recording is on (start if not already from previous test)
+        try:
+            # Check if stop button is visible (means recording is on)
+            class_screen.selenium.find_element(
+                By.XPATH, "//button[.//i[text()='stop']]"
+            )
+        except Exception:
+            # Recording not on, start it
+            click_button_by_icon(class_screen, "fiber_manual_record")
+
         # Switch to a different tab to hide the program panel (but keep tab visible)
-        # Note: Recording should still be on from previous test
         click_tab(class_screen, "io")
 
         # Jog a joint briefly - this will record a movement command
@@ -294,3 +305,49 @@ class TestEditorInteractivity:
             pass
 
         assert tab_flashed, "Program tab should have tab-flash class when panel closed"
+
+    def test_editor_state_persists_after_refresh(self, class_screen: "Screen") -> None:
+        """Editor tabs and content should persist after page refresh."""
+        # Stop recording if active from previous test
+        try:
+            stop_btn = class_screen.selenium.find_element(
+                By.XPATH, "//button[.//i[text()='stop']]"
+            )
+            if stop_btn.is_displayed():
+                click_button_by_icon(class_screen, "fiber_manual_record")
+        except Exception:
+            pass
+
+        # Open program tab
+        click_tab(class_screen, "program")
+        wait_for_codemirror_ready(class_screen)
+
+        # Add unique content to identify this session
+        unique_marker = "\n# REFRESH_TEST_MARKER_12345"
+        append_to_editor(class_screen, unique_marker)
+
+        # Verify content was added
+        content_before = get_codemirror_content(class_screen)
+        assert (
+            unique_marker.strip() in content_before
+        ), "Marker should be in content before refresh"
+
+        # Refresh the page
+        class_screen.selenium.refresh()
+
+        # Wait for PanelResize to be configured and app to be ready
+        WebDriverWait(class_screen.selenium, 15).until(
+            lambda d: d.execute_script(
+                "return window.PanelResize && window.PanelResize.isConfigured() && window.PanelResize.isAppReady()"
+            )
+        )
+
+        # Editor should auto-open from restored state, wait for CodeMirror
+        wait_for_codemirror_ready(class_screen)
+
+        # Verify content persisted
+        content_after = get_codemirror_content(class_screen)
+        assert unique_marker.strip() in content_after, (
+            f"Content should persist after refresh. "
+            f"Expected marker '{unique_marker.strip()}' in content, got: {content_after[:200]}..."
+        )

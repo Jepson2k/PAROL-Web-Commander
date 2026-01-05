@@ -10,8 +10,8 @@ import time
 import contextlib
 import argparse
 from typing import cast, Callable
-from spatialmath import SO3
 import numpy as np
+from parol6.utils.se3_utils import so3_rpy
 
 from nicegui import app as ng_app
 from nicegui import ui
@@ -101,6 +101,14 @@ server_manager: ServerManager | None = None
 # Persistent connection warning notification
 _connection_notification: ui.notification | None = None
 
+# Pre-allocated buffers to avoid per-call allocations in hot paths
+_rotation_matrix_buffer: np.ndarray = np.zeros((3, 3), dtype=np.float64)
+_translation_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
+_valid_angles_buffer: np.ndarray = np.zeros(6, dtype=np.float64)
+_angles_rad_buffer: np.ndarray = np.zeros(6, dtype=np.float64)
+_angles_ordered_buffer: np.ndarray = np.zeros(6, dtype=np.float64)
+_DEG_TO_RAD: float = math.pi / 180.0
+
 
 def _update_connection_notification() -> None:
     """Show or dismiss persistent notification based on robot connection state."""
@@ -183,7 +191,6 @@ async def initialize_urdf_scene() -> None:
             background_color=scene_config.background_color,
         )
 
-        ui_state.urdf_scene.set_control_frame(ui_state.frame)
         ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
 
         # Align TCP to current tool from controller
@@ -241,7 +248,10 @@ async def initialize_urdf_scene() -> None:
 
 
 def update_urdf_angles(angles_deg: list[float]) -> None:
-    """Update URDF scene with new joint angles (degrees -> radians)."""
+    """Update URDF scene with new joint angles (degrees -> radians).
+
+    Uses pre-allocated buffers to avoid per-call memory allocations.
+    """
     if not ui_state.urdf_scene:
         return
 
@@ -249,71 +259,71 @@ def update_urdf_angles(angles_deg: list[float]) -> None:
         return
 
     try:
-        # Validate that all angles are numeric (not strings like "-")
-        valid_angles = []
-        for angle in angles_deg[:6]:  # Take only first 6 angles
-            if isinstance(angle, int | float) and not isinstance(angle, bool):
-                if math.isfinite(angle):
-                    valid_angles.append(float(angle))
-                else:
-                    return  # Skip update for NaN or infinite values
-            else:
-                return  # Skip update for any non-numeric data
-
-        if len(valid_angles) != 6:
-            return  # Need all 6 angles
-
-        # Convert degrees to radians, apply sign correction and index mapping
-        angles_rad = []
-        angle_signs = ui_state.urdf_scene.config.angle_signs
-        angle_offsets = ui_state.urdf_scene.config.angle_offsets
-        deg_to_rad = ui_state.urdf_scene.config.deg_to_rad
-        joint_name_order = ui_state.urdf_scene.config.joint_name_order
-
+        # Validate and copy angles into pre-allocated buffer
         for i in range(6):
-            if i < len(ui_state.urdf_index_mapping) and ui_state.urdf_index_mapping[
-                i
-            ] < len(valid_angles):
-                controller_idx = ui_state.urdf_index_mapping[i]
-                angle_deg = valid_angles[controller_idx]
-                # Apply sign correction and offset
+            angle = angles_deg[i]
+            # Type check: must be numeric (int or float) but not bool
+            if not isinstance(angle, (int, float)) or isinstance(angle, bool):
+                return  # Skip update for any non-numeric data
+            val = float(angle)
+            if not math.isfinite(val):
+                return  # Skip update for NaN or infinite values
+            _valid_angles_buffer[i] = val
+
+        # Cache config properties once (avoid repeated attribute lookups)
+        config = ui_state.urdf_scene.config
+        angle_signs = config.angle_signs
+        angle_offsets = config.angle_offsets
+        deg_to_rad = config.deg_to_rad
+        joint_name_order = config.joint_name_order
+        index_mapping = ui_state.urdf_index_mapping
+
+        # Convert degrees to radians with sign correction and index mapping
+        # Fill pre-allocated buffer directly
+        for i in range(6):
+            if i < len(index_mapping) and index_mapping[i] < 6:
+                controller_idx = index_mapping[i]
+                angle_deg = _valid_angles_buffer[controller_idx]
+                # Apply sign correction
                 sign = (
-                    1
+                    1.0
                     if controller_idx >= len(angle_signs)
-                    else (1 if angle_signs[controller_idx] >= 0 else -1)
+                    else (1.0 if angle_signs[controller_idx] >= 0 else -1.0)
                 )
+                # Apply offset
                 offset = (
                     angle_offsets[controller_idx]
                     if controller_idx < len(angle_offsets)
-                    else 0
+                    else 0.0
                 )
                 angle_deg_corrected = angle_deg * sign + offset
-                angle_rad = (
-                    math.radians(angle_deg_corrected)
+                # Convert to radians if needed
+                _angles_rad_buffer[i] = (
+                    angle_deg_corrected * _DEG_TO_RAD
                     if deg_to_rad
                     else angle_deg_corrected
                 )
-                angles_rad.append(angle_rad)
             else:
-                angles_rad.append(0.0)
+                _angles_rad_buffer[i] = 0.0
 
-        # Create ordered list of angles based on URDF joint names
-        urdf_joint_names = list(ui_state.urdf_scene.joint_names)
-        angles_ordered = []
-
-        for joint_name in urdf_joint_names:
+        # Reorder angles based on URDF joint names into pre-allocated buffer
+        urdf_joint_names = (
+            ui_state.urdf_scene.joint_names
+        )  # Already a list, no copy needed
+        for i, joint_name in enumerate(urdf_joint_names):
+            if i >= 6:
+                break
             # Map URDF joint name back to our controller index
             try:
                 urdf_idx = joint_name_order.index(joint_name)
-                if urdf_idx < len(angles_rad):
-                    angles_ordered.append(angles_rad[urdf_idx])
-                else:
-                    angles_ordered.append(0.0)
+                _angles_ordered_buffer[i] = (
+                    _angles_rad_buffer[urdf_idx] if urdf_idx < 6 else 0.0
+                )
             except (ValueError, KeyError):
-                angles_ordered.append(0.0)
+                _angles_ordered_buffer[i] = 0.0
 
-        # Pass list of float values in the order expected by the library
-        ui_state.urdf_scene.set_axis_values(angles_ordered)
+        # Pass buffer directly (set_axis_values accepts array-like)
+        ui_state.urdf_scene.set_axis_values(_angles_ordered_buffer)
 
     except Exception as e:
         # Use debug level since this is expected during test teardown when clients are deleted
@@ -437,45 +447,32 @@ def update_ui_from_status() -> None:
         ui_state.urdf_scene.update_from_robot_state()
 
     if pose and len(pose) >= 12 and not skip_position_updates:
-        # Pose matrix flattened; indices 3,7,11 as XYZ (always from multicast as WRF)
-        # If TRF mode, transform to tool frame representation
+        # Pose matrix flattened; indices 3,7,11 as XYZ (always WRF)
         if len(pose) >= 16:
             try:
-                # Extract rotation matrix (row-major: rows are [0,1,2], [4,5,6], [8,9,10])
-                R = np.array(
-                    [
-                        [pose[0], pose[1], pose[2]],
-                        [pose[4], pose[5], pose[6]],
-                        [pose[8], pose[9], pose[10]],
-                    ]
+                # Extract rotation matrix into pre-allocated buffer (row-major)
+                _rotation_matrix_buffer[0, 0] = pose[0]
+                _rotation_matrix_buffer[0, 1] = pose[1]
+                _rotation_matrix_buffer[0, 2] = pose[2]
+                _rotation_matrix_buffer[1, 0] = pose[4]
+                _rotation_matrix_buffer[1, 1] = pose[5]
+                _rotation_matrix_buffer[1, 2] = pose[6]
+                _rotation_matrix_buffer[2, 0] = pose[8]
+                _rotation_matrix_buffer[2, 1] = pose[9]
+                _rotation_matrix_buffer[2, 2] = pose[10]
+
+                # Extract translation into pre-allocated buffer (mm)
+                _translation_buffer[0] = pose[3]
+                _translation_buffer[1] = pose[7]
+                _translation_buffer[2] = pose[11]
+
+                # WRF: use original values
+                robot_state.x = float(_translation_buffer[0])
+                robot_state.y = float(_translation_buffer[1])
+                robot_state.z = float(_translation_buffer[2])
+                robot_state.rx, robot_state.ry, robot_state.rz = so3_rpy(
+                    _rotation_matrix_buffer, degrees=True
                 )
-
-                # Extract translation (mm)
-                t_mm = np.array([pose[3], pose[7], pose[11]])
-
-                # Check frame mode
-                if ui_state.frame == "TRF":
-                    # Compute inverse transform: T_inv = [R^T | -R^T * t]
-                    R_inv = R.T
-                    t_m = t_mm / 1000.0  # Convert to meters for computation
-                    t_inv_m = -(R_inv @ t_m)
-                    t_inv_mm = t_inv_m * 1000.0  # Back to mm
-
-                    # Update state with TRF values
-                    robot_state.x = float(t_inv_mm[0])
-                    robot_state.y = float(t_inv_mm[1])
-                    robot_state.z = float(t_inv_mm[2])
-                    robot_state.rx, robot_state.ry, robot_state.rz = SO3(R_inv).rpy(
-                        order="xyz", unit="deg"
-                    )
-                else:
-                    # WRF: use original values
-                    robot_state.x = float(t_mm[0])
-                    robot_state.y = float(t_mm[1])
-                    robot_state.z = float(t_mm[2])
-                    robot_state.rx, robot_state.ry, robot_state.rz = SO3(R).rpy(
-                        order="xyz", unit="deg"
-                    )
             except Exception:
                 # Fallback to zeros on extraction error
                 robot_state.x = 0.0
@@ -725,8 +722,37 @@ def build_page_content() -> None:
 
         # Configure panel resize module with app-specific settings
         ui.run_javascript(f"PanelResize.configure({json.dumps(PANEL_RESIZE_CONFIG)})")
-        # Signal app ready after NiceGUI finishes rendering
-        ui.timer(0.5, lambda: ui.run_javascript("PanelResize.onAppReady()"), once=True)
+
+        # Restore active tabs from localStorage before signaling app ready
+        ui_client = ui.context.client
+
+        async def restore_active_tabs():
+            with ui_client:
+                try:
+                    saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
+                    if saved_tabs:
+                        if saved_tabs.get("top"):
+                            side_tabs.value = saved_tabs["top"]
+                            top_panels.value = saved_tabs["top"]
+                            update_top_layout()
+                            # Explicitly trigger size restoration (programmatic value changes don't fire events)
+                            ui.run_javascript(
+                                f"PanelResize.onTabChange('top', '{saved_tabs['top']}')"
+                            )
+                        if saved_tabs.get("bottom"):
+                            bottom_tabs.value = saved_tabs["bottom"]
+                            bottom_panels.value = saved_tabs["bottom"]
+                            update_bottom_layout()
+                            ui.run_javascript(
+                                f"PanelResize.onTabChange('bottom', '{saved_tabs['bottom']}')"
+                            )
+                        logging.debug(f"Restored active tabs: {saved_tabs}")
+                except Exception as e:
+                    logging.debug(f"Could not restore active tabs: {e}")
+                # Signal app ready after tabs are restored
+                ui.run_javascript("PanelResize.onAppReady()")
+
+        ui.timer(0.5, lambda: asyncio.create_task(restore_active_tabs()), once=True)
 
     # Set up global keybindings
     _setup_keybindings()
@@ -768,13 +794,8 @@ def _setup_keybindings() -> None:
 
 def _setup_first_time_tutorial() -> None:
     """Set up the first-time tutorial dialog for new users."""
-    # Listen for the event to show the first-time tutorial
-    ui.on("show_first_time_tutorial", lambda _: help_menu.show_dialog())
-
-    # Capture client context for background task
     client = ui.context.client
 
-    # Check if this is a first visit after a short delay (let page render first)
     async def check_first_visit():
         with client:
             help_menu.check_first_visit()
@@ -1036,6 +1057,14 @@ def _register_handlers() -> None:
                     await client.enable()
                 except Exception as e:
                     logging.warning("startup: enable failed (may retry): %s", e)
+
+            # Set saved motion profile
+            try:
+                saved_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
+                await client.set_profile(saved_profile)
+                logging.debug("startup: set motion profile to %s", saved_profile)
+            except Exception as e:
+                logging.warning("startup: set_profile failed: %s", e)
 
         except Exception as e:
             logging.error("App startup init failed: %s", e)
@@ -1338,6 +1367,7 @@ def main():
     # Store panels in ui_state for cross-module access
     ui_state.control_panel = control_panel
     ui_state.editor_panel = editor_panel
+    ui_state.readout_panel = readout_panel
     io_page = None
     gripper_page = None
     settings_page = None
@@ -1354,6 +1384,7 @@ def main():
         host=config.server_host,
         port=config.server_port,
         reload=args.reload,
+        uvicorn_reload_excludes=".*, .py[cod], .sw.*, ~*, programs/*",
         show=False,
         loop="uvloop" if sys.platform != "win32" else "asyncio",
         http="httptools",

@@ -108,6 +108,9 @@ class ControlPanel:
         ] | None = None  # Track last sent to avoid duplicates
         self._tcp_drag_active: bool = False
         self._last_drag_event_ts: float = 0.0
+        # TRF relative move state (delta from drag start in tool frame)
+        self._tcp_latest_delta_trf: list[float] | None = None
+        self._tcp_drag_is_trf: bool = False  # True when dragging in TRF mode
 
         # Step input widget reference for dynamic suffix/tooltip
         self._step_input: ui.number | None = None
@@ -501,7 +504,7 @@ class ControlPanel:
                         target_angles[j] = min(hi, target_angles[j] + step)
                     else:
                         target_angles[j] = max(lo, target_angles[j] - step)
-                    await self.client.move_joints(target_angles, speed_percentage=speed)
+                    await self.client.move_joints(target_angles, speed=speed)
             except Exception as e:
                 logging.error("Incremental joint move failed: %s", e)
             if (
@@ -552,7 +555,7 @@ class ControlPanel:
             j, d = intent
             idx = j if d == "pos" else (j + 6)
             await self.client.jog_joint(
-                idx, speed_percentage=speed, duration=self.STREAM_TIMEOUT_S
+                idx, speed=speed, duration=self.STREAM_TIMEOUT_S
             )
         self._cadence_tick(time.time(), self._tick_stats, "joint")
 
@@ -670,8 +673,8 @@ class ControlPanel:
                     target[idx] += direction * step
                     await self.client.move_cartesian(
                         target,
-                        speed_percentage=float(speed),
-                        accel_percentage=float(ui_state.jog_accel),
+                        speed=float(speed),
+                        accel=float(ui_state.jog_accel),
                     )
             except Exception as e:
                 logging.error("Incremental cart move failed: %s", e)
@@ -723,10 +726,13 @@ class ControlPanel:
                 logging.debug("TCP Drag: First move (no last sent pose)")
 
             try:
+                # Use speed for stream blending. The server enforces a
+                # minimum 200ms duration to keep commands alive long enough for
+                # subsequent updates to blend in, creating a "mouse trail" effect.
                 await self.client.move_cartesian(
                     list(self._tcp_latest_pose[:6]),
-                    speed_percentage=float(speed),
-                    accel_percentage=float(ui_state.jog_accel),
+                    speed=float(speed),
+                    accel=float(ui_state.jog_accel),
                 )
                 # Track what we sent to avoid duplicates
                 self._tcp_last_sent_pose = list(self._tcp_latest_pose[:6])
@@ -736,9 +742,11 @@ class ControlPanel:
             return
 
         # Priority 2: legacy cart jog buttons (streamed)
-        frame = cast(Frame, ui_state.frame)
+        # Use WRF for translation (X,Y,Z) and TRF for rotation (Rx,Ry,Rz)
         axis = self._get_first_pressed_axis()
         if axis is not None:
+            axis_str = str(axis).upper()
+            frame: Frame = "TRF" if axis_str.startswith("R") else "WRF"
             await self.client.jog_cartesian(
                 frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
             )
@@ -756,6 +764,8 @@ class ControlPanel:
 
         # Force a fresh start for the drag session
         self._tcp_last_sent_pose = None
+        self._tcp_latest_delta_trf = None
+        self._tcp_drag_is_trf = False
 
         # Start drag session and recorder if not already active
         if not self._tcp_drag_active:
@@ -773,6 +783,7 @@ class ControlPanel:
 
         This sets the latest target pose and ensures the movement timer sends it.
         Recording starts on first drag event and ends on drag-end.
+        Used for WRF (World Reference Frame) mode.
         """
         # Check if movement is allowed
         if not robot_state.simulator_active and not robot_state.connected:
@@ -784,6 +795,7 @@ class ControlPanel:
 
         # Cache latest target pose (x,y,z in mm, rx,ry,rz in deg)
         self._tcp_latest_pose = list(pose[:6])
+        self._tcp_drag_is_trf = False  # WRF mode uses absolute poses
         self._last_drag_event_ts = time.time()
 
         # Start drag session (once) and recorder
@@ -800,14 +812,53 @@ class ControlPanel:
             self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
             t.active = True
 
+    def _handle_tcp_cartesian_move_rel_trf(self, delta: List[float]) -> None:
+        """Handle TCP Cartesian move events in TRF (Tool Reference Frame) mode.
+
+        This receives delta values in the tool's coordinate frame and uses
+        move_cartesian_rel_trf to move relative to the current position.
+
+        Args:
+            delta: Delta movement [dx_mm, dy_mm, dz_mm, drx_deg, dry_deg, drz_deg]
+                   in tool reference frame
+        """
+        # Check if movement is allowed
+        if not robot_state.simulator_active and not robot_state.connected:
+            return
+
+        if len(delta) < 6:
+            logging.warning("Invalid delta length for TRF move: %d", len(delta))
+            return
+
+        # Cache latest TRF delta
+        self._tcp_latest_delta_trf = list(delta[:6])
+        self._tcp_drag_is_trf = True  # TRF mode uses relative deltas
+        self._last_drag_event_ts = time.time()
+
+        # Start drag session (once) and recorder
+        if not self._tcp_drag_active:
+            logging.debug(
+                "TCP Drag (TRF): Move received while inactive (implicit start)"
+            )
+            self._tcp_drag_active = True
+            motion_recorder.on_jog_start("cartesian", "TCP-TRF")
+
+        # Ensure movement timer is active
+        t = ui_state.cart_jog_timer
+        if t and not t.active:
+            self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+            t.active = True
+
     def _handle_tcp_cartesian_move_end(self) -> None:
         """End of a TCP TransformControls drag: wait for motion to stop, then record."""
         logging.debug("TCP Drag: END event received")
         if self._tcp_drag_active:
             self._tcp_drag_active = False
             asyncio.create_task(self._wait_and_record_jog_end())
-        # Clear last sent pose so next drag starts fresh
+        # Clear last sent pose and TRF delta so next drag starts fresh
         self._tcp_last_sent_pose = None
+        self._tcp_latest_delta_trf = None
+        self._tcp_drag_is_trf = False
         # If no cart axis buttons are pressed, allow timer to stop
         t = ui_state.cart_jog_timer
         if t:
@@ -844,7 +895,7 @@ class ControlPanel:
             pose[joint_index] = tgt
             spd = max(1, min(100, int(ui_state.jog_speed)))
 
-            await self.client.move_joints(pose, speed_percentage=spd)
+            await self.client.move_joints(pose, speed=spd)
             ui.notify(f"Joint J{joint_index + 1} \u2192 {tgt:.2f}°", color="primary")
         except Exception as e:
             logging.error("Go to joint angle failed: %s", e)
@@ -874,7 +925,7 @@ class ControlPanel:
             target[joint_index] = float(lo if which == "min" else hi)
             spd = max(1, min(100, int(ui_state.jog_speed)))
 
-            await self.client.move_joints(target, speed_percentage=spd)
+            await self.client.move_joints(target, speed=spd)
         except Exception as e:
             logging.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
@@ -888,19 +939,13 @@ class ControlPanel:
             ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
             # Apply current gizmo mode (default is Move/TRANSLATE)
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
-            # Apply current frame
-            ui_state.urdf_scene.set_control_frame(ui_state.frame)
-            # Frame-aware cartesian UI layout (labels/colors follow frame)
+            # Fixed WRF orientation for cartesian UI layout
             # WRF: X (red) horizontal (lr), Y (green) vertical (ud1), Z (blue) vertical (ud2)
-            # TRF: Z along tool axis (ud1), X horizontal (lr), Y vertical (ud2)
-            if str(getattr(ui_state, "frame", "WRF")).upper() == "TRF":
-                self.set_axis_orientation("Z", "X", "Y")
-            else:
-                self.set_axis_orientation("Y", "X", "Z")
-            # Apply enablement visuals for current frame
+            self.set_axis_orientation("Y", "X", "Z")
+            # Apply enablement visuals
             self.sync_cartesian_button_states()
 
-            # Register Cartesian move callback for direct TCP position moves (primary approach)
+            # Register Cartesian move callback for direct TCP position moves
             ui_state.urdf_scene.on_tcp_cartesian_move(self._handle_tcp_cartesian_move)
             # Register drag start/end to manage state
             ui_state.urdf_scene.on_tcp_cartesian_move_start(
@@ -914,25 +959,9 @@ class ControlPanel:
             if ui_state.gizmo_visible:
                 ui_state.urdf_scene.enable_tcp_transform_controls("translate")
 
-    def on_frame_changed(self, new_frame: str) -> None:
-        """Visually switch gizmo parenting between WRF and TRF and update cartesian UI mapping."""
-        if ui_state.urdf_scene:
-            ui_state.urdf_scene.set_control_frame(new_frame)
-            # Frame-aware cartesian UI layout (labels/colors follow frame)
-            # WRF: X (red) horizontal (lr), Y (green) vertical (ud1), Z (blue) vertical (ud2)
-            # TRF: Z along tool axis (ud1), X horizontal (lr), Y vertical (ud2)
-            if str(new_frame).upper() == "TRF":
-                # Map UI slots to tool axes (vertical-left=Z, horizontal=X, vertical-right=Y)
-                self.set_axis_orientation("Z", "X", "Y")
-            else:
-                # World frame: X horizontal (lr), Y vertical (ud1), Z vertical (ud2)
-                self.set_axis_orientation("Y", "X", "Z")
-            # Apply enablement visuals for current frame
-            self.sync_cartesian_button_states()
-            # Update TCP TransformControls space (local for TRF, world for WRF)
-            ui_state.urdf_scene.set_tcp_transform_frame(new_frame)
-        else:
-            logging.warning("Cannot switch gizmo frame: URDF scene not initialized")
+    def on_frame_changed(self, _new_frame: str) -> None:
+        """No-op: Frame is now fixed (Translation=WRF, Rotation=TRF)."""
+        pass
 
     def on_gizmo_mode_changed(self, mode: str) -> None:
         """Switch gizmo display mode between Move (translation) and Rotate."""
@@ -1511,9 +1540,10 @@ class ControlPanel:
                 self._refresh_cartesian_icons()
 
             # Settings panel
-            with ui.tab_panel(settings_tab).classes("gap-0"):
-                settings_content = SettingsContent(self.client)
-                settings_content.build_embedded()
+            with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
+                with ui.scroll_area().classes("w-full h-full p-0"):
+                    settings_content = SettingsContent(self.client)
+                    settings_content.build_embedded()
 
     def build(self, anchor: str = "bl") -> None:
         """Render the bottom-left control panel (overlay-bl).

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from parol_commander.services.urdf_scene import UrdfScene
     from parol_commander.components.editor import EditorPanel
     from parol_commander.components.control import ControlPanel
+    from parol_commander.components.readout import ReadoutPanel
 
     @dataclass_transform(field_specifiers=(field,))
     def bindable_dataclass(cls=None, /, **kwargs):
@@ -261,6 +262,7 @@ class UiState:
     _cart_jog_timer: Any = None
     _editor_panel: Any = None
     _control_panel: Any = None
+    _readout_panel: Any = None
 
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
@@ -284,6 +286,16 @@ class UiState:
     @control_panel.setter
     def control_panel(self, value: "ControlPanel") -> None:
         self._control_panel = value
+
+    @property
+    def readout_panel(self) -> "ReadoutPanel":
+        """Get readout panel, asserting it's initialized."""
+        assert self._readout_panel is not None, "readout_panel not initialized"
+        return self._readout_panel
+
+    @readout_panel.setter
+    def readout_panel(self, value: "ReadoutPanel") -> None:
+        self._readout_panel = value
 
     @property
     def joint_jog_timer(self) -> "Timer":

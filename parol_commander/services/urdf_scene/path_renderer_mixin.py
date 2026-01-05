@@ -7,8 +7,12 @@ import math
 from typing import Any, List, Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as ScipyRotation
 from nicegui import ui
+
+_DEFAULT_CONE_AXIS = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+_PI_ROTATION_RPY = [math.pi, 0.0, 0.0]
+_ZERO_ROTATION_RPY = [0.0, 0.0, 0.0]
 
 
 class PathRendererMixin:
@@ -128,36 +132,26 @@ class PathRendererMixin:
         Returns:
             Scene cone object or None
         """
-        # Calculate rotation to align cone (default +Y) with direction
-        d = np.array(direction)
+        d = np.asarray(direction, dtype=np.float64)
         d_norm = np.linalg.norm(d)
         if d_norm < 1e-6:
             return None
         d = d / d_norm
 
-        # Default cone axis is +Y (0, 1, 0)
-        default_axis = np.array([0.0, 1.0, 0.0])
-
-        # Calculate rotation axis and angle
-        cross = np.cross(default_axis, d)
-        dot = np.dot(default_axis, d)
+        cross = np.cross(_DEFAULT_CONE_AXIS, d)
+        dot = np.dot(_DEFAULT_CONE_AXIS, d)
 
         if np.linalg.norm(cross) < 1e-6:
-            # Vectors are parallel or anti-parallel
             if dot > 0:
-                # Same direction, no rotation needed
-                rpy = [0.0, 0.0, 0.0]
+                rpy = _ZERO_ROTATION_RPY
             else:
-                # Opposite direction, rotate 180 around X
-                rpy = [math.pi, 0.0, 0.0]
+                rpy = _PI_ROTATION_RPY
         else:
-            # General case: use rotation from cross product
-            angle = float(math.acos(np.clip(dot, -1.0, 1.0)))  # type: ignore[assignment]
+            angle = float(math.acos(np.clip(dot, -1.0, 1.0)))
             axis = cross / np.linalg.norm(cross)
-            rot = R.from_rotvec(angle * axis)
+            rot = ScipyRotation.from_rotvec(angle * axis)
             rpy = rot.as_euler("xyz", degrees=False).tolist()
 
-        # Create cone
         cone = ui.scene.cylinder(
             top_radius=0.0,
             bottom_radius=scale,

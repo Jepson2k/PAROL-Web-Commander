@@ -14,8 +14,42 @@ class ReadoutPanel:
         # UI element references (for future extensions if needed)
         self.cartesian_labels: dict[str, ui.label] = {}  # X, Y, Z
         self.rotation_labels: dict[str, ui.label] = {}  # Rx, Ry, Rz
+        # All colored elements by axis for frame-based color updates
+        self.axis_elements: dict[str, list[ui.element]] = {}
         # Vertical task list container
         self.task_list_container: ui.element | None = None
+
+    def update_frame_colors(self, frame: str) -> None:
+        """Update readout colors to match the current reference frame mapping.
+
+        In WRF mode: standard colors (X=red, Y=green, Z=blue)
+        In TRF mode: colors match button layout (Y gets Z color, Z gets Y color)
+        """
+        if frame == "TRF":
+            # TRF: Z becomes primary vertical (green), Y becomes secondary (blue)
+            color_map = {
+                "X": "tcp-x",
+                "Y": "tcp-z",
+                "Z": "tcp-y",
+                "Rx": "tcp-rx",
+                "Ry": "tcp-rz",
+                "Rz": "tcp-ry",
+            }
+        else:  # WRF
+            color_map = {
+                "X": "tcp-x",
+                "Y": "tcp-y",
+                "Z": "tcp-z",
+                "Rx": "tcp-rx",
+                "Ry": "tcp-ry",
+                "Rz": "tcp-rz",
+            }
+
+        for axis, elements in self.axis_elements.items():
+            new_class = color_map.get(axis, "tcp-x")
+            for el in elements:
+                el.classes(remove="tcp-x tcp-y tcp-z tcp-rx tcp-ry tcp-rz")
+                el.classes(add=new_class)
 
     def build(self, anchor: str = "tl") -> None:
         """Render the top-left readout panel as an overlay card."""
@@ -25,7 +59,7 @@ class ReadoutPanel:
                 # X/Y/Z row - larger text with mm units
                 with ui.row().classes("items-center justify-between w-full no-wrap"):
                     with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.label("X:").classes("text-sm tcp-x")
+                        x_prefix = ui.label("X:").classes("text-sm tcp-x")
                         x_label = (
                             ui.label("-")
                             .bind_text_from(
@@ -35,11 +69,12 @@ class ReadoutPanel:
                             .style("min-width: 5rem; text-align: right;")
                             .mark("readout-x")
                         )
-                        ui.label("mm").classes("text-xs tcp-x")
+                        x_unit = ui.label("mm").classes("text-xs tcp-x")
                         self.cartesian_labels["X"] = x_label
+                        self.axis_elements["X"] = [x_prefix, x_label, x_unit]
 
                     with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.label("Y:").classes("text-sm tcp-y")
+                        y_prefix = ui.label("Y:").classes("text-sm tcp-y")
                         y_label = (
                             ui.label("-")
                             .bind_text_from(
@@ -49,11 +84,12 @@ class ReadoutPanel:
                             .style("min-width: 5rem; text-align: right;")
                             .mark("readout-y")
                         )
-                        ui.label("mm").classes("text-xs tcp-y")
+                        y_unit = ui.label("mm").classes("text-xs tcp-y")
                         self.cartesian_labels["Y"] = y_label
+                        self.axis_elements["Y"] = [y_prefix, y_label, y_unit]
 
                     with ui.row().classes("items-center gap-1 no-wrap"):
-                        ui.label("Z:").classes("text-sm tcp-z")
+                        z_prefix = ui.label("Z:").classes("text-sm tcp-z")
                         z_label = (
                             ui.label("-")
                             .bind_text_from(
@@ -63,13 +99,14 @@ class ReadoutPanel:
                             .style("min-width: 5rem; text-align: right;")
                             .mark("readout-z")
                         )
-                        ui.label("mm").classes("text-xs tcp-z")
+                        z_unit = ui.label("mm").classes("text-xs tcp-z")
                         self.cartesian_labels["Z"] = z_label
+                        self.axis_elements["Z"] = [z_prefix, z_label, z_unit]
 
                 # Rx/Ry/Rz row - half size with deg units
                 with ui.row().classes("items-center justify-between w-full"):
                     with ui.row().classes("items-center gap-1"):
-                        ui.label("Rx:").classes("text-xs tcp-rx")
+                        rx_prefix = ui.label("Rx:").classes("text-xs tcp-rx")
                         rx_label = (
                             ui.label("-")
                             .bind_text_from(
@@ -79,11 +116,12 @@ class ReadoutPanel:
                             .style("min-width: 3.5rem; text-align: right;")
                             .mark("readout-rx")
                         )
-                        ui.label("°").classes("text-xs tcp-rx")
+                        rx_unit = ui.label("°").classes("text-xs tcp-rx")
                         self.rotation_labels["Rx"] = rx_label
+                        self.axis_elements["Rx"] = [rx_prefix, rx_label, rx_unit]
 
                     with ui.row().classes("items-center gap-1"):
-                        ui.label("Ry:").classes("text-xs tcp-ry")
+                        ry_prefix = ui.label("Ry:").classes("text-xs tcp-ry")
                         ry_label = (
                             ui.label("-")
                             .bind_text_from(
@@ -93,11 +131,12 @@ class ReadoutPanel:
                             .style("min-width: 3.5rem; text-align: right;")
                             .mark("readout-ry")
                         )
-                        ui.label("°").classes("text-xs tcp-ry")
+                        ry_unit = ui.label("°").classes("text-xs tcp-ry")
                         self.rotation_labels["Ry"] = ry_label
+                        self.axis_elements["Ry"] = [ry_prefix, ry_label, ry_unit]
 
                     with ui.row().classes("items-center gap-1"):
-                        ui.label("Rz:").classes("text-xs tcp-rz")
+                        rz_prefix = ui.label("Rz:").classes("text-xs tcp-rz")
                         rz_label = (
                             ui.label("-")
                             .bind_text_from(
@@ -107,8 +146,9 @@ class ReadoutPanel:
                             .style("min-width: 3.5rem; text-align: right;")
                             .mark("readout-rz")
                         )
-                        ui.label("°").classes("text-xs tcp-rz")
+                        rz_unit = ui.label("°").classes("text-xs tcp-rz")
                         self.rotation_labels["Rz"] = rz_label
+                        self.axis_elements["Rz"] = [rz_prefix, rz_label, rz_unit]
 
                 # Connectivity + IO row (CTRL / ROBOT + IO chips)
                 with ui.row().classes("items-center gap-3 w-full"):

@@ -469,3 +469,118 @@ async def test_create_and_remove_tab(user: User) -> None:
     assert (
         editor_tabs_state.find_tab_by_id(new_tab_id) is None
     ), "Closed tab should no longer exist"
+
+
+@pytest.mark.integration
+async def test_step_button_enabled_when_script_running(user: User, robot_state) -> None:
+    """Test that the step button is enabled when a script is running.
+
+    When a script starts:
+    - Step button becomes visible (if simulation has steps)
+    - Step button is enabled (not disabled)
+    """
+    from parol_commander.state import ui_state, editor_tabs_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None, "Editor panel should exist"
+
+    # Set script with move commands to generate simulation steps
+    tab = editor_tabs_state.get_active_tab()
+    assert tab is not None
+    test_script = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_pose([100.0, 200.0, 300.0, 0.0, 0.0, 0.0])
+rbt.move_pose([150.0, 250.0, 350.0, 0.0, 0.0, 0.0])
+"""
+    editor.program_textarea.value = test_script
+    tab.content = test_script
+
+    # Run simulation first to populate steps
+    await editor._run_simulation(notify=False)
+    await asyncio.sleep(0.1)
+
+    # Initially step button should be hidden (no script running)
+    assert editor._next_btn is not None, "Step button reference should exist"
+    assert editor._next_btn.visible is False, "Step button should be hidden initially"
+
+    # Click play to start script
+    play_btn = user.find(marker="editor-play-btn")
+    play_btn.click()
+    await asyncio.sleep(0.3)
+
+    # Script should now be running
+    assert editor.script_running is True, "Script should be running"
+
+    # Step button should be visible and enabled
+    assert (
+        editor._next_btn.visible is True
+    ), "Step button should be visible when script running"
+    assert (
+        editor._next_btn._props.get("disable") is not True
+    ), "Step button should be enabled"
+
+    # Stop the script for cleanup
+    stop_btn = user.find(marker="editor-stop-btn")
+    stop_btn.click()
+    await asyncio.sleep(0.2)
+
+
+@pytest.mark.integration
+async def test_unmarked_targets_get_uuid_annotation(user: User) -> None:
+    """Test that move commands without TARGET markers get UUID annotations after simulation.
+
+    When simulation runs and finds a move command with literal args but no TARGET marker,
+    it should automatically add a # TARGET:uuid marker to enable interactive editing.
+    """
+    from parol_commander.state import editor_tabs_state, ui_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+
+    user.find(marker="tab-program").click()
+    await asyncio.sleep(0)
+
+    editor = ui_state.editor_panel
+    assert editor is not None, "Editor panel should exist"
+
+    # Get active tab and set content with unmarked move command
+    tab = editor_tabs_state.get_active_tab()
+    assert tab is not None, "Active tab should exist"
+
+    # Script with move_pose that has literal args but no TARGET marker
+    test_script = """from parol6 import RobotClient
+rbt = RobotClient()
+rbt.move_pose([100.0, 200.0, 300.0, 0.0, 0.0, 0.0])
+"""
+    # Set content directly on textarea
+    assert editor.program_textarea is not None
+    editor.program_textarea.value = test_script
+    tab.content = test_script
+
+    # Verify no TARGET marker initially
+    assert "# TARGET:" not in test_script
+
+    # Run simulation (this should trigger annotation)
+    await editor._run_simulation(notify=False)
+
+    # Wait for annotation to complete
+    await asyncio.sleep(0.1)
+
+    # Check that the content now has a TARGET marker
+    updated_content = editor.program_textarea.value
+    assert (
+        "# TARGET:" in updated_content
+    ), "Move command should have TARGET marker after simulation"
+
+    # Verify the marker is on the move_pose line
+    lines = updated_content.splitlines()
+    move_line = next((line for line in lines if "move_pose" in line), None)
+    assert move_line is not None, "move_pose line should exist"
+    assert "# TARGET:" in move_line, "TARGET marker should be on the move_pose line"

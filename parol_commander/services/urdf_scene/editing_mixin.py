@@ -326,7 +326,7 @@ class EditingMixin:
 
         current_angles = self._get_robot_angles_rad()
         result = self._tcp_fk_solver.solve(
-            target_pos=np.array(target_pos),
+            target_pos=target_pos,
             current_angles=current_angles,
             throttle=False,
         )

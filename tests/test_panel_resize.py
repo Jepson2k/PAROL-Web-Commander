@@ -11,7 +11,7 @@ import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 
-from tests.helpers.browser_helpers import click_tab, close_panel, dismiss_dialogs, js
+from tests.helpers.browser_helpers import click_tab, close_panel, js
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -98,7 +98,6 @@ class TestPanelResize:
     ) -> None:
         """Closing any top-level tab should not shift the bottom panel."""
         wait_ready(class_screen)
-        dismiss_dialogs(class_screen)  # Dismiss first-time tutorial dialog if present
         clear_storage(class_screen, STORAGE_KEY)
 
         click_tab(class_screen, "program")

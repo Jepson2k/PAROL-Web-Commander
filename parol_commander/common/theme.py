@@ -821,7 +821,19 @@ html, body {
 
 .editor-tab:hover { background: var(--tab-bg-hover); }
 
-.editor-tab.q-tab--active { background: var(--tab-bg-active); }
+.editor-tab.q-tab--active {
+  background: var(--tab-bg-active);
+}
+# TODO: only half works
+/* Disable pointer events on active tab (prevent re-clicking), but allow input and close button */
+.editor-tab.q-tab--active,
+.editor-tab.q-tab--active .q-tab__content,
+.editor-tab.q-tab--active .q-focus-helper,
+.editor-tab.q-tab--active .q-tab__indicator {
+  pointer-events: none !important;
+}
+.editor-tab.q-tab--active .q-field,
+.editor-tab.q-tab--active .q-btn { pointer-events: auto !important; }
 
 /* Compact filename input in tabs */
 .editor-tab .q-field { min-height: 24px !important; }
@@ -847,8 +859,8 @@ html, body {
 
 .editor-tab .save-fab .q-icon { font-size: 14px !important; }
 
-/* Editor header scroll area - no padding */
-.program-panel .nicegui-scroll-area .q-scrollarea__content {
+/* Editor tabs scroll area - no padding */
+.editor-tabs-scroll .q-scrollarea__content {
   padding: 0 !important;
   gap: 0 !important;
 }
@@ -857,7 +869,10 @@ html, body {
 /* ========== CodeMirror ========== */
 
 /* CodeMirror editor needs to fill available space */
-.program-panel .cm-editor { border-radius: 12px 12px 0 0; }
+.program-panel .cm-editor {
+  border-radius: 12px 12px 0 0;
+  padding-bottom: 16px;
+}
 
 /* Round the top left corner of the gutter */
 .program-panel .cm-editor .cm-gutters { border-top-left-radius: 12px; }
@@ -925,6 +940,10 @@ html, body {
 
 
 /* ========== Editor Log Area ========== */
+
+.program-panel .nicegui-log .q-scrollarea__content {
+  padding: 16px 0px !important;
+}
 
 /* Log area rounded bottom corners */
 .editor-splitter .q-splitter__after .nicegui-scroll-area { border-radius: 0 0 12px 12px; }

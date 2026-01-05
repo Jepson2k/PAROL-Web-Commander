@@ -13,8 +13,9 @@ import numpy as np
 
 # Import robotics-toolbox
 from roboticstoolbox import Robot
-from spatialmath import SE3
+import sophuspy as sp
 from parol6.utils.ik import solve_ik as parol6_solve_ik  # use PAROL6 solver exclusively
+from parol6.utils.se3_utils import se3_from_rpy, so3_rpy
 
 
 @dataclass
@@ -52,6 +53,10 @@ class EditingIKSolver:
         """
         self.robot = robot
         self.num_joints = num_joints
+
+        # Pre-allocated buffers to avoid per-call allocations
+        self._q_buffer = np.zeros(robot.n, dtype=float)
+        self._fk_result_buffer = np.zeros(6, dtype=float)
 
         # Throttling
         self._last_solve_time = 0.0
@@ -100,26 +105,32 @@ class EditingIKSolver:
             End effector pose [x, y, z, rx, ry, rz] in meters and radians (world frame)
             Position is in meters, rotation is Euler angles (XYZ) in radians.
         """
-        q = np.array(angles[: self.num_joints], dtype=float)
-
-        # Pad with zeros if needed
-        while len(q) < self.robot.n:
-            q = np.append(q, 0.0)
+        # Use pre-allocated buffer - zero and fill to avoid allocation
+        n_input = min(len(angles), self.num_joints)
+        self._q_buffer[:n_input] = angles[:n_input]
+        self._q_buffer[n_input:] = 0.0
 
         # Compute forward kinematics
-        T = cast(Any, self.robot).fkine(q)
+        T = cast(Any, self.robot).fkine(self._q_buffer)
 
-        # Extract translation (position)
-        pos = np.array(T.t)
+        # Extract translation (position) - T.t works on spatialmath SE3
+        pos = T.t
 
         # Extract rotation as Euler angles (XYZ convention)
+        # T.R gives the rotation matrix, use our so3_rpy utility
         try:
-            # SE3 object has rpy() method for roll-pitch-yaw (XYZ Euler angles)
-            rpy = T.rpy(order="xyz")  # Returns [rx, ry, rz] in radians
+            rpy = so3_rpy(T.R, degrees=False)  # Returns [rx, ry, rz] in radians
         except Exception:
-            rpy = [0.0, 0.0, 0.0]
+            rpy = (0.0, 0.0, 0.0)
 
-        return np.array([pos[0], pos[1], pos[2], rpy[0], rpy[1], rpy[2]])
+        # Fill pre-allocated result buffer
+        self._fk_result_buffer[0] = pos[0]
+        self._fk_result_buffer[1] = pos[1]
+        self._fk_result_buffer[2] = pos[2]
+        self._fk_result_buffer[3] = rpy[0]
+        self._fk_result_buffer[4] = rpy[1]
+        self._fk_result_buffer[5] = rpy[2]
+        return self._fk_result_buffer
 
     def solve(
         self,
@@ -148,34 +159,40 @@ class EditingIKSolver:
                 return None
             self._last_solve_time = now
 
-        target = np.array(target_pos, dtype=float)
-        q0 = np.array(current_angles[: self.num_joints], dtype=float)
-
-        # Pad with zeros if needed
-        while len(q0) < self.robot.n:
-            q0 = np.append(q0, 0.0)
+        # Use pre-allocated buffer for q0
+        n_input = min(len(current_angles), self.num_joints)
+        self._q_buffer[:n_input] = current_angles[:n_input]
+        self._q_buffer[n_input:] = 0.0
+        q0 = self._q_buffer
 
         # Get current end effector orientation to maintain it
         T_current = cast(Any, self.robot).fkine(q0)
 
+        # Extract target position (avoid allocation if already ndarray)
+        if isinstance(target_pos, np.ndarray):
+            target = target_pos
+        else:
+            target = np.asarray(target_pos, dtype=float)
+
         # Create target pose with specified or current orientation
         if target_orientation is not None:
-            # Build rotation matrix from XYZ Euler angles
-            T_target = SE3.Rt(
-                SE3.RPY(target_orientation, order="xyz").R,
-                target,
+            # Build sophuspy SE3 from position and XYZ Euler angles
+            T_target = se3_from_rpy(
+                target[0],
+                target[1],
+                target[2],
+                target_orientation[0],
+                target_orientation[1],
+                target_orientation[2],
+                degrees=False,
             )
         else:
-            # Maintain current orientation
-            T_target = SE3.Rt(T_current.R, target)
+            T_target = sp.SE3(T_current.R, target)
 
-        # Use PAROL6 IK helper exclusively to enforce safety and unwrapping
         parol_result = parol6_solve_ik(
             robot=cast(Any, self.robot),
             target_pose=T_target,
             current_q=q0,
-            jogging=True,
-            safety_margin_rad=0.03,
             quiet_logging=True,
         )
 

@@ -22,6 +22,8 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
+from nicegui.testing.user_plugin import user_simulation
+from nicegui.testing.general_fixtures import get_path_to_main_file
 from parol6.client.manager import is_server_running
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
@@ -183,22 +185,44 @@ def class_screen(
             # Create Screen wrapper with class-scoped driver (stub caplog since we share session)
             screen_instance = Screen(class_driver, _StubCaplog(), request)  # type: ignore[arg-type]
 
+            # Set storage keys to bypass first-time dialogs before opening app
+            from nicegui import app as ng_app
+
+            from parol_commander.components.help_menu import HelpMenu
+
+            ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
+            ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
+
             # Navigate to app once for all tests in class
-            # Tests should wait for specific elements/conditions they need
             screen_instance.open("/", timeout=15.0)
-
-            # Dismiss any startup dialogs (e.g., tutorial)
-            from tests.helpers.browser_helpers import dismiss_dialogs
-
-            dismiss_dialogs(screen_instance)
 
             yield screen_instance
 
             # Stop server before exiting context
             screen_instance.stop_server()
         # NiceGUI globals reset on context exit (class teardown)
+        # Re-setup process pool since nicegui_reset_globals calls run.reset()
+        nicegui_run.setup()
     finally:
         os.environ.pop("NICEGUI_SCREEN_TEST_PORT", None)
+
+
+@pytest.fixture(autouse=True)
+def restore_process_pool_after_nicegui_fixtures(
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
+    """Re-setup process pool after tests using NiceGUI's user or screen fixtures.
+
+    These fixtures use nicegui_reset_globals which calls run.reset(),
+    clearing the process pool. This fixture re-sets it up after such tests.
+    """
+    yield
+    # Re-setup if this test used user or screen fixture (not class_screen, which handles it)
+    uses_nicegui_fixture = "user" in request.fixturenames or (
+        "screen" in request.fixturenames and "class_screen" not in request.fixturenames
+    )
+    if uses_nicegui_fixture:
+        nicegui_run.setup()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -281,8 +305,15 @@ def reset_state(request: pytest.FixtureRequest):
         yield
         return
 
+    from nicegui import app as ng_app
+
     from parol_commander import state as state_module
+    from parol_commander.components.help_menu import HelpMenu
     from parol_commander.state import readiness_state
+
+    # Mark first visit and safety as acknowledged so dialogs don't appear
+    ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
+    ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
 
     # Reset readiness events
     readiness_state.reset()
@@ -435,6 +466,40 @@ def session_client(
         asyncio.get_event_loop().run_until_complete(client.close())
 
 
+async def _cleanup_nicegui_app():
+    """Clean up NiceGUI app resources before teardown.
+
+    NiceGUI's test framework clears shutdown handlers without calling them,
+    so _on_shutdown() in main.py never runs. We need to close the client
+    manually to stop the status_stream() async generator.
+    """
+    try:
+        from parol_commander import main as main_module
+
+        # Close the client - this sends a sentinel to status_stream() allowing it to exit
+        client = getattr(main_module, "client", None)
+        if client is not None and hasattr(client, "close"):
+            await client.close()
+    except Exception:
+        pass
+
+
+@pytest.fixture
+async def user(request: pytest.FixtureRequest):
+    """Custom user fixture that wraps NiceGUI's user_simulation with cleanup.
+
+    This ensures our app's background tasks are cancelled before
+    NiceGUI resets its globals, preventing asyncio event loop hangs.
+    """
+    async with user_simulation(
+        main_file=get_path_to_main_file(request)
+    ) as nicegui_user:
+        yield nicegui_user
+
+        # Cleanup BEFORE exiting the context manager (before NiceGUI resets)
+        await _cleanup_nicegui_app()
+
+
 @pytest.fixture(autouse=True)
 async def controller_reset(
     request: pytest.FixtureRequest,
@@ -465,4 +530,5 @@ async def controller_reset(
             await client.enable()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             await client.home(wait=True, timeout=5.0)
+
     yield

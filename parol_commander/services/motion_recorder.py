@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 from parol_commander.state import editor_tabs_state
 import numpy as np
-from spatialmath import SO3
+from parol6.utils.se3_utils import so3_rpy
 
 from parol_commander.state import (
     recording_state,
@@ -72,7 +72,7 @@ class MotionRecorder:
                         [float(pose[8]), float(pose[9]), float(pose[10])],
                     ]
                 )
-                rx, ry, rz = SO3(R).rpy(order="xyz", unit="deg")
+                rx, ry, rz = so3_rpy(R, degrees=True)
                 return [x_mm, y_mm, z_mm, float(rx), float(ry), float(rz)]
 
         # Fallback to current displayed values

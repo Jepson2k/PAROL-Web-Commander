@@ -31,10 +31,11 @@ from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.services.stepping_client import GUIStepController
 from parol_commander.state import playback_state, recording_state
 from parol6 import AsyncRobotClient
-from parol6.PAROL6_ROBOT import joint as PAROL6_JOINT
+import numpy as np
+from parol6.config import HOME_ANGLES_DEG
 
-# Home position in radians (from PAROL6_ROBOT.joint.standby)
-DEFAULT_HOME_JOINTS_RAD = list(PAROL6_JOINT.standby.rad)
+# Home position in radians
+DEFAULT_HOME_JOINTS_RAD = list(np.deg2rad(HOME_ANGLES_DEG))
 
 
 # ---- Command Discovery Functions ----
@@ -156,7 +157,6 @@ class EditorPanel:
         self.speed_fab: ui.fab | None = None
 
         # Shared log area (below play bar)
-        self.log_container: ui.element | None = None
         self._log_expanded: bool = False
         self.editor_splitter: ui.splitter | None = None
         self._splitter_value_when_expanded: float = (
@@ -230,8 +230,8 @@ print(f"Robot status: {{status}}")
             "delay": "time.sleep(1.0)",
             "get_status": "status = rbt.get_status()\nprint(status)",
             "get_angles": "angles = rbt.get_angles()\nprint(f'Joint angles: {angles}')",
-            "move_joints": "rbt.move_joints([0, 0, 0, 0, 0, 0], speed_percentage=50)",
-            "jog_joint": "rbt.jog_joint(0, speed_percentage=50, duration=1.0)",
+            "move_joints": "rbt.move_joints([0, 0, 0, 0, 0, 0], speed=50)",
+            "jog_joint": "rbt.jog_joint(0, speed=50, duration=1.0)",
             "comment": "# Add your robot commands here",
         }
 
@@ -256,11 +256,11 @@ print(f"Robot status: {{status}}")
         if use_current_position:
             if method_name == "move_joints":
                 angles = list(robot_state.angles)
-                return f"rbt.move_joints({angles}, speed_percentage={speed}, accel_percentage={accel})"
+                return f"rbt.move_joints({angles}, speed={speed}, accel={accel})"
             elif method_name in ("move_pose", "move_cartesian"):
                 x, y, z = robot_state.x, robot_state.y, robot_state.z
                 rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
-                return f"rbt.{method_name}([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed_percentage={speed}, accel_percentage={accel})"
+                return f"rbt.{method_name}([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
 
         # Generic snippets - delegate to existing method
         return self._insert_python_snippet(method_name)
@@ -394,11 +394,11 @@ print(f"Robot status: {{status}}")
 
         # Generate appropriate code based on move_type with marker
         if move_type == "joints":
-            code_line = f"rbt.move_joints({pose_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+            code_line = f"rbt.move_joints({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
         elif move_type == "cartesian":
-            code_line = f"rbt.move_cartesian({pose_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+            code_line = f"rbt.move_cartesian({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
         else:  # Default to move_pose
-            code_line = f"rbt.move_pose({pose_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+            code_line = f"rbt.move_pose({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
 
         # Get current content and add the new line
         content = self.program_textarea.value or ""
@@ -445,7 +445,7 @@ print(f"Robot status: {{status}}")
         angles_str = "[" + ", ".join(f"{v:.3f}" for v in joint_angles) + "]"
 
         # Generate code line with marker
-        code_line = f"rbt.move_joints({angles_str}, speed_percentage={speed}, accel_percentage={accel})  # TARGET:{marker_id}"
+        code_line = f"rbt.move_joints({angles_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
 
         # Get current content and add the new line
         content = self.program_textarea.value or ""
@@ -847,11 +847,11 @@ print(f"Robot status: {{status}}")
                             simulation_state.current_step_index = step
                             playback_state.current_step = step
 
-                            # Update URDF scene robot pose
-                            self._update_robot_pose()
-
                             # Update scrub bar to highlight current segment
                             self._highlight_current_segment()
+
+                            # Highlight the executing line in the editor
+                            self._highlight_executing_line(step)
 
                             logging.debug(
                                 "Script event: %s completed (step %d)", method, step
@@ -928,6 +928,9 @@ print(f"Robot status: {{status}}")
             self._step_controller = None
         self._step_session_id = None
 
+        # Clear executing line highlight
+        self._clear_executing_line_highlight()
+
     async def _stop_script_process(self) -> None:
         """Stop the running script process."""
         if not self.script_running or not self.script_handle:
@@ -997,7 +1000,69 @@ print(f"Robot status: {{status}}")
             else:
                 ui.notify("Simulation complete", color="positive")
 
+        # Annotate any lines that generated targets but don't have UUID markers
+        self._annotate_unmarked_targets()
+
         return error
+
+    def _annotate_unmarked_targets(self) -> None:
+        """Add UUID markers to lines that generated targets but don't have them.
+
+        After simulation, targets may have auto-generated IDs (auto_{line_no})
+        for lines with literal move commands but no # TARGET:uuid marker.
+        This method adds proper UUID markers to enable interactive editing.
+        """
+        if not self.program_textarea:
+            return
+
+        content = self.program_textarea.value
+        if not content:
+            return
+
+        # Find targets with auto-generated IDs
+        auto_targets = [t for t in simulation_state.targets if t.id.startswith("auto_")]
+
+        if not auto_targets:
+            return
+
+        lines = content.splitlines()
+        modified = False
+
+        for target in auto_targets:
+            line_idx = target.line_number - 1  # Convert to 0-indexed
+            if 0 <= line_idx < len(lines):
+                line = lines[line_idx]
+
+                # Skip if line already has a TARGET marker
+                if "# TARGET:" in line:
+                    continue
+
+                # Generate new UUID
+                new_id = uuid.uuid4().hex[:8]
+
+                # Add marker to end of line
+                lines[line_idx] = f"{line}  # TARGET:{new_id}"
+
+                # Update target ID in simulation_state
+                target.id = new_id
+
+                # Update target ID in tab state too
+                tab = editor_tabs_state.get_active_tab()
+                if tab:
+                    for tab_target in tab.targets:
+                        if tab_target.line_number == target.line_number:
+                            tab_target.id = new_id
+                            break
+
+                modified = True
+                logging.info(
+                    f"Added TARGET marker {new_id} to line {target.line_number}"
+                )
+
+        if modified:
+            # Update editor content (will trigger debounced simulation,
+            # but next simulation will find the markers and not generate auto_ IDs)
+            self.program_textarea.value = "\n".join(lines)
 
     def _schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
         """Schedule a debounced simulation run when code changes.
@@ -1559,13 +1624,13 @@ print(f"Robot status: {{status}}")
         """
         if self._play_btn:
             if self.script_running and playback_state.is_playing:
-                # Script running and playing - show pause icon
-                self._play_btn.props("icon=pause")
+                # Script running and playing - show pause icon (yellow)
+                self._play_btn.props("icon=pause color=warning")
                 if self._play_btn_tooltip:
                     self._play_btn_tooltip.text = "Pause (Space)"
             else:
-                # Script not running OR paused - show play icon
-                self._play_btn.props("icon=play_arrow")
+                # Script not running OR paused - show play icon (green)
+                self._play_btn.props("icon=play_arrow color=positive")
                 if self._play_btn_tooltip:
                     self._play_btn_tooltip.text = "Play (Space)"
 
@@ -1578,16 +1643,18 @@ print(f"Robot status: {{status}}")
             has_simulation_steps = simulation_state.total_steps > 0
             self._next_btn.set_visibility(self.script_running and has_simulation_steps)
 
-            # Disable step button when at the last step (simulation mode only)
-            if not self.script_running and has_simulation_steps:
+            # Enable step button when script is running, disable at last step otherwise
+            if self.script_running:
+                self._next_btn.enable()
+            elif has_simulation_steps:
                 at_last_step = (
                     simulation_state.current_step_index
                     >= simulation_state.total_steps - 1
                 )
                 if at_last_step:
-                    self._next_btn.props("disabled=true")
+                    self._next_btn.disable()
                 else:
-                    self._next_btn.props("disabled=false")
+                    self._next_btn.enable()
 
     def _update_robot_pose(self) -> None:
         """Update robot pose in URDF scene based on current step."""
@@ -1616,6 +1683,7 @@ print(f"Robot status: {{status}}")
                 simulation_state.current_step_index += 1
                 self._update_robot_pose()
                 self._highlight_current_segment()
+                self._highlight_executing_line(simulation_state.current_step_index)
                 # Update step button disabled state (may be at last step now)
                 self._update_play_button()
 
@@ -1623,6 +1691,7 @@ print(f"Robot status: {{status}}")
         """Handle scrub slider change."""
         simulation_state.current_step_index = value
         self._update_robot_pose()
+        self._highlight_executing_line(value)
         # Update step button disabled state
         self._update_play_button()
 
@@ -1680,13 +1749,17 @@ print(f"Robot status: {{status}}")
                     border_radius = "border-radius: 0 9999px 9999px 0;"  # Right rounded
 
                 # Create clickable segment div - use brightness filter for highlight
+                # Add right border for separation (except last segment)
+                segment_border = (
+                    "border-right: 1px solid rgba(0,0,0,0.3);" if not is_last else ""
+                )
                 seg_elem = (
                     ui.element("div")
                     .classes("h-full transition-all duration-150")
                     .style(
                         f"flex: 1; background-color: {color}; "
                         f"filter: brightness({'1.4' if is_current else '0.8'}); "
-                        f"box-sizing: border-box; {border_radius}"
+                        f"box-sizing: border-box; {border_radius} {segment_border}"
                     )
                 )
                 self._segment_elements.append(seg_elem)
@@ -1716,11 +1789,49 @@ print(f"Robot status: {{status}}")
                 elif is_last:
                     border_radius = "border-radius: 0 9999px 9999px 0;"
 
+                # Add right border for separation (except last segment)
+                segment_border = (
+                    "border-right: 1px solid rgba(0,0,0,0.3);" if not is_last else ""
+                )
                 elem.style(
                     f"flex: 1; background-color: {color}; "
                     f"filter: brightness({'1.4' if is_current else '0.8'}); "
-                    f"box-sizing: border-box; {border_radius}"
+                    f"box-sizing: border-box; {border_radius} {segment_border}"
                 )
+
+    def _highlight_executing_line(self, step_index: int) -> None:
+        """Highlight the source line corresponding to the current step.
+
+        Uses path_segments line_number to look up which line to highlight.
+        Uses persistent decorations (not flash animations) that update with each step.
+
+        Args:
+            step_index: The current step index (0-indexed)
+        """
+        if not self.program_textarea:
+            return
+
+        # Look up line number from path_segments if available
+        if simulation_state.path_segments and 0 <= step_index < len(
+            simulation_state.path_segments
+        ):
+            segment = simulation_state.path_segments[step_index]
+            line_number = segment.line_number
+            if line_number > 0:
+                # Use set_decorations for persistent highlight
+                self.program_textarea.set_decorations(
+                    [{"kind": "line", "line": line_number, "class": "cm-highlighted"}],
+                    set_name="executing",
+                )
+                return
+
+        # Clear highlight if no valid line found
+        self.program_textarea.clear_decorations("executing")
+
+    def _clear_executing_line_highlight(self) -> None:
+        """Clear the executing line highlight decoration."""
+        if self.program_textarea:
+            self.program_textarea.clear_decorations("executing")
 
     def _build_bottom_bar(self) -> None:
         """Build the bottom playback bar with controls.
@@ -1753,7 +1864,7 @@ print(f"Robot status: {{status}}")
             # 3. Next step - hidden until script runs or simulation loaded
             self._next_btn = (
                 ui.button(icon="skip_next", on_click=self._step_forward)
-                .props("round dense flat")
+                .props("round dense flat color=white")
                 .tooltip("Next step (S)")
             )
             self._next_btn.mark("editor-step-next")
@@ -1838,7 +1949,7 @@ print(f"Robot status: {{status}}")
                 # Tabs area (horizontal scroll)
                 with (
                     ui.scroll_area()
-                    .classes("flex-1 no-wrap items-start")
+                    .classes("flex-1 no-wrap items-start editor-tabs-scroll")
                     .style("height: 42px;")
                 ):
                     with ui.row().classes("items-center gap-0 flex-nowrap"):
@@ -1936,13 +2047,31 @@ print(f"Robot status: {{status}}")
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:
-                    with ui.scroll_area().classes("w-full h-full") as log_container:
-                        self.log_container = log_container
-                        self.program_log = (
-                            ui.log(max_lines=1000)
-                            .classes("w-full whitespace-pre-wrap break-words")
-                            .style("min-height: 0;")
-                        )
+                    self.program_log = (
+                        ui.log(max_lines=1000)
+                        .classes("w-full whitespace-pre-wrap break-words")
+                        .style("min-height: 0;")
+                    )
 
-        # Create initial tab
-        self._new_tab()
+        # Restore tabs from existing state (page refresh) or create initial tab
+        if editor_tabs_state.tabs:
+            # Clear stale UI references from previous page load
+            self._tab_widgets.clear()
+            self._pending_simulations.clear()
+
+            # Rebuild UI for each existing tab
+            for tab in editor_tabs_state.tabs:
+                self._create_tab_widget(tab)
+                self._create_tab_panel(tab)
+
+            # Switch to the previously active tab (or first tab if none active)
+            active_id = editor_tabs_state.active_tab_id or editor_tabs_state.tabs[0].id
+            self._switch_to_tab(active_id)
+
+            # Restore simulation state from active tab
+            active_tab = editor_tabs_state.get_active_tab()
+            if active_tab:
+                self._load_simulation_context(active_tab)
+        else:
+            # No existing tabs - create initial tab
+            self._new_tab()
