@@ -191,6 +191,188 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
+async def test_joint_jog_one_degree_step(
+    user: User, robot_state, session_client
+) -> None:
+    """Verify single click with 1.0° step moves exactly 1 degree.
+
+    Regression test for step precision with small step sizes.
+    Uses TOPPRA motion profile.
+    """
+    from parol_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
+
+    # Set motion profile to TOPPRA
+    await session_client.set_joint_profile("TOPPRA")
+
+    # Set step size to 1.0 degrees
+    ui_state.joint_step_deg = 1.0
+
+    # Wait for robot to be completely stable
+    initial_j1 = await wait_for_motion_stable(
+        lambda: robot_state.angles[0], timeout_s=3.0, stable_ticks=20
+    )
+
+    # Single click on J1 plus
+    await simulate_click(user, "btn-j1-plus")
+    await wait_for_motion_start(robot_state)
+    final_j1 = await wait_for_motion_stable(
+        lambda: robot_state.angles[0], timeout_s=5.0, stable_ticks=20
+    )
+
+    delta = final_j1 - initial_j1
+    assert 0.9 <= delta <= 1.1, f"Expected J1 to move +1.0°±0.1°, moved {delta:.4f}°"
+
+
+@pytest.mark.integration
+async def test_cartesian_jog_one_mm_step(
+    user: User, robot_state, session_client
+) -> None:
+    """Verify single click with 1.0mm step moves exactly 1mm.
+
+    Regression test for cartesian step precision with small step sizes.
+    Uses TOPPRA motion profile.
+    """
+    from parol_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
+
+    # Set motion profile to TOPPRA
+    await session_client.set_joint_profile("TOPPRA")
+    await session_client.set_cartesian_profile("TOPPRA")
+
+    # Switch to Cartesian Jog tab
+    user.find("Cartesian Jog").click()
+    await asyncio.sleep(0.1)
+
+    # Set step size to 1.0mm
+    ui_state.joint_step_deg = 1.0
+
+    # Wait for robot to be completely stable
+    initial_z = await wait_for_motion_stable(
+        lambda: float(robot_state.z), timeout_s=3.0, stable_ticks=20
+    )
+
+    # Single click on Z plus
+    await simulate_click(user, "axis-zplus")
+    await wait_for_motion_start(robot_state)
+    final_z = await wait_for_motion_stable(
+        lambda: float(robot_state.z), timeout_s=5.0, stable_ticks=20
+    )
+
+    delta = final_z - initial_z
+    assert 0.9 <= delta <= 1.1, f"Expected Z to move +1.0mm±0.1mm, moved {delta:.4f}mm"
+
+
+@pytest.mark.integration
+async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -> None:
+    """Verify rapid clicking accumulates steps correctly.
+
+    When clicking multiple times in quick succession, each click should
+    add the full step amount. Tests for race conditions with status updates.
+    """
+    from parol_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
+
+    # Set motion profile to TOPPRA
+    await session_client.set_joint_profile("TOPPRA")
+
+    # Set step size to 1.0 degrees
+    ui_state.joint_step_deg = 1.0
+    num_clicks = 5
+    expected_total = num_clicks * 1.0
+
+    # Wait for robot to be completely stable
+    initial_j1 = await wait_for_motion_stable(
+        lambda: robot_state.angles[0], timeout_s=3.0, stable_ticks=20
+    )
+
+    # Rapid clicks - 150ms between clicks is fast but realistic human speed
+    for _ in range(num_clicks):
+        await simulate_click(user, "btn-j1-plus", hold_ms=30)
+        await asyncio.sleep(0.15)  # 150ms between clicks (~6-7 clicks/sec)
+
+    # Wait for all motion to complete
+    final_j1 = await wait_for_motion_stable(
+        lambda: robot_state.angles[0], timeout_s=10.0, stable_ticks=30
+    )
+
+    delta = final_j1 - initial_j1
+    # Allow 10% tolerance for rapid clicking
+    min_expected = expected_total * 0.9
+    max_expected = expected_total * 1.1
+    assert min_expected <= delta <= max_expected, (
+        f"Expected J1 to move ~{expected_total}° after {num_clicks} rapid clicks, "
+        f"moved {delta:.4f}° (tolerance: {min_expected:.1f}° to {max_expected:.1f}°)"
+    )
+
+
+@pytest.mark.integration
+async def test_cartesian_jog_rapid_clicks(
+    user: User, robot_state, session_client
+) -> None:
+    """Verify rapid cartesian clicking accumulates steps correctly.
+
+    When clicking multiple times in quick succession, each click should
+    add the full step amount.
+    """
+    from parol_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_page_ready()
+    await enable_sim(user, robot_state)
+    await ensure_robot_ready_for_motion(robot_state)
+
+    # Set motion profile to TOPPRA
+    await session_client.set_joint_profile("TOPPRA")
+    await session_client.set_cartesian_profile("TOPPRA")
+
+    # Switch to Cartesian Jog tab
+    user.find("Cartesian Jog").click()
+    await asyncio.sleep(0.1)
+
+    # Set step size to 2.0mm (slightly larger for clearer signal)
+    ui_state.joint_step_deg = 2.0
+    num_clicks = 5
+    expected_total = num_clicks * 2.0
+
+    # Wait for robot to be completely stable
+    initial_z = await wait_for_motion_stable(
+        lambda: float(robot_state.z), timeout_s=3.0, stable_ticks=20
+    )
+
+    # Rapid clicks - 300ms between clicks (cartesian moves take longer due to IK)
+    for _ in range(num_clicks):
+        await simulate_click(user, "axis-zplus", hold_ms=30)
+        await asyncio.sleep(0.3)  # 300ms between clicks (~3 clicks/sec)
+
+    # Wait for all motion to complete
+    final_z = await wait_for_motion_stable(
+        lambda: float(robot_state.z), timeout_s=10.0, stable_ticks=30
+    )
+
+    delta = final_z - initial_z
+    # Allow 10% tolerance for rapid clicking
+    min_expected = expected_total * 0.9
+    max_expected = expected_total * 1.1
+    assert min_expected <= delta <= max_expected, (
+        f"Expected Z to move ~{expected_total}mm after {num_clicks} rapid clicks, "
+        f"moved {delta:.4f}mm (tolerance: {min_expected:.1f}mm to {max_expected:.1f}mm)"
+    )
+
+
+@pytest.mark.integration
 async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -> None:
     """Go-to-limit buttons should move the joint to its actual limit.
 
