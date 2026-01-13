@@ -29,12 +29,6 @@ include = ["parol_commander*"]
 [tool.setuptools.package-data]
 parol_commander = ["static/**/*"]
 
-[tool.ruff]
-extend-exclude = [
-  "external/",
-  "PAROL*/"
-]
-
 [tool.mypy]
 files = ["parol_commander"]
 ignore_missing_imports = true
