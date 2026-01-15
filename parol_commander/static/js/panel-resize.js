@@ -540,9 +540,12 @@
     function onTabChange(group, toTab) {
         console.log('[PanelResize] Tab change:', group, '->', toTab);
 
-        // Save active tab state
-        activeTabs[group] = toTab || null;
-        saveActiveTabs();
+        // Only update and save active tab state after app is fully initialized
+        // This prevents the initial auto-selection from overwriting saved state in memory
+        if (appReady) {
+            activeTabs[group] = toTab || null;
+            saveActiveTabs();
+        }
 
         const wrap = config.selectors.wrap ? document.querySelector(config.selectors.wrap) : null;
         const containerSelector = group === 'top'

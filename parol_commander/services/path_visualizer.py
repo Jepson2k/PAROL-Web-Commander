@@ -35,6 +35,11 @@ SIMULATION_TIMEOUT_S = 5.0
 
 def _warm_worker() -> bool:
     """Import heavy modules in subprocess worker. Called once per worker at startup."""
+    import signal
+
+    # Ignore SIGINT in worker - main process handles shutdown
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     # These imports take ~3 seconds but only happen once per worker process
     import parol6.PAROL6_ROBOT  # noqa: F401 - triggers RTB/spatialmath imports
     from parol_commander.services.dry_run_client import DryRunRobotClient  # noqa: F401
@@ -60,6 +65,7 @@ async def warm_process_pool() -> None:
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
+        raise e
         logger.warning("Failed to warm process pool workers: %s", e)
 
 

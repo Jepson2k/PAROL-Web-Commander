@@ -10,6 +10,7 @@ Tests verify:
 All tests share a single browser session via class_screen fixture.
 """
 
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -290,6 +291,9 @@ class TestEditorInteractivity:
 
         # Switch to a different tab to hide the program panel (but keep tab visible)
         click_tab(class_screen, "io")
+
+        # Wait for backend state to propagate (tab click is async via websocket)
+        time.sleep(0.3)
 
         # Jog a joint briefly - this will record a movement command
         jog_joint_briefly(class_screen, joint_index=0, duration_s=0.3)

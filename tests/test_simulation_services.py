@@ -68,7 +68,8 @@ class TestDryRunClient:
                     segment_collector=segments, target_collector=targets
                 )
 
-                client.move_joints([10, 20, 30, 40, 50, 60])
+                # Use angles away from singularities (J5 != 0 avoids gimbal lock)
+                client.move_joints([85, -85, 135, 10, 45, 170])
 
                 # Verify path segment created in collector
                 assert len(segments) == 1
@@ -131,7 +132,8 @@ class TestDryRunClient:
                 segment_collector=segments, target_collector=targets
             )
 
-            client.move_joints([10, 20, 30, 40, 50, 60])
+            # Use angles away from singularities (J5 != 0 avoids gimbal lock)
+            client.move_joints([85, -85, 135, 10, 45, 170])
 
             # Verify path segment was created (always created for visualization)
             assert len(segments) == 1

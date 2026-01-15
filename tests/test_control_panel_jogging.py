@@ -207,7 +207,7 @@ async def test_joint_jog_one_degree_step(
     await ensure_robot_ready_for_motion(robot_state)
 
     # Set motion profile to TOPPRA
-    await session_client.set_joint_profile("TOPPRA")
+    await session_client.set_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
     ui_state.joint_step_deg = 1.0
@@ -244,9 +244,8 @@ async def test_cartesian_jog_one_mm_step(
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
-    # Set motion profile to TOPPRA
-    await session_client.set_joint_profile("TOPPRA")
-    await session_client.set_cartesian_profile("TOPPRA")
+    # Set motion profile to TOPPRA (applies to all move types)
+    await session_client.set_profile("TOPPRA")
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()
@@ -286,7 +285,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -
     await ensure_robot_ready_for_motion(robot_state)
 
     # Set motion profile to TOPPRA
-    await session_client.set_joint_profile("TOPPRA")
+    await session_client.set_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
     ui_state.joint_step_deg = 1.0
@@ -334,9 +333,8 @@ async def test_cartesian_jog_rapid_clicks(
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
-    # Set motion profile to TOPPRA
-    await session_client.set_joint_profile("TOPPRA")
-    await session_client.set_cartesian_profile("TOPPRA")
+    # Set motion profile to TOPPRA (applies to all move types)
+    await session_client.set_profile("TOPPRA")
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()

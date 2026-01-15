@@ -98,6 +98,10 @@ class PathSegment:
     move_type: str = "cartesian"  # "cartesian", "joints", "smooth_*"
     is_dashed: bool = True  # Whether to render as dashed line
     show_arrows: bool = True  # Whether to show direction arrows
+    # Timing validation fields
+    estimated_duration: float | None = None  # Computed duration from trajectory builder
+    requested_duration: float | None = None  # User-requested duration
+    timing_feasible: bool = True  # Whether motion achievable in requested time
 
     def to_dict(self) -> dict:
         """Serialize to dict for subprocess communication."""
@@ -110,6 +114,9 @@ class PathSegment:
             "move_type": self.move_type,
             "is_dashed": self.is_dashed,
             "show_arrows": self.show_arrows,
+            "estimated_duration": self.estimated_duration,
+            "requested_duration": self.requested_duration,
+            "timing_feasible": self.timing_feasible,
         }
 
     @classmethod

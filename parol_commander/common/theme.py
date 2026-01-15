@@ -65,13 +65,15 @@ class SceneColors:
     TCP_INACTIVE_HEX = EDIT_GRAY_HEX
 
 
-# Path visualization colors - 3 colors only
+# Path visualization colors
 class PathColors:
     """Colors for path/trajectory visualization."""
 
     CARTESIAN = "#10b981"  # emerald-500 - cartesian/linear moves
     JOINTS = "#2563eb"  # blue-600 - joint space moves
     SMOOTH = "#a855f7"  # purple-500 - smooth/blended moves
+    INVALID = "#ef4444"  # red-500 - IK failure / unreachable
+    TIMING_WARNING = "#f59e0b"  # amber-500 - needs more time than requested
 
 
 # Move type to color mapping (for path_visualizer and dry_run_client)
@@ -81,8 +83,6 @@ MOVE_TYPE_COLORS: dict[str, str] = {
     "move_cartesian": PathColors.CARTESIAN,
     "move_pose": PathColors.CARTESIAN,
     "pose": PathColors.CARTESIAN,
-    "invalid": PathColors.CARTESIAN,
-    "unknown": PathColors.CARTESIAN,
     # Joint moves (blue)
     "joints": PathColors.JOINTS,
     "move_joints": PathColors.JOINTS,
@@ -96,6 +96,10 @@ MOVE_TYPE_COLORS: dict[str, str] = {
     "smooth_circle": PathColors.SMOOTH,
     "smooth_arc": PathColors.SMOOTH,
     "smooth_helix": PathColors.SMOOTH,
+    # Status colors
+    "invalid": PathColors.INVALID,
+    "timing_warning": PathColors.TIMING_WARNING,
+    "unknown": PathColors.CARTESIAN,
 }
 
 

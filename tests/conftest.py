@@ -458,12 +458,20 @@ def session_client(
         await client.stream_on()
         await client.enable()
 
-    asyncio.get_event_loop().run_until_complete(setup())
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(setup())
+    finally:
+        loop.close()
 
     try:
         yield client
     finally:
-        asyncio.get_event_loop().run_until_complete(client.close())
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(client.close())
+        finally:
+            loop.close()
 
 
 async def _cleanup_nicegui_app():

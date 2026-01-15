@@ -596,6 +596,8 @@ def build_page_content() -> None:
                         panels_wrap.classes(remove="coupled")
                         # Track program panel visibility for tab flash
                         ui_state.program_panel_visible = False
+                        # Explicitly save closed state (update:model-value doesn't fire for None)
+                        ui.run_javascript("PanelResize.onTabChange('top', '')")
 
                     with ui.tab_panel("program").classes(
                         "overlay-card program-panel resizable-panel p-0"
@@ -680,6 +682,8 @@ def build_page_content() -> None:
                         bottom_panels.value = None
                         # Update classes to restore layout
                         panels_wrap.classes(remove="coupled")
+                        # Explicitly save closed state (update:model-value doesn't fire for None)
+                        ui.run_javascript("PanelResize.onTabChange('bottom', '')")
 
                     with ui.tab_panel("response").classes(
                         "overlay-card response-panel resizable-panel"
@@ -747,21 +751,27 @@ def build_page_content() -> None:
                 try:
                     saved_tabs = await ui.run_javascript("PanelResize.getActiveTabs()")
                     if saved_tabs:
-                        if saved_tabs.get("top"):
-                            side_tabs.value = saved_tabs["top"]
-                            top_panels.value = saved_tabs["top"]
+                        # Restore top panel state (including closed state when top is null)
+                        if "top" in saved_tabs:
+                            top_tab = saved_tabs["top"]
+                            side_tabs.value = top_tab
+                            top_panels.value = top_tab
                             update_top_layout()
-                            # Explicitly trigger size restoration (programmatic value changes don't fire events)
-                            ui.run_javascript(
-                                f"PanelResize.onTabChange('top', '{saved_tabs['top']}')"
-                            )
-                        if saved_tabs.get("bottom"):
-                            bottom_tabs.value = saved_tabs["bottom"]
-                            bottom_panels.value = saved_tabs["bottom"]
+                            if top_tab:
+                                # Trigger size restoration for open panels
+                                ui.run_javascript(
+                                    f"PanelResize.onTabChange('top', '{top_tab}')"
+                                )
+                        # Restore bottom panel state (including closed state)
+                        if "bottom" in saved_tabs:
+                            bottom_tab = saved_tabs["bottom"]
+                            bottom_tabs.value = bottom_tab
+                            bottom_panels.value = bottom_tab
                             update_bottom_layout()
-                            ui.run_javascript(
-                                f"PanelResize.onTabChange('bottom', '{saved_tabs['bottom']}')"
-                            )
+                            if bottom_tab:
+                                ui.run_javascript(
+                                    f"PanelResize.onTabChange('bottom', '{bottom_tab}')"
+                                )
                         logging.debug(f"Restored active tabs: {saved_tabs}")
                 except Exception as e:
                     logging.debug(f"Could not restore active tabs: {e}")
@@ -1395,17 +1405,20 @@ def main():
         f"Controller target: host={config.controller_host} port={config.controller_port}"
     )
 
-    ui.run(
-        title="PAROL6 NiceGUI Commander",
-        host=config.server_host,
-        port=config.server_port,
-        reload=args.reload,
-        uvicorn_reload_excludes=".*, .py[cod], .sw.*, ~*, programs/*",
-        show=False,
-        loop="uvloop" if sys.platform != "win32" else "asyncio",
-        http="httptools",
-        binding_refresh_interval=0.05,
-    )
+    try:
+        ui.run(
+            title="PAROL6 NiceGUI Commander",
+            host=config.server_host,
+            port=config.server_port,
+            reload=args.reload,
+            uvicorn_reload_excludes=".*, .py[cod], .sw.*, ~*, programs/*",
+            show=False,
+            loop="uvloop" if sys.platform != "win32" else "asyncio",
+            http="httptools",
+            binding_refresh_interval=0.05,
+        )
+    except KeyboardInterrupt:
+        print("\nShutting down...")
 
 
 if __name__ in {"__main__", "__mp_main__"}:

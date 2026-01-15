@@ -3,6 +3,9 @@ Dry-run robot client for offline simulation and path preview.
 
 This module provides mock RobotClient implementations that intercept motion commands,
 perform local FK/IK, and collect path segments for visualization.
+
+Uses shared geometry generators from parol6.motion.geometry for accurate path
+visualization of circles, arcs, splines, and joint-space TCP arcs.
 """
 
 import logging
@@ -11,12 +14,20 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal, cast, Any
 import numpy as np
+from numpy.typing import NDArray
 from parol6.utils.se3_utils import se3_from_rpy, se3_rpy, so3_rpy
 
 # Eagerly import parol6 dependencies at module level
 # This ensures they're in sys.modules BEFORE path_visualizer replaces parol6 with mock
 import parol6.PAROL6_ROBOT as PAROL6_ROBOT
 from parol6.config import STANDBY_ANGLES_DEG
+from parol6.motion.geometry import (
+    CircularMotion,
+    SplineMotion,
+    joint_path_to_tcp_poses,
+    PLANE_NORMALS,
+)
+from parol6.motion.trajectory import JointPath, ProfileType, TrajectoryBuilder
 from parol6.utils.ik import check_limits, solve_ik
 
 from parol_commander.common.theme import MOVE_TYPE_COLORS
@@ -251,6 +262,167 @@ class DryRunRobotClient:
 
         self._current_step_index += 1
 
+    def _collect_multipoint_segment(
+        self,
+        poses_m: NDArray | list[list[float]],
+        valid: bool,
+        move_type: str,
+        estimated_duration: float | None = None,
+        requested_duration: float | None = None,
+    ):
+        """Add a multi-point path segment for smooth motion visualization.
+
+        Args:
+            poses_m: (N, 6) array or list of [x_m, y_m, z_m, rx, ry, rz] poses
+            valid: Whether the entire path is reachable
+            move_type: Type of motion (smooth_circle, smooth_arc, etc.)
+            estimated_duration: Computed duration from trajectory builder
+            requested_duration: User-requested duration
+        """
+        line_no = self._get_caller_line_number()
+
+        # Convert to points format: [[x, y, z], [x, y, z], ...]
+        if isinstance(poses_m, np.ndarray):
+            points = poses_m[:, :3].tolist()
+        else:
+            points = [[p[0], p[1], p[2]] for p in poses_m]
+
+        # Determine color based on validity and timing feasibility
+        timing_feasible = (
+            estimated_duration is None
+            or requested_duration is None
+            or estimated_duration <= requested_duration * 1.1  # 10% tolerance
+        )
+
+        if not valid:
+            color = MOVE_TYPE_COLORS["invalid"]
+        elif not timing_feasible:
+            color = MOVE_TYPE_COLORS.get("timing_warning", "#FFA500")  # Orange
+        else:
+            color = get_color_for_move_type(move_type, valid)
+
+        segment = {
+            "points": points,
+            "color": color,
+            "is_valid": valid,
+            "line_number": line_no,
+            "joints": self._current_joints.tolist(),
+            "move_type": move_type,
+            "is_dashed": False,  # Solid line for actual geometry paths
+            "show_arrows": True,
+            "estimated_duration": estimated_duration,
+            "requested_duration": requested_duration,
+            "timing_feasible": timing_feasible,
+        }
+        self.segment_collector.append(segment)
+
+        # Create interactive target for moves with literal args (like _collect_segment)
+        source_line = self._get_source_line(line_no)
+        marker_id = self._extract_target_marker(source_line)
+        has_literal_args = self._has_literal_list_args(source_line)
+
+        if has_literal_args:
+            # Use endpoint of path as target position
+            if isinstance(poses_m, np.ndarray):
+                end_pose = poses_m[-1].tolist()
+            else:
+                end_pose = list(poses_m[-1])
+
+            target_id = marker_id or f"auto_{line_no}"
+            target = {
+                "id": target_id,
+                "line_number": line_no,
+                "pose": end_pose,
+                "move_type": move_type,
+                "scene_object_id": "",
+            }
+            self.target_collector.append(target)
+            if marker_id:
+                logger.debug(f"Created target {target_id} at line {line_no}")
+            else:
+                logger.debug(f"Auto-generated target {target_id} at line {line_no}")
+        elif marker_id:
+            logger.debug(
+                f"Skipped target {marker_id} - line has variable args (not editable)"
+            )
+
+        self._current_step_index += 1
+
+    def _validate_path_ik(
+        self,
+        poses_mm_deg: NDArray,
+    ) -> tuple[NDArray | None, bool]:
+        """Validate each pose in path via IK, returning joint positions and validity.
+
+        Args:
+            poses_mm_deg: (N, 6) array of [x_mm, y_mm, z_mm, rx_deg, ry_deg, rz_deg]
+
+        Returns:
+            (joint_positions, all_valid): Joint path array and overall validity
+        """
+        if PAROL6_ROBOT.robot is None:
+            return None, False
+
+        robot = cast(Any, PAROL6_ROBOT.robot)
+        n_poses = len(poses_mm_deg)
+        joint_positions = np.empty((n_poses, 6), dtype=np.float64)
+        all_valid = True
+        q_prev = self._current_joints.copy()
+
+        for i, pose in enumerate(poses_mm_deg):
+            T_target = se3_from_rpy(
+                pose[0] / 1000.0,  # mm -> m
+                pose[1] / 1000.0,
+                pose[2] / 1000.0,
+                pose[3],
+                pose[4],
+                pose[5],
+                degrees=True,
+            )
+            ik_res = solve_ik(robot, T_target, q_prev, quiet_logging=True)
+            if ik_res.success and ik_res.q is not None:
+                joint_positions[i] = ik_res.q
+                q_prev = ik_res.q
+            else:
+                joint_positions[i] = q_prev  # Use last good position
+                all_valid = False
+
+        return joint_positions, all_valid
+
+    def _validate_timing(
+        self,
+        joint_positions: NDArray,
+        requested_duration: float | None,
+        velocity_percent: float = 100.0,
+    ) -> tuple[float | None, bool]:
+        """Validate if motion is achievable in requested time using TrajectoryBuilder.
+
+        Args:
+            joint_positions: (N, 6) joint angles in radians
+            requested_duration: User-requested duration in seconds
+            velocity_percent: Velocity scaling (default 100%)
+
+        Returns:
+            (estimated_duration, is_feasible): Computed duration and feasibility
+        """
+        try:
+            joint_path = JointPath(positions=joint_positions)
+            builder = TrajectoryBuilder(
+                joint_path=joint_path,
+                profile=ProfileType.TOPPRA,
+                velocity_percent=velocity_percent,
+            )
+            trajectory = builder.build()
+            estimated = trajectory.duration
+
+            feasible = (
+                requested_duration is None or estimated <= requested_duration * 1.1
+            )
+            return estimated, feasible
+        except Exception as e:
+            logger.debug(f"Timing validation failed: {e}")
+            return None, True  # Assume feasible if validation fails
+
     # --- Motion Interface Implementation ---
 
     def move_joints(
@@ -264,8 +436,7 @@ class DryRunRobotClient:
         wait: bool = True,
     ) -> bool:
         try:
-            start_pose = self._current_pose  # Read-only reference, no copy needed
-            target_rad = np.deg2rad(joint_angles)  # Keep as numpy array
+            target_rad = np.deg2rad(joint_angles)
 
             try:
                 valid = check_limits(
@@ -275,10 +446,37 @@ class DryRunRobotClient:
                 logger.warning(f"Limit check failed: {e}, assuming valid")
                 valid = True
 
+            # Generate TCP arc for joint-space motion (joints interpolate linearly,
+            # but TCP traces an arc in Cartesian space)
+            n_samples = 20
+            t = np.linspace(0, 1, n_samples)
+            joint_path = self._current_joints + np.outer(
+                t, target_rad - self._current_joints
+            )
+
+            # Convert to TCP poses via FK
+            tcp_poses_mm = joint_path_to_tcp_poses(joint_path)
+            # Convert mm to m for internal storage
+            tcp_poses_m = tcp_poses_mm.copy()
+            tcp_poses_m[:, :3] /= 1000.0
+
+            # Timing validation
+            estimated_duration, timing_feasible = self._validate_timing(
+                joint_path, duration, velocity_percent=speed or 100.0
+            )
+
+            # Collect as multi-point segment (shows actual TCP arc)
+            self._collect_multipoint_segment(
+                tcp_poses_m,
+                valid,
+                "joints",
+                estimated_duration=estimated_duration,
+                requested_duration=duration,
+            )
+
+            # Update state
             self._current_joints = target_rad
             self._update_pose_from_joints()
-
-            self._collect_segment(start_pose, self._current_pose, valid, "joints")
             return True
         except Exception as e:
             logger.error(f"move_joints simulation failed: {e}")
@@ -487,8 +685,67 @@ class DryRunRobotClient:
         jerk_limit: float | None = None,
         wait: bool = True,
     ) -> bool:
-        """Create path segments for spline motion."""
-        return self.smooth_waypoints(waypoints, wait=wait)
+        """Create full spline path using geometry generator."""
+        if not waypoints or len(waypoints) < 2:
+            return True
+
+        try:
+            # Get current pose in mm for geometry generator
+            current_mm = [
+                self._current_pose[0] * 1000.0,
+                self._current_pose[1] * 1000.0,
+                self._current_pose[2] * 1000.0,
+                self._current_pose[3],
+                self._current_pose[4],
+                self._current_pose[5],
+            ]
+
+            # Prepend current position if first waypoint is far
+            wps = [
+                wp[:6] if len(wp) >= 6 else wp + [0.0] * (6 - len(wp))
+                for wp in waypoints
+            ]
+            first_wp_dist = np.linalg.norm(
+                np.array(wps[0][:3]) - np.array(current_mm[:3])
+            )
+            if first_wp_dist > 5.0:  # More than 5mm away
+                wps = [current_mm] + wps
+
+            # Generate spline geometry
+            gen = SplineMotion(control_rate=50)
+            poses_mm = gen.generate_spline(waypoints=wps, duration=duration)
+
+            # Validate IK for each point
+            joint_positions, all_valid = self._validate_path_ik(poses_mm)
+
+            # Timing validation
+            estimated_duration = None
+            if joint_positions is not None:
+                estimated_duration, _ = self._validate_timing(
+                    joint_positions, duration, velocity_percent=speed or 100.0
+                )
+
+            # Convert to meters for internal storage
+            poses_m = poses_mm.copy()
+            poses_m[:, :3] /= 1000.0
+
+            self._collect_multipoint_segment(
+                poses_m,
+                all_valid,
+                "smooth_spline",
+                estimated_duration=estimated_duration,
+                requested_duration=duration,
+            )
+
+            # Update state
+            self._current_pose = poses_m[-1].tolist()
+            if joint_positions is not None and all_valid:
+                self._current_joints = joint_positions[-1]
+
+            return True
+        except Exception as e:
+            logger.error(f"smooth_spline simulation failed: {e}")
+            return False
 
     def smooth_circle(
         self,
@@ -506,46 +763,81 @@ class DryRunRobotClient:
         jerk_limit: float | None = None,
         wait: bool = True,
     ) -> bool:
-        """Create simplified path segment for circle motion."""
-        center_m = [
-            center[0] / 1000.0,
-            center[1] / 1000.0,
-            center[2] / 1000.0 if len(center) > 2 else 0.0,
-        ]
-        radius_m = radius / 1000.0
-
-        current = self._current_pose
-        if plane == "XY":
-            end = [
-                center_m[0] + radius_m,
-                center_m[1],
-                current[2],
-                current[3],
-                current[4],
-                current[5],
-            ]
-        elif plane == "XZ":
-            end = [
-                center_m[0] + radius_m,
-                current[1],
-                center_m[2],
-                current[3],
-                current[4],
-                current[5],
-            ]
-        else:
-            end = [
-                current[0],
-                center_m[1] + radius_m,
-                center_m[2],
-                current[3],
-                current[4],
-                current[5],
+        """Create full circle path using geometry generator."""
+        try:
+            # Get current pose in mm for geometry generator
+            current_mm = [
+                self._current_pose[0] * 1000.0,
+                self._current_pose[1] * 1000.0,
+                self._current_pose[2] * 1000.0,
+                self._current_pose[3],
+                self._current_pose[4],
+                self._current_pose[5],
             ]
 
-        self._collect_segment(current, end, True, "smooth_circle")
-        self._current_pose = end
-        return True
+            # Handle center_mode
+            if center_mode == "TOOL":
+                actual_center = current_mm[:3]
+            elif center_mode == "RELATIVE":
+                actual_center = [
+                    current_mm[0] + center[0],
+                    current_mm[1] + center[1],
+                    current_mm[2] + (center[2] if len(center) > 2 else 0.0),
+                ]
+            else:  # ABSOLUTE
+                actual_center = list(center[:3]) if len(center) >= 3 else center + [0.0]
+
+            # Get plane normal
+            normal = PLANE_NORMALS.get(plane.upper(), PLANE_NORMALS["XY"])
+
+            # Generate circle geometry (returns poses in mm)
+            gen = CircularMotion(control_rate=50)  # Lower rate for preview
+            geom_duration = duration if duration is not None else 4.0
+            poses_mm = gen.generate_circle(
+                center=actual_center,
+                radius=radius,
+                normal=normal,
+                duration=geom_duration,
+                start_point=current_mm,
+            )
+
+            if clockwise:
+                poses_mm = poses_mm[::-1]
+
+            # Update orientations to match current pose
+            poses_mm[:, 3:] = current_mm[3:]
+
+            # Validate IK for each point
+            joint_positions, all_valid = self._validate_path_ik(poses_mm)
+
+            # Timing validation
+            estimated_duration = None
+            if joint_positions is not None:
+                estimated_duration, _ = self._validate_timing(
+                    joint_positions, duration, velocity_percent=speed or 100.0
+                )
+
+            # Convert to meters for internal storage
+            poses_m = poses_mm.copy()
+            poses_m[:, :3] /= 1000.0
+
+            self._collect_multipoint_segment(
+                poses_m,
+                all_valid,
+                "smooth_circle",
+                estimated_duration=estimated_duration,
+                requested_duration=duration,
+            )
+
+            # Update state to end of circle (back to start)
+            self._current_pose = poses_m[-1].tolist()
+            if joint_positions is not None and all_valid:
+                self._current_joints = joint_positions[-1]
+
+            return True
+        except Exception as e:
+            logger.error(f"smooth_circle simulation failed: {e}")
+            return False
 
     def smooth_arc_center(
         self,
@@ -560,16 +852,67 @@ class DryRunRobotClient:
         jerk_limit: float | None = None,
         wait: bool = True,
     ) -> bool:
-        """Create path segment for arc motion (center-defined)."""
-        ep = (
-            end_pose[:6]
-            if len(end_pose) >= 6
-            else end_pose + [0.0] * (6 - len(end_pose))
-        )
-        end_m = [ep[0] / 1000.0, ep[1] / 1000.0, ep[2] / 1000.0, ep[3], ep[4], ep[5]]
-        self._collect_segment(self._current_pose, end_m, True, "smooth_arc")
-        self._current_pose = end_m
-        return True
+        """Create full arc path using geometry generator (center-defined)."""
+        try:
+            # Get current pose in mm for geometry generator
+            current_mm = [
+                self._current_pose[0] * 1000.0,
+                self._current_pose[1] * 1000.0,
+                self._current_pose[2] * 1000.0,
+                self._current_pose[3],
+                self._current_pose[4],
+                self._current_pose[5],
+            ]
+
+            # Ensure end_pose has 6 elements
+            ep = (
+                end_pose[:6]
+                if len(end_pose) >= 6
+                else end_pose + [0.0] * (6 - len(end_pose))
+            )
+
+            # Generate arc geometry (returns poses in mm)
+            gen = CircularMotion(control_rate=50)
+            geom_duration = duration if duration is not None else 2.0
+            poses_mm = gen.generate_arc(
+                start_pose=current_mm,
+                end_pose=ep,
+                center=center[:3],
+                clockwise=clockwise,
+                duration=geom_duration,
+            )
+
+            # Validate IK for each point
+            joint_positions, all_valid = self._validate_path_ik(poses_mm)
+
+            # Timing validation
+            estimated_duration = None
+            if joint_positions is not None:
+                estimated_duration, _ = self._validate_timing(
+                    joint_positions, duration, velocity_percent=speed or 100.0
+                )
+
+            # Convert to meters for internal storage
+            poses_m = poses_mm.copy()
+            poses_m[:, :3] /= 1000.0
+
+            self._collect_multipoint_segment(
+                poses_m,
+                all_valid,
+                "smooth_arc",
+                estimated_duration=estimated_duration,
+                requested_duration=duration,
+            )
+
+            # Update state
+            self._current_pose = poses_m[-1].tolist()
+            if joint_positions is not None and all_valid:
+                self._current_joints = joint_positions[-1]
+
+            return True
+        except Exception as e:
+            logger.error(f"smooth_arc_center simulation failed: {e}")
+            return False
 
     def smooth_arc_param(
         self,
@@ -585,16 +928,67 @@ class DryRunRobotClient:
         clockwise: bool = False,
         wait: bool = True,
     ) -> bool:
-        """Create path segment for arc motion (parameter-defined)."""
-        ep = (
-            end_pose[:6]
-            if len(end_pose) >= 6
-            else end_pose + [0.0] * (6 - len(end_pose))
-        )
-        end_m = [ep[0] / 1000.0, ep[1] / 1000.0, ep[2] / 1000.0, ep[3], ep[4], ep[5]]
-        self._collect_segment(self._current_pose, end_m, True, "smooth_arc")
-        self._current_pose = end_m
-        return True
+        """Create full arc path using geometry generator (parameter-defined)."""
+        try:
+            # Get current pose in mm for geometry generator
+            current_mm = [
+                self._current_pose[0] * 1000.0,
+                self._current_pose[1] * 1000.0,
+                self._current_pose[2] * 1000.0,
+                self._current_pose[3],
+                self._current_pose[4],
+                self._current_pose[5],
+            ]
+
+            # Ensure end_pose has 6 elements
+            ep = (
+                end_pose[:6]
+                if len(end_pose) >= 6
+                else end_pose + [0.0] * (6 - len(end_pose))
+            )
+
+            # Generate arc geometry from endpoints and radius
+            gen = CircularMotion(control_rate=50)
+            geom_duration = duration if duration is not None else 2.0
+            poses_mm = gen.generate_arc_from_endpoints(
+                start_pose=current_mm,
+                end_pose=ep,
+                radius=radius,
+                clockwise=clockwise,
+                duration=geom_duration,
+            )
+
+            # Validate IK for each point
+            joint_positions, all_valid = self._validate_path_ik(poses_mm)
+
+            # Timing validation
+            estimated_duration = None
+            if joint_positions is not None:
+                estimated_duration, _ = self._validate_timing(
+                    joint_positions, duration, velocity_percent=speed or 100.0
+                )
+
+            # Convert to meters for internal storage
+            poses_m = poses_mm.copy()
+            poses_m[:, :3] /= 1000.0
+
+            self._collect_multipoint_segment(
+                poses_m,
+                all_valid,
+                "smooth_arc",
+                estimated_duration=estimated_duration,
+                requested_duration=duration,
+            )
+
+            # Update state
+            self._current_pose = poses_m[-1].tolist()
+            if joint_positions is not None and all_valid:
+                self._current_joints = joint_positions[-1]
+
+            return True
+        except Exception as e:
+            logger.error(f"smooth_arc_param simulation failed: {e}")
+            return False
 
     def smooth_helix(
         self,
