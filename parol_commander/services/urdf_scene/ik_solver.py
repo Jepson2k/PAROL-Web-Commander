@@ -13,7 +13,6 @@ import numpy as np
 
 # Import robotics-toolbox
 from roboticstoolbox import Robot
-import sophuspy as sp
 from parol6.utils.ik import solve_ik as parol6_solve_ik  # use PAROL6 solver exclusively
 from parol6.utils.se3_utils import se3_from_rpy, so3_rpy
 
@@ -57,6 +56,8 @@ class EditingIKSolver:
         # Pre-allocated buffers to avoid per-call allocations
         self._q_buffer = np.zeros(robot.n, dtype=float)
         self._fk_result_buffer = np.zeros(6, dtype=float)
+        self._rpy_buffer = np.zeros(3, dtype=np.float64)
+        self._T_target_buffer = np.zeros((4, 4), dtype=np.float64)
 
         # Throttling
         self._last_solve_time = 0.0
@@ -119,17 +120,19 @@ class EditingIKSolver:
         # Extract rotation as Euler angles (XYZ convention)
         # T.R gives the rotation matrix, use our so3_rpy utility
         try:
-            rpy = so3_rpy(T.R, degrees=False)  # Returns [rx, ry, rz] in radians
+            so3_rpy(T.R, self._rpy_buffer)  # Returns [rx, ry, rz] in radians
         except Exception:
-            rpy = (0.0, 0.0, 0.0)
+            self._rpy_buffer[0] = 0.0
+            self._rpy_buffer[1] = 0.0
+            self._rpy_buffer[2] = 0.0
 
         # Fill pre-allocated result buffer
         self._fk_result_buffer[0] = pos[0]
         self._fk_result_buffer[1] = pos[1]
         self._fk_result_buffer[2] = pos[2]
-        self._fk_result_buffer[3] = rpy[0]
-        self._fk_result_buffer[4] = rpy[1]
-        self._fk_result_buffer[5] = rpy[2]
+        self._fk_result_buffer[3] = self._rpy_buffer[0]
+        self._fk_result_buffer[4] = self._rpy_buffer[1]
+        self._fk_result_buffer[5] = self._rpy_buffer[2]
         return self._fk_result_buffer
 
     def solve(
@@ -175,23 +178,31 @@ class EditingIKSolver:
             target = np.asarray(target_pos, dtype=float)
 
         # Create target pose with specified or current orientation
+        # Zero buffer and fill to avoid allocation
+        self._T_target_buffer.fill(0.0)
         if target_orientation is not None:
-            # Build sophuspy SE3 from position and XYZ Euler angles
-            T_target = se3_from_rpy(
+            # Build 4x4 SE3 from position and XYZ Euler angles
+            se3_from_rpy(
                 target[0],
                 target[1],
                 target[2],
                 target_orientation[0],
                 target_orientation[1],
                 target_orientation[2],
-                degrees=False,
+                self._T_target_buffer,
             )
         else:
-            T_target = sp.SE3(T_current.R, target)
+            # Build 4x4 SE3 with current rotation and new translation
+            self._T_target_buffer[0, 0] = 1.0
+            self._T_target_buffer[1, 1] = 1.0
+            self._T_target_buffer[2, 2] = 1.0
+            self._T_target_buffer[3, 3] = 1.0
+            self._T_target_buffer[:3, :3] = T_current.R
+            self._T_target_buffer[:3, 3] = target
 
         parol_result = parol6_solve_ik(
             robot=cast(Any, self.robot),
-            target_pose=T_target,
+            target_pose=self._T_target_buffer,
             current_q=q0,
             quiet_logging=True,
         )

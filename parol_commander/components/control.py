@@ -18,11 +18,33 @@ from parol_commander.constants import (
     JOINT_LIMITS_DEG,
     config,
 )
-from parol_commander.state import readiness_state, robot_state, ui_state
+from parol_commander.state import (
+    readiness_state,
+    robot_state,
+    ui_state,
+    global_phase_timer,
+)
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.components.settings import SettingsContent
 from parol6.protocol.types import Axis, Frame
 from parol6.config import HOME_ANGLES_DEG
+
+# Module-level constants (avoid recreation every frame)
+_AXIS_ORDER = (
+    "X+",
+    "X-",
+    "Y+",
+    "Y-",
+    "Z+",
+    "Z-",
+    "RX+",
+    "RX-",
+    "RY+",
+    "RY-",
+    "RZ+",
+    "RZ-",
+)
+_AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
 
 
 class ControlPanel:
@@ -107,15 +129,22 @@ class ControlPanel:
             None  # Track last sent to avoid duplicates
         )
         self._tcp_drag_active: bool = False
-        self._last_drag_event_ts: float = 0.0
-        # TRF relative move state (delta from drag start in tool frame)
-        self._tcp_latest_delta_trf: list[float] | None = None
-        self._tcp_drag_is_trf: bool = False  # True when dragging in TRF mode
 
         # Step input widget reference for dynamic suffix/tooltip
         self._step_input: ui.number | None = None
         self._step_input_tooltip: ui.tooltip | None = None
         self._jog_mode_tabs: Any = None
+
+        # Dirty checking caches for button enablement (avoid redundant CSS updates)
+        self._last_joint_en_tuple: tuple[int, ...] | None = None
+        self._last_cart_en_tuple: tuple[int, ...] | None = None
+        self._last_editing_mode: bool | None = None
+
+        # Pending jog end wait task (to prevent spawning multiple concurrent wait tasks)
+        self._jog_end_wait_task: asyncio.Task | None = None
+
+        # Preallocated buffer for cartesian jog target to avoid GC pressure
+        self._cart_target_buffer: list[float] = [0.0] * 6
 
     # ---- Helper methods ----
 
@@ -150,9 +179,9 @@ class ControlPanel:
     def _get_first_pressed_joint(self) -> tuple[int, str] | None:
         """Return (index, 'pos'|'neg') for the first pressed joint, else None."""
         for j in range(6):
-            if j < len(self._jog_pressed_pos) and self._jog_pressed_pos[j]:
+            if self._jog_pressed_pos[j]:
                 return (j, "pos")
-            if j < len(self._jog_pressed_neg) and self._jog_pressed_neg[j]:
+            if self._jog_pressed_neg[j]:
                 return (j, "neg")
         return None
 
@@ -326,60 +355,76 @@ class ControlPanel:
 
     def refresh_joint_enablement(self) -> None:
         """Apply stronger disabled visuals to joint +/- buttons using robot_state.joint_en."""
+        # Get current state for dirty checking
+        editing_mode = robot_state.editing_mode
+        en = robot_state.joint_en
+        current_tuple = tuple(en) if len(en) == 12 else None
+
+        # Skip if state unchanged (18x faster when idle)
+        if (
+            editing_mode == self._last_editing_mode
+            and current_tuple == self._last_joint_en_tuple
+        ):
+            return
+
         # If in editing mode, disable all buttons regardless of normal enablement
-        if robot_state.editing_mode:
+        if editing_mode:
             for btn in self._joint_left_btns.values():
                 self._set_strong_disabled(btn, True)
             for btn in self._joint_right_btns.values():
                 self._set_strong_disabled(btn, True)
+            self._last_editing_mode = editing_mode
+            self._last_joint_en_tuple = current_tuple
             return
 
-        en = list(getattr(robot_state, "joint_en", []))
-        if len(en) != 12:
+        if current_tuple is None:
             return
+
         for j in range(6):
             plus_allowed = bool(en[2 * j])
             minus_allowed = bool(en[2 * j + 1])
             self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
             self._set_strong_disabled(self._joint_left_btns.get(j), not minus_allowed)
 
+        self._last_editing_mode = editing_mode
+        self._last_joint_en_tuple = current_tuple
+
     def sync_cartesian_button_states(self) -> None:
         """Apply stronger disabled visuals to axis icons using CART_EN for current frame and mirror to 3D gizmo."""
-        axis_order = [
-            "X+",
-            "X-",
-            "Y+",
-            "Y-",
-            "Z+",
-            "Z-",
-            "RX+",
-            "RX-",
-            "RY+",
-            "RY-",
-            "RZ+",
-            "RZ-",
-        ]
+        # Get current state for dirty checking
+        editing_mode = robot_state.editing_mode
+        frame = str(ui_state.frame).upper() if ui_state.frame else "WRF"
+        en = robot_state.cart_en_trf if frame == "TRF" else robot_state.cart_en_wrf
+        current_tuple = tuple(en) if len(en) == 12 else None
+
+        # Skip if state unchanged
+        if (
+            editing_mode == self._last_editing_mode
+            and current_tuple == self._last_cart_en_tuple
+        ):
+            return
 
         # If in editing mode, disable all cartesian buttons regardless of normal enablement
-        if robot_state.editing_mode:
-            for ax in axis_order:
+        if editing_mode:
+            for ax in _AXIS_ORDER:
                 elem = self._cart_axis_imgs.get(ax)
                 self._set_strong_disabled(elem, True)
             for elem in self._cart_slot_elems.values():
                 self._set_strong_disabled(elem, True)
+            self._last_editing_mode = editing_mode
+            self._last_cart_en_tuple = current_tuple
             return
 
-        en = (
-            robot_state.cart_en_trf
-            if str(getattr(ui_state, "frame", "WRF")).upper() == "TRF"
-            else robot_state.cart_en_wrf
-        )
-        if not isinstance(en, list) or len(en) != 12:
+        if current_tuple is None:
             return
+
         # 2D icons
-        for i, ax in enumerate(axis_order):
+        for i, ax in enumerate(_AXIS_ORDER):
             elem = self._cart_axis_imgs.get(ax)
             self._set_strong_disabled(elem, not bool(en[i]))
+
+        self._last_editing_mode = editing_mode
+        self._last_cart_en_tuple = current_tuple
 
     def refresh_editing_mode_enablement(self) -> None:
         """Disable jog buttons when in editing mode (E-STOP stays enabled)."""
@@ -421,7 +466,7 @@ class ControlPanel:
         if is_pressed:
             motion_recorder.on_jog_start("joint", axis_info)
         else:
-            asyncio.create_task(self._wait_and_record_jog_end())
+            self._schedule_jog_end_wait()
 
         # Visual feedback target
         target = (
@@ -436,17 +481,9 @@ class ControlPanel:
         def _start_streaming():
             # Mark pressed and turn on jog timer if needed
             if direction == "pos":
-                if (
-                    isinstance(self._jog_pressed_pos, list)
-                    and len(self._jog_pressed_pos) == 6
-                ):
-                    self._jog_pressed_pos[j] = True
+                self._jog_pressed_pos[j] = True
             else:
-                if (
-                    isinstance(self._jog_pressed_neg, list)
-                    and len(self._jog_pressed_neg) == 6
-                ):
-                    self._jog_pressed_neg[j] = True
+                self._jog_pressed_neg[j] = True
 
             self._holding_active.add(key)
             if not ui_state.joint_jog_timer.active:
@@ -496,7 +533,7 @@ class ControlPanel:
             step = abs(float(ui_state.joint_step_deg))
             try:
                 # Get current angles and calculate target
-                angles = list(robot_state.angles)
+                angles = list(robot_state.angles.deg)
                 if len(angles) >= 6:
                     target_angles = angles[:6]
                     lo, hi = self._get_joint_limits(j)
@@ -507,17 +544,9 @@ class ControlPanel:
                     await self.client.move_joints(target_angles, speed=speed)
             except Exception as e:
                 logging.error("Incremental joint move failed: %s", e)
-            if (
-                direction == "pos"
-                and isinstance(self._jog_pressed_pos, list)
-                and len(self._jog_pressed_pos) == 6
-            ):
+            if direction == "pos":
                 self._jog_pressed_pos[j] = False
-            if (
-                direction == "neg"
-                and isinstance(self._jog_pressed_neg, list)
-                and len(self._jog_pressed_neg) == 6
-            ):
+            else:
                 self._jog_pressed_neg[j] = False
             self._holding_active.discard(key)
             any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
@@ -525,17 +554,9 @@ class ControlPanel:
             return
 
         if was_holding:
-            if (
-                direction == "pos"
-                and isinstance(self._jog_pressed_pos, list)
-                and len(self._jog_pressed_pos) == 6
-            ):
+            if direction == "pos":
                 self._jog_pressed_pos[j] = False
-            if (
-                direction == "neg"
-                and isinstance(self._jog_pressed_neg, list)
-                and len(self._jog_pressed_neg) == 6
-            ):
+            else:
                 self._jog_pressed_neg[j] = False
             self._holding_active.discard(key)
             any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
@@ -545,19 +566,20 @@ class ControlPanel:
 
     async def jog_tick(self) -> None:
         """Timer callback: send/update joint streaming jog if any button is pressed."""
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
-            return
+        with global_phase_timer.phase("jog"):
+            # Check if movement is allowed
+            if not robot_state.simulator_active and not robot_state.connected:
+                return
 
-        speed = max(1, min(100, int(ui_state.jog_speed)))
-        intent = self._get_first_pressed_joint()
-        if intent is not None:
-            j, d = intent
-            idx = j if d == "pos" else (j + 6)
-            await self.client.jog_joint(
-                idx, speed=speed, duration=self.STREAM_TIMEOUT_S
-            )
-        self._cadence_tick(time.time(), self._tick_stats, "joint")
+            speed = max(1, min(100, int(ui_state.jog_speed)))
+            intent = self._get_first_pressed_joint()
+            if intent is not None:
+                j, d = intent
+                idx = j if d == "pos" else (j + 6)
+                await self.client.jog_joint(
+                    idx, speed=speed, duration=self.STREAM_TIMEOUT_S
+                )
+            self._cadence_tick(time.time(), self._tick_stats, "joint")
 
     # ---- Cartesian jog methods ----
 
@@ -581,31 +603,17 @@ class ControlPanel:
         if is_pressed:
             motion_recorder.on_jog_start("cartesian", axis)
         else:
-            asyncio.create_task(self._wait_and_record_jog_end())
+            self._schedule_jog_end_wait()
 
         # Check backend-reported enablement for this axis in current frame
-        axis_order = [
-            "X+",
-            "X-",
-            "Y+",
-            "Y-",
-            "Z+",
-            "Z-",
-            "RX+",
-            "RX-",
-            "RY+",
-            "RY-",
-            "RZ+",
-            "RZ-",
-        ]
         en_list = (
             robot_state.cart_en_trf
             if str(getattr(ui_state, "frame", "WRF")).upper() == "TRF"
             else robot_state.cart_en_wrf
         )
         allowed = True
-        if isinstance(en_list, list) and len(en_list) == 12 and axis in axis_order:
-            idx = axis_order.index(axis)
+        if len(en_list) == 12 and axis in _AXIS_ORDER:
+            idx = _AXIS_ORDER.index(axis)
             allowed = bool(int(en_list[idx]))
         # Apply strong disabled visual if not allowed and ignore press
         self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
@@ -613,14 +621,11 @@ class ControlPanel:
             return
 
         self._apply_pressed_style(self._cart_axis_imgs.get(axis), bool(is_pressed))
-        axes = self._cart_pressed_axes
-        if not (isinstance(axes, dict) and isinstance(axis, str)):
-            return
 
         key = axis
 
         def _start_streaming():
-            axes[key] = True
+            self._cart_pressed_axes[key] = True
             self._holding_active_cart.add(key)
             t = ui_state.cart_jog_timer
             if t:
@@ -656,30 +661,26 @@ class ControlPanel:
                 axis_letter = key.rstrip("+-")  # "X", "Y", "Z", "RX", "RY", "RZ"
                 direction = 1.0 if key.endswith("+") else -1.0
 
-                # Build target pose from current state
-                target = [
-                    float(robot_state.x),
-                    float(robot_state.y),
-                    float(robot_state.z),
-                    float(robot_state.rx),
-                    float(robot_state.ry),
-                    float(robot_state.rz),
-                ]
+                # Fill preallocated target buffer from current state
+                self._cart_target_buffer[0] = float(robot_state.x)
+                self._cart_target_buffer[1] = float(robot_state.y)
+                self._cart_target_buffer[2] = float(robot_state.z)
+                self._cart_target_buffer[3] = float(robot_state.rx)
+                self._cart_target_buffer[4] = float(robot_state.ry)
+                self._cart_target_buffer[5] = float(robot_state.rz)
 
                 # Apply step to the appropriate axis
-                axis_map = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
-                if axis_letter in axis_map:
-                    idx = axis_map[axis_letter]
-                    target[idx] += direction * step
+                if axis_letter in _AXIS_MAP:
+                    idx = _AXIS_MAP[axis_letter]
+                    self._cart_target_buffer[idx] += direction * step
                     await self.client.move_cartesian(
-                        target,
+                        self._cart_target_buffer,
                         speed=float(speed),
                         accel=float(ui_state.jog_accel),
                     )
             except Exception as e:
                 logging.error("Incremental cart move failed: %s", e)
-            if isinstance(self._cart_pressed_axes, dict):
-                self._cart_pressed_axes[key] = False
+            self._cart_pressed_axes[key] = False
             self._holding_active_cart.discard(key)
             t = ui_state.cart_jog_timer
             if t:
@@ -688,8 +689,7 @@ class ControlPanel:
             return
 
         if was_holding:
-            if isinstance(self._cart_pressed_axes, dict):
-                self._cart_pressed_axes[key] = False
+            self._cart_pressed_axes[key] = False
             self._holding_active_cart.discard(key)
             t = ui_state.cart_jog_timer
             if t:
@@ -700,57 +700,60 @@ class ControlPanel:
 
     async def cart_jog_tick(self) -> None:
         """Timer callback: unified movement timer for TransformControls drag or cartesian jog."""
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
-            return
+        with global_phase_timer.phase("jog"):
+            # Check if movement is allowed
+            if not robot_state.simulator_active and not robot_state.connected:
+                return
 
-        speed = max(1, min(100, int(ui_state.jog_speed)))
+            speed = max(1, min(100, int(ui_state.jog_speed)))
 
-        # Priority 1: TransformControls drag actively providing absolute poses
-        if self._tcp_drag_active and self._tcp_latest_pose:
-            # Only send if pose has changed (avoid flooding with duplicates)
-            if self._tcp_last_sent_pose is not None:
-                # Compare with small epsilon for floating-point tolerance
-                epsilon = 0.01  # 0.01mm position / 0.01deg rotation tolerance
-                pose_changed = any(
-                    abs(a - b) > epsilon
-                    for a, b in zip(
-                        self._tcp_latest_pose[:6], self._tcp_last_sent_pose[:6]
+            # Priority 1: TransformControls drag actively providing absolute poses
+            if self._tcp_drag_active and self._tcp_latest_pose:
+                # Only send if pose has changed (avoid flooding with duplicates)
+                if self._tcp_last_sent_pose is not None:
+                    # Compare with small epsilon for floating-point tolerance
+                    epsilon = 0.01  # 0.01mm position / 0.01deg rotation tolerance
+                    pose_changed = False
+                    for i in range(6):
+                        if (
+                            abs(self._tcp_latest_pose[i] - self._tcp_last_sent_pose[i])
+                            > epsilon
+                        ):
+                            pose_changed = True
+                            break
+                    if not pose_changed:
+                        # Pose hasn't changed, skip sending
+                        self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
+                        return
+                else:
+                    logging.debug("TCP Drag: First move (no last sent pose)")
+
+                try:
+                    # Use speed for stream blending. The server enforces a
+                    # minimum 200ms duration to keep commands alive long enough for
+                    # subsequent updates to blend in, creating a "mouse trail" effect.
+                    await self.client.move_cartesian(
+                        list(self._tcp_latest_pose[:6]),
+                        speed=float(speed),
+                        accel=float(ui_state.jog_accel),
                     )
-                )
-                if not pose_changed:
-                    # Pose hasn't changed, skip sending
-                    self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
-                    return
-            else:
-                logging.debug("TCP Drag: First move (no last sent pose)")
+                    # Track what we sent to avoid duplicates
+                    self._tcp_last_sent_pose = list(self._tcp_latest_pose[:6])
+                except Exception as e:
+                    logging.debug("TCP Cartesian move (timer) failed: %s", e)
+                self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
+                return
 
-            try:
-                # Use speed for stream blending. The server enforces a
-                # minimum 200ms duration to keep commands alive long enough for
-                # subsequent updates to blend in, creating a "mouse trail" effect.
-                await self.client.move_cartesian(
-                    list(self._tcp_latest_pose[:6]),
-                    speed=float(speed),
-                    accel=float(ui_state.jog_accel),
+            # Priority 2: legacy cart jog buttons (streamed)
+            # Use WRF for translation (X,Y,Z) and TRF for rotation (Rx,Ry,Rz)
+            axis = self._get_first_pressed_axis()
+            if axis is not None:
+                axis_str = str(axis).upper()
+                frame: Frame = "TRF" if axis_str.startswith("R") else "WRF"
+                await self.client.jog_cartesian(
+                    frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
                 )
-                # Track what we sent to avoid duplicates
-                self._tcp_last_sent_pose = list(self._tcp_latest_pose[:6])
-            except Exception as e:
-                logging.debug("TCP Cartesian move (timer) failed: %s", e)
             self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
-            return
-
-        # Priority 2: legacy cart jog buttons (streamed)
-        # Use WRF for translation (X,Y,Z) and TRF for rotation (Rx,Ry,Rz)
-        axis = self._get_first_pressed_axis()
-        if axis is not None:
-            axis_str = str(axis).upper()
-            frame: Frame = "TRF" if axis_str.startswith("R") else "WRF"
-            await self.client.jog_cartesian(
-                frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
-            )
-        self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
     def _handle_tcp_cartesian_move_start(self) -> None:
         """Handle start of a TCP TransformControls drag.
@@ -758,14 +761,11 @@ class ControlPanel:
         Ensures drag state is reset so that even small initial movements are registered.
         """
         logging.debug("TCP Drag: START event received")
-        self._last_drag_event_ts = time.time()
         if not robot_state.simulator_active and not robot_state.connected:
             return
 
         # Force a fresh start for the drag session
         self._tcp_last_sent_pose = None
-        self._tcp_latest_delta_trf = None
-        self._tcp_drag_is_trf = False
 
         # Start drag session and recorder if not already active
         if not self._tcp_drag_active:
@@ -795,8 +795,6 @@ class ControlPanel:
 
         # Cache latest target pose (x,y,z in mm, rx,ry,rz in deg)
         self._tcp_latest_pose = list(pose[:6])
-        self._tcp_drag_is_trf = False  # WRF mode uses absolute poses
-        self._last_drag_event_ts = time.time()
 
         # Start drag session (once) and recorder
         if not self._tcp_drag_active:
@@ -812,68 +810,36 @@ class ControlPanel:
             self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
             t.active = True
 
-    def _handle_tcp_cartesian_move_rel_trf(self, delta: List[float]) -> None:
-        """Handle TCP Cartesian move events in TRF (Tool Reference Frame) mode.
-
-        This receives delta values in the tool's coordinate frame and uses
-        move_cartesian_rel_trf to move relative to the current position.
-
-        Args:
-            delta: Delta movement [dx_mm, dy_mm, dz_mm, drx_deg, dry_deg, drz_deg]
-                   in tool reference frame
-        """
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
-            return
-
-        if len(delta) < 6:
-            logging.warning("Invalid delta length for TRF move: %d", len(delta))
-            return
-
-        # Cache latest TRF delta
-        self._tcp_latest_delta_trf = list(delta[:6])
-        self._tcp_drag_is_trf = True  # TRF mode uses relative deltas
-        self._last_drag_event_ts = time.time()
-
-        # Start drag session (once) and recorder
-        if not self._tcp_drag_active:
-            logging.debug(
-                "TCP Drag (TRF): Move received while inactive (implicit start)"
-            )
-            self._tcp_drag_active = True
-            motion_recorder.on_jog_start("cartesian", "TCP-TRF")
-
-        # Ensure movement timer is active
-        t = ui_state.cart_jog_timer
-        if t and not t.active:
-            self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-            t.active = True
-
     def _handle_tcp_cartesian_move_end(self) -> None:
         """End of a TCP TransformControls drag: wait for motion to stop, then record."""
         logging.debug("TCP Drag: END event received")
         if self._tcp_drag_active:
             self._tcp_drag_active = False
-            asyncio.create_task(self._wait_and_record_jog_end())
-        # Clear last sent pose and TRF delta so next drag starts fresh
+            self._schedule_jog_end_wait()
+        # Clear last sent pose so next drag starts fresh
         self._tcp_last_sent_pose = None
-        self._tcp_latest_delta_trf = None
-        self._tcp_drag_is_trf = False
         # If no cart axis buttons are pressed, allow timer to stop
         t = ui_state.cart_jog_timer
         if t:
             any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
             t.active = bool(any_pressed)
 
+    def _schedule_jog_end_wait(self) -> None:
+        """Schedule a jog end wait task if one isn't already running."""
+        # Skip if a wait task is already pending
+        if self._jog_end_wait_task is not None and not self._jog_end_wait_task.done():
+            return
+        self._jog_end_wait_task = asyncio.create_task(self._wait_and_record_jog_end())
+
     async def _wait_and_record_jog_end(self) -> None:
         """Wait for robot motion to stop, then record the jog end position."""
         try:
-            # Wait for motion to stop (non-blocking)
             await self.client.wait_motion_complete(timeout=5.0, settle_window=0.2)
-            logging.debug("TCP Drag: Motion stopped, recording position")
+            logging.debug("Jog: Motion stopped, recording position")
         except Exception as e:
-            logging.warning("TCP Drag: wait_until_stopped failed: %s", e)
-        # Record final position after motion has stopped
+            logging.warning("Jog: wait_motion_complete failed: %s", e)
+        finally:
+            self._jog_end_wait_task = None
         motion_recorder.on_jog_end()
 
     async def move_joint_to_angle(self, joint_index: int, target_deg: float) -> None:
@@ -888,7 +854,7 @@ class ControlPanel:
             return
 
         try:
-            angles = list(robot_state.angles)
+            angles = list(robot_state.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
             tgt = max(lo, min(hi, float(target_deg)))
             pose = angles[:6]
@@ -917,7 +883,7 @@ class ControlPanel:
             return
 
         try:
-            angles = list(robot_state.angles)
+            angles = list(robot_state.angles.deg)
             limits = JOINT_LIMITS_DEG[joint_index]
             lo, hi = float(limits[0]), float(limits[1])
 
@@ -954,14 +920,8 @@ class ControlPanel:
             ui_state.urdf_scene.on_tcp_cartesian_move_end(
                 self._handle_tcp_cartesian_move_end
             )
-
-            # Enable TCP TransformControls if gizmo is visible (default translate mode)
-            if ui_state.gizmo_visible:
-                ui_state.urdf_scene.enable_tcp_transform_controls("translate")
-
-    def on_frame_changed(self, _new_frame: str) -> None:
-        """No-op: Frame is now fixed (Translation=WRF, Rotation=TRF)."""
-        pass
+            # Note: set_gizmo_visible() already enables TransformControls when visible,
+            # so no need for an additional enable_tcp_transform_controls() call here.
 
     def on_gizmo_mode_changed(self, mode: str) -> None:
         """Switch gizmo display mode between Move (translation) and Rotate."""
@@ -1287,19 +1247,10 @@ class ControlPanel:
                                 .classes("w-full joint-bar")
                             )
 
-                            def _bar_backward(a: Any, i=idx, lo=lo, hi=hi) -> float:
-                                if hi <= lo:
+                            def _bar_backward(a, i=idx, lo=lo, hi=hi) -> float:
+                                if hi <= lo or len(a) <= i or not math.isfinite(a[i]):
                                     return 0.0
-                                if (
-                                    isinstance(a, list)
-                                    and len(a) > i
-                                    and isinstance(a[i], (int, float))
-                                    and math.isfinite(float(a[i]))
-                                ):
-                                    return max(
-                                        0.0, min(1.0, (float(a[i]) - lo) / (hi - lo))
-                                    )
-                                return 0.0
+                                return max(0.0, min(1.0, (a[i] - lo) / (hi - lo)))
 
                             bar.bind_value_from(
                                 robot_state,
@@ -1325,15 +1276,10 @@ class ControlPanel:
                                 )
                             )
 
-                            def _num_backward(a: Any, i=idx) -> float | None:
-                                if (
-                                    isinstance(a, list)
-                                    and len(a) > i
-                                    and isinstance(a[i], (int, float))
-                                    and math.isfinite(float(a[i]))
-                                ):
-                                    return float(a[i])
-                                return None
+                            def _num_backward(a, i=idx) -> float | None:
+                                if len(a) <= i or not math.isfinite(a[i]):
+                                    return None
+                                return float(a[i])
 
                             num.bind_value_from(
                                 robot_state,
@@ -1364,16 +1310,11 @@ class ControlPanel:
                             )
                             left_btn.mark(f"btn-j{idx + 1}-minus")
 
-                            def check_lower_limit(a, i=idx):
-                                if not (
-                                    isinstance(a, list)
-                                    and len(a) > i
-                                    and isinstance(a[i], (int, float))
-                                ):
+                            def check_lower_limit(a, i=idx, lo=lo):
+                                if len(a) <= i:
                                     return False
-                                step = float(ui_state.joint_step_deg)
-                                lo, _hi = self._get_joint_limits(i)
-                                return float(a[i]) - step >= lo
+                                step = ui_state.joint_step_deg
+                                return a[i] - step >= lo
 
                             left_btn.bind_enabled_from(
                                 robot_state, "angles", backward=check_lower_limit
@@ -1399,16 +1340,11 @@ class ControlPanel:
                             )
                             right_btn.mark(f"btn-j{idx + 1}-plus")
 
-                            def check_upper_limit(a, i=idx):
-                                if not (
-                                    isinstance(a, list)
-                                    and len(a) > i
-                                    and isinstance(a[i], (int, float))
-                                ):
+                            def check_upper_limit(a, i=idx, hi=hi):
+                                if len(a) <= i:
                                     return False
-                                step = float(ui_state.joint_step_deg)
-                                _lo, hi = self._get_joint_limits(i)
-                                return float(a[i]) + step <= hi
+                                step = ui_state.joint_step_deg
+                                return a[i] + step <= hi
 
                             right_btn.bind_enabled_from(
                                 robot_state, "angles", backward=check_upper_limit

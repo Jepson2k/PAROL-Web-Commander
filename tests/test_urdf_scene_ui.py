@@ -33,7 +33,9 @@ async def test_urdf_scene_joint_names(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_urdf_scene_envelope_pregenerated_on_startup(user: User) -> None:
+async def test_urdf_scene_envelope_pregenerated_on_startup(
+    user: User, enable_envelope
+) -> None:
     """Test that workspace envelope is pre-generated when scene loads.
 
     Verifies that opening the main page triggers envelope data generation,
@@ -57,7 +59,8 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(user: User) -> None:
     assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
 
     # Wait for envelope to be generated (condition-based instead of fixed sleep)
-    for _ in range(50):  # Up to 5 seconds
+    # Hull generation with 500k samples takes ~2-3s plus process pool overhead
+    for _ in range(100):  # Up to 10 seconds
         if workspace_envelope._generated:
             break
         await asyncio.sleep(0.1)
@@ -71,7 +74,9 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_urdf_scene_envelope_visibility_on_mode_change(user: User) -> None:
+async def test_urdf_scene_envelope_visibility_on_mode_change(
+    user: User, enable_envelope
+) -> None:
     """Test that changing envelope_mode to 'on' creates and shows the envelope.
 
     Verifies that when simulation_state.envelope_mode is set to 'on', the

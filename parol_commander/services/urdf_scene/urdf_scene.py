@@ -25,7 +25,7 @@ from nicegui import ui, app  # type: ignore[no-redef]
 
 from parol_commander.common.logging_config import TRACE_ENABLED
 from parol_commander.common.theme import SceneColors
-from parol_commander.state import simulation_state, robot_state
+from parol_commander.state import simulation_state, robot_state, ui_state
 from parol_commander.services.path_visualizer import get_color_for_move_type
 
 from .envelope_mixin import workspace_envelope
@@ -44,6 +44,8 @@ from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_mixin import EnvelopeMixin, ENVELOPE_PROXIMITY_THRESHOLD
 from .path_renderer_mixin import PathRendererMixin
 
+logger = logging.getLogger(__name__)
+
 
 class UrdfScene(
     EditingMixin,
@@ -61,6 +63,13 @@ class UrdfScene(
     - TCP offset/orientation updates on tool change
     - Configurable tool pose handling via injection (no hard dependencies)
     """
+
+    # Axis color mapping (class constant)
+    _AXIS_COLORS = {
+        "X": SceneColors.AXIS_X_HEX,
+        "Y": SceneColors.AXIS_Y_HEX,
+        "Z": SceneColors.AXIS_Z_HEX,
+    }
 
     def __init__(
         self, path: Union[str, Path], config: Optional[UrdfSceneConfig] = None
@@ -92,7 +101,7 @@ class UrdfScene(
                 msg = str(e).lower()
                 # Ignore duplicate registration across tests; re-raise other errors
                 if "already" in msg and "register" in msg:
-                    logging.debug(
+                    logger.debug(
                         "Static files already registered for %s; continuing",
                         self.meshes_url,
                     )
@@ -113,7 +122,7 @@ class UrdfScene(
             try:
                 self.joint_axes[_name] = normalize_axis(_raw)
             except (ValueError, TypeError, AttributeError) as e:
-                logging.warning(
+                logger.warning(
                     "Failed to normalize axis for joint '%s' in __init__: %s", _name, e
                 )
                 self.joint_axes[_name] = np.array([0.0, 0.0, 1.0], dtype=float)
@@ -175,8 +184,8 @@ class UrdfScene(
             # Create context menu - clear on hide so it doesn't auto-show with stale content
             self.context_menu = ui.context_menu()
             self.context_menu.on("hide", lambda: self.context_menu.clear())
-            # Use polar grid with 1m radius for general workspace visualization
-            default_radius = 1.0  # Default workspace radius in meters
+            # Use polar grid sized to robot's approximate workspace (~536mm reach)
+            default_radius = 0.55  # Workspace radius in meters
             with (
                 ui.scene(
                     grid=False,  # Disable rectangular grid
@@ -196,7 +205,9 @@ class UrdfScene(
                 # Ground plane for contrast with background
                 ui.scene.cylinder(
                     default_radius, default_radius, 0.001, radial_segments=64
-                ).material(self.config.ground_color, opacity=0.5).rotate(1.5708, 0, 0)
+                ).material(self.config.ground_color, opacity=0.5).rotate(
+                    math.pi / 2, 0, 0
+                )
 
                 # Base link
                 self._plot_stls(
@@ -239,10 +250,14 @@ class UrdfScene(
                     if hasattr(self.scene, "set_axes_labels"):
                         self.scene.set_axes_labels({"enabled": True})
             except Exception as e:
-                logging.debug("set_axes_inset configuration failed: %s", e)
+                logger.debug("set_axes_inset configuration failed: %s", e)
 
             # Pre-generate workspace envelope for immediate rendering when enabled
-            if not workspace_envelope._generated:
+            # Skip in tests that don't need it (PAROL_SKIP_ENVELOPE=1)
+            if (
+                not os.environ.get("PAROL_SKIP_ENVELOPE")
+                and not workspace_envelope._generated
+            ):
                 workspace_envelope.generate()
 
             # Add keyboard handler for ESC to deselect TransformControls
@@ -305,9 +320,8 @@ class UrdfScene(
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
-                # Clear drag start positions
-                self._tcp_drag_start_pos = None
-                self._tcp_drag_start_rot = None
+                # Clear drag start rotation
+                self._tcp_drag_start_rot_deg = None
                 # Re-enable orbit controls when TCP transform ends
                 if self.scene and hasattr(self.scene, "set_orbit_enabled"):
                     self.scene.set_orbit_enabled(True)
@@ -322,7 +336,7 @@ class UrdfScene(
                         try:
                             cb()
                         except Exception as err:
-                            logging.error(
+                            logger.error(
                                 "TCP cartesian move end callback error: %s", err
                             )
             return
@@ -331,16 +345,15 @@ class UrdfScene(
         if object_name in ("tcp:jog_ball", "tcp:offset"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
-                # Clear drag start positions
-                self._tcp_drag_start_pos = None
-                self._tcp_drag_start_rot = None
+                # Clear drag start rotation
+                self._tcp_drag_start_rot_deg = None
                 # Notify drag-end to consumers
                 cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
                 if callable(cb):
                     try:
                         cb()
                     except Exception as err:
-                        logging.error("TCP cartesian move end callback error: %s", err)
+                        logger.error("TCP cartesian move end callback error: %s", err)
             return
 
         # Joint rings handled by continuous handler - skip here
@@ -350,9 +363,7 @@ class UrdfScene(
         # Check if this is a target group being transformed
         if object_name.startswith("targetgroup:"):
             target_id = object_name.split("targetgroup:", 1)[1]
-            target = next(
-                (t for t in simulation_state.targets if t.id == target_id), None
-            )
+            target = self._find_target_by_id(target_id)
             if target:
                 # Only update position if provided (translate mode)
                 if e.x is not None:
@@ -373,8 +384,6 @@ class UrdfScene(
 
                 # Only sync to editor on transform_end to avoid too many updates
                 if event_type == "transform_end":
-                    from parol_commander.state import ui_state
-
                     # Ensure pose has no None values before syncing
                     clean_pose = [v if v is not None else 0.0 for v in target.pose]
                     ui_state.editor_panel.sync_code_from_target(target_id, clean_pose)
@@ -417,10 +426,7 @@ class UrdfScene(
             screen_x = getattr(e, "screen_x", None)
             screen_y = getattr(e, "screen_y", None)
             if screen_x is not None and screen_y is not None:
-                self._right_click_start_pos = (
-                    float(screen_x) if screen_x is not None else 0.0,
-                    float(screen_y) if screen_y is not None else 0.0,
-                )
+                self._right_click_start_pos = (float(screen_x), float(screen_y))
             else:
                 client_x = getattr(e, "client_x", 0)
                 client_y = getattr(e, "client_y", 0)
@@ -432,17 +438,19 @@ class UrdfScene(
             button = getattr(e, "button", 0)
             if button == 2 and self._right_click_start_pos is not None:
                 # Check if this was a drag
-                screen_x = getattr(e, "screen_x", None)
-                screen_y = getattr(e, "screen_y", None)
-                if screen_x is None or screen_y is None:
-                    screen_x = getattr(e, "client_x", 0)
-                    screen_y = getattr(e, "client_y", 0)
+                _screen_x = getattr(e, "screen_x", None)
+                _screen_y = getattr(e, "screen_y", None)
+                if _screen_x is None or _screen_y is None:
+                    screen_x = float(getattr(e, "client_x", 0))
+                    screen_y = float(getattr(e, "client_y", 0))
+                else:
+                    screen_x = float(_screen_x)
+                    screen_y = float(_screen_y)
 
                 start_x, start_y = self._right_click_start_pos
-                # Cast to float since they might be int or float from getattr
-                dx = abs(float(screen_x if screen_x is not None else 0) - start_x)
-                dy = abs(float(screen_y if screen_y is not None else 0) - start_y)
-                distance = math.sqrt(dx * dx + dy * dy)
+                dx = screen_x - start_x
+                dy = screen_y - start_y
+                distance = math.hypot(dx, dy)
 
                 self._right_click_start_pos = None
 
@@ -460,11 +468,7 @@ class UrdfScene(
             return
 
         # Check if THIS scene's client still exists before modifying scene
-        try:
-            scene_client = self.scene._client()
-            if scene_client is None or scene_client._deleted:
-                return
-        except (RuntimeError, AttributeError):
+        if self.scene.is_deleted:
             return
 
         # Check if event loop is still running
@@ -491,7 +495,7 @@ class UrdfScene(
                 tcp_x = robot_state.x / 1000.0
                 tcp_y = robot_state.y / 1000.0
                 tcp_z = robot_state.z / 1000.0
-                tcp_dist = math.sqrt(tcp_x * tcp_x + tcp_y * tcp_y + tcp_z * tcp_z)
+                tcp_dist = math.hypot(tcp_x, tcp_y, tcp_z)
 
                 if tcp_dist >= boundary_distance:
                     approaching_positions.append((tcp_x, tcp_y, tcp_z))
@@ -500,7 +504,7 @@ class UrdfScene(
                 for target in simulation_state.targets:
                     if len(target.pose) >= 3:
                         tx, ty, tz = target.pose[0], target.pose[1], target.pose[2]
-                        target_dist = math.sqrt(tx * tx + ty * ty + tz * tz)
+                        target_dist = math.hypot(tx, ty, tz)
                         if target_dist >= boundary_distance:
                             approaching_positions.append((tx, ty, tz))
 
@@ -525,7 +529,6 @@ class UrdfScene(
         prev_rendered = self._rendered_segment_count
 
         if TRACE_ENABLED:
-            logger = logging.getLogger(__name__)
             logger.trace(  # type: ignore[attr-defined]
                 "SCENE: _update_simulation_view tick - current_segments=%d, "
                 "rendered_count=%d, path_objects=%d",
@@ -536,7 +539,6 @@ class UrdfScene(
 
         if current_count == 0:
             if TRACE_ENABLED and self._path_objects:
-                logger = logging.getLogger(__name__)
                 logger.trace(  # type: ignore[attr-defined]
                     "SCENE: Clearing %d path objects (segments went to 0)",
                     len(self._path_objects),
@@ -548,7 +550,6 @@ class UrdfScene(
 
         elif current_count > self._rendered_segment_count:
             if TRACE_ENABLED:
-                logger = logging.getLogger(__name__)
                 logger.trace(  # type: ignore[attr-defined]
                     "SCENE: Adding segments %d-%d (new segments arrived)",
                     self._rendered_segment_count,
@@ -562,7 +563,6 @@ class UrdfScene(
                             objs = self._render_path_segment(segment)
                             self._path_objects.extend(objs)
                             if TRACE_ENABLED:
-                                logger = logging.getLogger(__name__)
                                 logger.trace(  # type: ignore[attr-defined]
                                     "SCENE: Rendered segment %d -> %d objects, "
                                     "total_path_objects=%d",
@@ -574,7 +574,6 @@ class UrdfScene(
 
         elif current_count < self._rendered_segment_count:
             if TRACE_ENABLED:
-                logger = logging.getLogger(__name__)
                 logger.trace(  # type: ignore[attr-defined]
                     "SCENE: Resetting - current(%d) < rendered(%d), "
                     "clearing %d objects",
@@ -625,7 +624,7 @@ class UrdfScene(
             for tid in list(self._target_objects.keys()):
                 if tid not in active_ids:
                     target_data = self._target_objects[tid]
-                    if self.scene and hasattr(self.scene, "disable_transform_controls"):
+                    if self.scene:
                         self.scene.disable_transform_controls(target_data["group"].id)
                     target_data["group"].delete()
                     del self._target_objects[tid]
@@ -693,7 +692,7 @@ class UrdfScene(
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             return
 
-        for joint_name, q in zip(self.joint_names, list(val)):
+        for joint_name, q in zip(self.joint_names, val):
             joint_TF = self.joint_trafos[joint_name]
             joint_i = self.joint_groups[joint_name]
             t, r = joint_TF(q)
@@ -765,7 +764,7 @@ class UrdfScene(
             rpy: Rotation offset [roll, pitch, yaw] in radians
         """
         if not self.tcp_offset:
-            logging.warning("TCP offset group not initialized; cannot set pose")
+            logger.warning("TCP offset group not initialized; cannot set pose")
             return
         if len(origin) != 3 or len(rpy) != 3:
             raise ValueError("origin and rpy must each have exactly 3 elements")
@@ -778,7 +777,7 @@ class UrdfScene(
             tool: Tool identifier string
         """
         if not self.tcp_offset:
-            logging.warning("TCP offset group not initialized; cannot update from tool")
+            logger.warning("TCP offset group not initialized; cannot update from tool")
             return
 
         # Default: reset offsets
@@ -834,7 +833,7 @@ class UrdfScene(
         for mesh in self._robot_meshes:
             mesh.material(color, opacity)
 
-        logging.debug("Robot appearance mode set to %s", mode.value)
+        logger.debug("Robot appearance mode set to %s", mode.value)
 
     def set_simulator_appearance(self, active: bool) -> None:
         """Apply or remove simulator visual appearance (amber ghosting).
@@ -844,7 +843,7 @@ class UrdfScene(
         """
         # Don't change mode if currently in EDITING mode
         if self._appearance_mode == RobotAppearanceMode.EDITING:
-            logging.debug("Ignoring set_simulator_appearance while in EDITING mode")
+            logger.debug("Ignoring set_simulator_appearance while in EDITING mode")
             return
 
         if active:
@@ -905,15 +904,16 @@ class UrdfScene(
                             getattr(joint, "axis", None)
                         )
                     except (ValueError, TypeError, AttributeError) as e:
-                        logging.warning(
+                        logger.warning(
                             "Failed to normalize axis for joint '%s': %s",
                             joint.name,
                             e,
                         )
 
-                child_link = [link for link in urdf.links if link.name == joint.child]
+                child_link = next(
+                    (link for link in urdf.links if link.name == joint.child), None
+                )
                 if child_link:
-                    child_link = child_link[0]
                     self._plot_stls(child_link, scale=scale_stls, material=material)
 
                     if child_link not in urdf.end_links:
@@ -974,54 +974,24 @@ class UrdfScene(
 
             if full_simplified.exists():
                 rel_path = simplified_path
-                logging.debug("Using simplified mesh: %s", simplified_path)
+                logger.debug("Using simplified mesh: %s", simplified_path)
                 break
 
         return os.path.join(self.meshes_url, str(rel_path).replace("\\", "/"))
 
-    def _draw_scene_cos(self, scale=0.3, translate=np.array([0, 0, 0])):
+    def _draw_scene_cos(
+        self, scale: float = 0.3, translate: Optional[Sequence[float]] = None
+    ):
         """Draw coordinate system axes at specified location."""
         scene = self.scene
         if scene is None:
             return
-        scene.line(
-            translate.tolist(), (np.array([scale, 0, 0]) + translate).tolist()
-        ).material(SceneColors.AXIS_X_HEX)
-        scene.line(
-            translate.tolist(), (np.array([0, scale, 0]) + translate).tolist()
-        ).material(SceneColors.AXIS_Y_HEX)
-        scene.line(
-            translate.tolist(), (np.array([0, 0, scale]) + translate).tolist()
-        ).material(SceneColors.AXIS_Z_HEX)
+        tx, ty, tz = translate if translate is not None else (0.0, 0.0, 0.0)
+        origin = [tx, ty, tz]
+        scene.line(origin, [tx + scale, ty, tz]).material(SceneColors.AXIS_X_HEX)
+        scene.line(origin, [tx, ty + scale, tz]).material(SceneColors.AXIS_Y_HEX)
+        scene.line(origin, [tx, ty, tz + scale]).material(SceneColors.AXIS_Z_HEX)
 
     def _axis_color(self, axis_letter: str) -> str:
         """Get standard color for coordinate axis (CVD-aware palette)."""
-        return {
-            "X": SceneColors.AXIS_X_HEX,
-            "Y": SceneColors.AXIS_Y_HEX,
-            "Z": SceneColors.AXIS_Z_HEX,
-        }.get(axis_letter.upper(), SceneColors.MATERIAL_DARK_HEX)
-
-    # Expose static methods from loader for backwards compatibility
-    @classmethod
-    def get_transl_and_rpy(cls, mat) -> Tuple[np.ndarray, np.ndarray]:
-        """Return translation and Euler rpy from 4x4 homogeneous transformation."""
-        return get_transl_and_rpy(mat)
-
-    @classmethod
-    def rot_joint(
-        cls, axis: np.ndarray, rot_rad: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Transformation for rotatory joint."""
-        return rot_joint(axis, rot_rad)
-
-    @classmethod
-    def transl_joint(
-        cls, axis: np.ndarray, transl: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Transformation for translational joint."""
-        return transl_joint(axis, transl)
-
-    def _normalize_axis(self, axis: Any) -> np.ndarray:
-        """Normalize an axis-like value to a 3-vector."""
-        return normalize_axis(axis)
+        return self._AXIS_COLORS.get(axis_letter.upper(), SceneColors.MATERIAL_DARK_HEX)

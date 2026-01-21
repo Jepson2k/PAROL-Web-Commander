@@ -173,4 +173,9 @@ def configure_logging(
         ui_handler = NiceGuiLogHandler(level=level)
         logger.addHandler(ui_handler)
 
+    # Silence verbose third-party loggers
+    third_party_level = level if level >= logging.INFO else logging.INFO
+    logging.getLogger("numba").setLevel(third_party_level)
+    logging.getLogger("toppra").setLevel(third_party_level)
+
     return logger

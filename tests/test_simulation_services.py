@@ -235,7 +235,7 @@ class TestMotionRecorder:
 
     def test_capture_current_pose_joints_mode(self, mock_editor):
         """capture_current_pose with joints mode should insert move_joints code."""
-        robot_state.angles = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+        robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
 
         recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
@@ -263,7 +263,7 @@ class TestMotionRecorder:
     def test_jog_recording_lifecycle(self, mock_editor):
         """Test complete jog recording cycle: start sets state, end inserts code."""
         self._set_robot_pose(100.0, 200.0, 300.0)
-        robot_state.angles = [0.0] * 6
+        robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start recording
@@ -355,7 +355,7 @@ class TestMotionRecorder:
     def test_multiple_jogs_insert_multiple_code_lines(self, mock_editor):
         """Multiple jog start/end cycles should insert multiple code lines."""
         self._set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles = [0.0] * 6
+        robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start
@@ -382,7 +382,7 @@ class TestMotionRecorder:
     def test_short_jogs_not_recorded(self, mock_editor):
         """Very short jogs (< 0.1s) should not be recorded as additional moves."""
         self._set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles = [0.0] * 6
+        robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()
@@ -401,7 +401,7 @@ class TestMotionRecorder:
     def test_stop_recording_ends_active_jog(self, mock_editor):
         """Stopping recording should end any active jog."""
         self._set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles = [0.0] * 6
+        robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
         recorder.toggle_recording()  # Start
@@ -437,7 +437,7 @@ class TestMotionRecorder:
         import re
 
         self._set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles = [0.0] * 6
+        robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
 
@@ -791,21 +791,19 @@ class TestSimulationCaching:
         recorder = MotionRecorder()
 
         # Robot at home position (degrees)
-        robot_state.angles = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
+        robot_state.angles.set_deg(np.array([90.0, -90.0, 180.0, 0.0, 0.0, 180.0]))
 
         # Set cached final joints (matching position in radians)
         test_tab.final_joints_rad = [1.5708, -1.5708, 3.1416, 0.0, 0.0, 3.1416]
 
         # Should NOT insert anchor (positions match within tolerance)
         result = recorder._should_insert_anchor()
-        assert result is False, (
-            "Anchor should be skipped when robot matches cached position"
-        )
+        assert not result, "Anchor should be skipped when robot matches cached position"
 
         # No cached result -> should insert anchor
         test_tab.final_joints_rad = None
         result = recorder._should_insert_anchor()
-        assert result is True, "Anchor should be inserted when no cached position"
+        assert result, "Anchor should be inserted when no cached position"
 
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):

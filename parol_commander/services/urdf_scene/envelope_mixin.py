@@ -2,18 +2,21 @@
 Envelope Mixin for UrdfScene.
 
 Provides workspace envelope visualization:
-- Envelope sphere rendering
+- Convex hull mesh rendering (cached as STL)
 - Proximity clipping planes
 - Tool offset adjustments
-- Workspace envelope calculation
+- Workspace envelope calculation with caching
 """
 
+import hashlib
 import logging
 import math
-from typing import Any, List, Optional, Tuple, cast
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
-from nicegui import ui, run
+from nicegui import app, ui, run
 from nicegui.events import SceneClipPlane
 
 from parol_commander.common.theme import SceneColors
@@ -24,67 +27,181 @@ logger = logging.getLogger(__name__)
 
 
 # Default sample count for envelope generation (used to find max reach)
-DEFAULT_ENVELOPE_SAMPLES = 50000
+# 500k samples → ~9 samples per joint (9^6 = 531441 grid points)
+DEFAULT_ENVELOPE_SAMPLES = 500000
 
 # Envelope proximity clipping configuration
 ENVELOPE_CAP_DEPTH = 0.08  # 80mm visible cap depth on the sphere
 ENVELOPE_PROXIMITY_THRESHOLD = 0.10  # 100mm from boundary triggers display
 
+# Cache directory and file paths
+CACHE_DIR = Path.home() / ".parol6"
+HULL_STL_FILENAME = "workspace_hull.stl"
+HULL_STL_PATH = CACHE_DIR / HULL_STL_FILENAME
+
+# Storage key for hull cache metadata
+STORAGE_KEY = "workspace_hull_cache"
+
 
 # -----------------------------------------------------------------------------
-# WorkspaceEnvelope class (generates max reach radius)
+# WorkspaceEnvelope class (generates convex hull with caching)
 # -----------------------------------------------------------------------------
+
+
+def _compute_cache_key(tool_offset_z: float = 0.0) -> str:
+    """Compute cache key from joint limits and tool offset."""
+    try:
+        import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+
+        limits = getattr(PAROL6_ROBOT, "_joint_limits_radian", None)
+        if limits is None:
+            return ""
+        limits_arr = np.array(limits)
+        # Hash joint limits + tool offset
+        data = limits_arr.tobytes() + np.array([tool_offset_z]).tobytes()
+        return hashlib.md5(data).hexdigest()[:12]
+    except Exception:
+        return ""
+
+
+def _save_hull_as_stl(vertices: np.ndarray, faces: np.ndarray, path: Path) -> bool:
+    """Save convex hull as STL file.
+
+    Args:
+        vertices: Hull vertex positions, shape (N, 3)
+        faces: Triangle face indices, shape (F, 3)
+        path: Output STL file path
+
+    Returns:
+        True if successful
+    """
+    try:
+        from stl import mesh as stl_mesh
+
+        # Ensure cache directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create mesh from hull data using vectorized indexing
+        hull_mesh = stl_mesh.Mesh(np.zeros(len(faces), dtype=stl_mesh.Mesh.dtype))
+        hull_mesh.vectors = vertices[faces]  # Advanced indexing: (F, 3, 3)
+
+        hull_mesh.save(str(path))
+        logger.info("Saved workspace hull STL to %s", path)
+        return True
+    except Exception as e:
+        logger.error("Failed to save hull STL: %s", e)
+        return False
 
 
 class WorkspaceEnvelope:
-    """Calculates workspace envelope radius using grid sampling."""
+    """Calculates workspace envelope using convex hull with STL caching."""
 
     def __init__(self):
         self.max_reach: float = 0.0  # Maximum reach radius in meters
+        self.stl_url: str = ""  # URL to serve the STL file
         self._generated = False
         self._generating = False
+        self._current_tool_offset_z: float = 0.0
+        self._static_files_registered = False
 
-    def _get_robot_model(self) -> Optional[Any]:
-        """Safely get the robot model, returning None if not available."""
+    def _ensure_static_files_registered(self) -> None:
+        """Register static files directory for serving STL.
+
+        Note: We always attempt registration because NiceGUI test framework
+        resets the app between tests, clearing routes but not our flag.
+        """
+        if not CACHE_DIR.exists():
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+            app.add_static_files("/parol6-cache", str(CACHE_DIR))
+            self._static_files_registered = True
+            logger.debug("Registered static files: /parol6-cache -> %s", CACHE_DIR)
+        except ValueError:
+            # Route already registered (NiceGUI raises ValueError for duplicates)
+            self._static_files_registered = True
 
-            robot = getattr(PAROL6_ROBOT, "robot", None)
-            if robot is None:
-                logger.warning("Robot model attribute is None")
-                return None
-            return robot
-        except ImportError as e:
-            logger.error(f"Failed to import PAROL6_ROBOT: {e}")
-            return None
-        except AttributeError as e:
-            logger.error(f"PAROL6_ROBOT module missing expected attributes: {e}")
-            return None
+    def _get_stl_url(self) -> str:
+        """Get URL for the cached STL file."""
+        return f"/parol6-cache/{HULL_STL_FILENAME}"
 
-    def _get_joint_limits(self) -> Optional[np.ndarray]:
-        """Safely get joint limits, returning None if not available."""
+    def _load_from_cache(self, tool_offset_z: float) -> bool:
+        """Try to load hull from cache.
+
+        Args:
+            tool_offset_z: Current tool Z offset in meters
+
+        Returns:
+            True if cache was valid and loaded
+        """
         try:
-            import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+            cache = app.storage.general.get(STORAGE_KEY)
+            if not cache:
+                logger.debug("No hull cache found")
+                return False
 
-            limits = getattr(PAROL6_ROBOT, "_joint_limits_radian", None)
-            if limits is None:
-                logger.warning("Joint limits not found in PAROL6_ROBOT")
-                return None
-            return np.array(limits)
-        except ImportError:
-            return None
-        except AttributeError:
-            return None
+            # Check cache key matches current config
+            current_key = _compute_cache_key(tool_offset_z)
+            if cache.get("cache_key") != current_key:
+                logger.info(
+                    "Hull cache key mismatch (cached=%s, current=%s), will regenerate",
+                    cache.get("cache_key"),
+                    current_key,
+                )
+                return False
 
-    def generate(self, samples: int = DEFAULT_ENVELOPE_SAMPLES) -> bool:
+            # Check STL file exists
+            if not HULL_STL_PATH.exists():
+                logger.info("Hull STL file missing, will regenerate")
+                return False
+
+            # Load cached values
+            self.max_reach = cache.get("max_reach", 0.0)
+            self._current_tool_offset_z = tool_offset_z
+            self._ensure_static_files_registered()
+            self.stl_url = self._get_stl_url()
+            self._generated = True
+
+            logger.info(
+                "Loaded workspace hull from cache: max_reach=%.4fm", self.max_reach
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to load hull from cache: %s", e)
+            return False
+
+    def _save_to_cache(self, max_reach: float, tool_offset_z: float) -> None:
+        """Save hull metadata to cache."""
+        try:
+            cache_key = _compute_cache_key(tool_offset_z)
+            app.storage.general[STORAGE_KEY] = {
+                "cache_key": cache_key,
+                "max_reach": max_reach,
+                "tool_offset_z": tool_offset_z,
+            }
+            logger.debug("Saved hull cache metadata: key=%s", cache_key)
+        except Exception as e:
+            logger.warning("Failed to save hull cache: %s", e)
+
+    def generate(
+        self,
+        samples: int = DEFAULT_ENVELOPE_SAMPLES,
+        tool_offset_z: float = 0.0,
+    ) -> bool:
         """Start workspace generation in background (non-blocking).
+
+        Checks cache first, only regenerates if needed.
 
         Args:
             samples: Number of random configurations to sample
+            tool_offset_z: Tool TCP Z offset in meters
 
         Returns:
-            True if generation started or already complete, False if failed immediately
+            True if generation started or already complete
         """
+        # Try loading from cache first
+        if self._load_from_cache(tool_offset_z):
+            return True
+
         if self._generated:
             return True
 
@@ -92,42 +209,82 @@ class WorkspaceEnvelope:
             logger.info("Workspace generation already in progress")
             return True
 
+        # Skip actual generation in tests (PAROL_SKIP_ENVELOPE=1)
+        # Check after _generated/_generating so tests can still verify those code paths
+        if os.environ.get("PAROL_SKIP_ENVELOPE"):
+            logger.debug("Skipping workspace hull generation (PAROL_SKIP_ENVELOPE)")
+            return False
+
         self._generating = True
+        self._current_tool_offset_z = tool_offset_z
         logger.info(
-            f"Starting background workspace envelope generation with {samples} samples..."
+            "Starting background workspace hull generation with %d samples...", samples
         )
 
         async def start_background_generation():
+            result = None
             try:
-                result = await run.cpu_bound(_generate_envelope_cpu_bound, samples)
+                result = await run.cpu_bound(
+                    _generate_hull_cpu_bound, samples, tool_offset_z
+                )
+            except Exception as e:
+                # Fallback to sync in-process generation when subprocess fails
+                # (common in test environments where process pool is unavailable)
+                logger.warning("Subprocess hull generation failed (%s), using sync", e)
+                try:
+                    result = _generate_hull_cpu_bound(samples, tool_offset_z)
+                except Exception as e2:
+                    logger.error("Sync hull generation also failed: %s", e2)
+
+            try:
                 if result is not None:
-                    self.max_reach = result
-                    self._generated = True
-                    logger.info(
-                        f"Workspace generation complete: max reach = {self.max_reach:.4f}m"
-                    )
-                    simulation_state.notify_changed()
+                    self.max_reach = result["max_reach"]
+                    vertices = np.array(result["vertices"])
+                    faces = np.array(result["faces"])
+
+                    # Save STL file
+                    if _save_hull_as_stl(vertices, faces, HULL_STL_PATH):
+                        self._ensure_static_files_registered()
+                        self.stl_url = self._get_stl_url()
+                        self._save_to_cache(self.max_reach, tool_offset_z)
+                        self._generated = True
+                        logger.info(
+                            "Workspace hull generation complete: "
+                            "max_reach=%.4fm, %d triangles",
+                            self.max_reach,
+                            len(faces),
+                        )
+                        simulation_state.notify_changed()
+                    else:
+                        logger.warning("Failed to save hull STL")
                 else:
                     logger.warning("Workspace generation returned no data")
-            except Exception as e:
-                logger.error(f"Background workspace generation failed: {e}")
             finally:
                 self._generating = False
 
         ui.timer(0.0, start_background_generation, once=True)
         return True
 
-    def generate_sync(self, samples: int = DEFAULT_ENVELOPE_SAMPLES) -> bool:
+    def generate_sync(
+        self,
+        samples: int = DEFAULT_ENVELOPE_SAMPLES,
+        tool_offset_z: float = 0.0,
+    ) -> bool:
         """Generate workspace data synchronously (blocking).
 
         Use this for testing or when background execution isn't needed.
 
         Args:
             samples: Number of random configurations to sample
+            tool_offset_z: Tool TCP Z offset in meters
 
         Returns:
-            True if generation successful, False otherwise
+            True if generation successful
         """
+        # Try loading from cache first
+        if self._load_from_cache(tool_offset_z):
+            return True
+
         if self._generated:
             return True
 
@@ -136,24 +293,36 @@ class WorkspaceEnvelope:
             return False
 
         self._generating = True
+        self._current_tool_offset_z = tool_offset_z
         logger.info(
-            f"Generating workspace envelope synchronously with {samples} samples..."
+            "Generating workspace hull synchronously with %d samples...", samples
         )
 
         try:
-            result = _generate_envelope_cpu_bound(samples)
+            result = _generate_hull_cpu_bound(samples, tool_offset_z)
             if result is not None:
-                self.max_reach = result
-                self._generated = True
-                logger.info(
-                    f"Workspace generation complete: max reach = {self.max_reach:.4f}m"
-                )
-                return True
+                self.max_reach = result["max_reach"]
+                vertices = np.array(result["vertices"])
+                faces = np.array(result["faces"])
+
+                if _save_hull_as_stl(vertices, faces, HULL_STL_PATH):
+                    self._ensure_static_files_registered()
+                    self.stl_url = self._get_stl_url()
+                    self._save_to_cache(self.max_reach, tool_offset_z)
+                    self._generated = True
+                    logger.info(
+                        "Workspace hull generation complete: max_reach=%.4fm",
+                        self.max_reach,
+                    )
+                    return True
+                else:
+                    logger.warning("Failed to save hull STL")
+                    return False
             else:
                 logger.warning("Workspace generation returned no data")
                 return False
         except Exception as e:
-            logger.error(f"Workspace generation failed: {e}")
+            logger.error("Workspace generation failed: %s", e)
             return False
         finally:
             self._generating = False
@@ -161,43 +330,94 @@ class WorkspaceEnvelope:
     def reset(self) -> None:
         """Reset envelope data to allow regeneration."""
         self.max_reach = 0.0
+        self.stl_url = ""
         self._generated = False
         self._generating = False
 
-    def get_radius_with_tool_offset(self, tool_offset_z: float = 0.0) -> float:
-        """Get effective workspace radius including tool Z offset.
+    def invalidate_cache(self) -> None:
+        """Invalidate cache and delete STL file."""
+        try:
+            if STORAGE_KEY in app.storage.general:
+                del app.storage.general[STORAGE_KEY]
+            if HULL_STL_PATH.exists():
+                HULL_STL_PATH.unlink()
+            logger.info("Invalidated workspace hull cache")
+        except Exception as e:
+            logger.warning("Failed to invalidate cache: %s", e)
+        self.reset()
+
+    def get_radius_with_tool_offset(self, tool_offset_z: float) -> float:
+        """Get effective workspace radius including tool offset.
 
         Args:
-            tool_offset_z: Tool TCP offset along Z axis in meters
+            tool_offset_z: Tool Z offset in meters (can be negative)
 
         Returns:
-            Adjusted max reach radius in meters
+            Effective radius = max_reach + abs(tool_offset_z)
         """
         return self.max_reach + abs(tool_offset_z)
 
+    def needs_regeneration(self, tool_offset_z: float) -> bool:
+        """Check if hull needs regeneration due to tool change.
 
-def _generate_envelope_cpu_bound(samples: int) -> Optional[float]:
-    """CPU-bound function to calculate max workspace reach.
+        Args:
+            tool_offset_z: New tool Z offset in meters
 
-    This function runs in a separate process via run.cpu_bound to avoid blocking the UI.
+        Returns:
+            True if regeneration needed
+        """
+        # If generation is in progress, don't trigger another one
+        if self._generating:
+            return False
+        if not self._generated:
+            return True
+        current_key = _compute_cache_key(tool_offset_z)
+        cache = app.storage.general.get(STORAGE_KEY, {})
+        return cache.get("cache_key") != current_key
+
+
+def _generate_hull_cpu_bound(
+    samples: int, tool_offset_z: float
+) -> Optional[Dict[str, Any]]:
+    """CPU-bound function to calculate workspace convex hull.
+
+    This function runs in a separate process via run.cpu_bound.
 
     Args:
         samples: Number of random configurations to sample
+        tool_offset_z: Tool TCP Z offset in meters
 
     Returns:
-        Maximum reach radius in meters, or None if generation failed
+        Dict with max_reach, vertices, faces, or None if failed
     """
+    # Configure logging in subprocess (each worker needs its own config)
+    # basicConfig() won't work if handlers exist, so force-add one
+    import logging as subprocess_logging
+    import sys
+
+    sub_logger = subprocess_logging.getLogger(__name__)
+    if not sub_logger.handlers:
+        handler = subprocess_logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            subprocess_logging.Formatter(
+                "%(levelname)s %(name)s:%(filename)s:%(lineno)d %(message)s"
+            )
+        )
+        sub_logger.addHandler(handler)
+        sub_logger.setLevel(subprocess_logging.DEBUG)
+
     try:
+        from scipy.spatial import ConvexHull
         import parol6.PAROL6_ROBOT as PAROL6_ROBOT
 
         robot = getattr(PAROL6_ROBOT, "robot", None)
         if robot is None:
-            logger.warning("Robot model attribute is None")
+            sub_logger.warning("Robot model attribute is None")
             return None
 
         limits = getattr(PAROL6_ROBOT, "_joint_limits_radian", None)
         if limits is None:
-            logger.warning("Joint limits not found in PAROL6_ROBOT")
+            sub_logger.warning("Joint limits not found in PAROL6_ROBOT")
             return None
 
         limits_arr = np.array(limits)
@@ -205,8 +425,10 @@ def _generate_envelope_cpu_bound(samples: int) -> Optional[float]:
         # Generate evenly spaced joint configurations using a grid
         samples_per_joint = max(2, int(round(samples ** (1 / 6))))
         actual_samples = samples_per_joint**6
-        logger.info(
-            f"Using {samples_per_joint} samples per joint ({actual_samples} total grid points)"
+        sub_logger.info(
+            "Using %d samples per joint (%d total grid points)",
+            samples_per_joint,
+            actual_samples,
         )
 
         joint_ranges = [
@@ -221,20 +443,47 @@ def _generate_envelope_cpu_bound(samples: int) -> Optional[float]:
         robot_any = cast(Any, robot)
         T = robot_any.fkine(q_samples)
 
-        # Extract positions
+        # Extract positions (TCP positions)
         pos = T.t  # (samples, 3)
+
+        # Apply tool offset along Z axis of each TCP frame
+        if tool_offset_z != 0:
+            # T.R is (N, 3, 3), extract Z column from all rotation matrices
+            z_axes = T.R[:, :, 2]  # shape (N, 3)
+            pos += z_axes * tool_offset_z
 
         # Calculate distances from origin (robot base)
         distances = np.linalg.norm(pos, axis=1)
+        max_reach = float(distances.max())
 
-        # Return max reach
-        return float(distances.max())
+        # Compute convex hull
+        try:
+            hull = ConvexHull(pos)
+            vertices = pos.tolist()  # All points (hull uses indices into this)
+            faces = hull.simplices.tolist()  # Triangle indices
+
+            sub_logger.info(
+                "Convex hull: %d hull vertices, %d faces, max_reach=%.4fm",
+                len(hull.vertices),
+                len(faces),
+                max_reach,
+            )
+
+            return {
+                "max_reach": max_reach,
+                "vertices": vertices,
+                "faces": faces,
+            }
+        except Exception as e:
+            sub_logger.error("ConvexHull computation failed: %s", e)
+            # Fall back to just max_reach without hull
+            return None
 
     except ImportError as e:
-        logger.error(f"Failed to import PAROL6_ROBOT in CPU-bound task: {e}")
+        sub_logger.error("Failed to import in CPU-bound task: %s", e)
         return None
     except Exception as e:
-        logger.error(f"Workspace generation failed in CPU-bound task: {e}")
+        sub_logger.error("Workspace generation failed in CPU-bound task: %s", e)
         return None
 
 
@@ -265,25 +514,43 @@ class EnvelopeMixin:
         self._current_tool: str = "none"
         self._current_tool_offset_z: float = 0.0
 
+    def _create_envelope_object(self) -> bool:
+        """Create the envelope hull STL object if not already created.
+
+        Returns:
+            True if envelope object exists (created or already existed)
+        """
+        if self.envelope_object:
+            return True
+        if not workspace_envelope.stl_url:
+            return False
+        try:
+            with self.simulation_group:
+                self.envelope_object = ui.scene.stl(
+                    workspace_envelope.stl_url, wireframe=True
+                ).with_name("envelope:hull")
+                self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.8)
+            self._envelope_visible = True
+            return True
+        except Exception as e:
+            logging.error("Failed to create envelope hull: %s", e)
+            return False
+
     def _update_envelope_from_robot_state(self) -> None:
         """Update envelope visibility based on current robot TCP position."""
         if not self.scene or not self.simulation_group:
             return
 
-        # Check if THIS scene's client still exists before modifying scene
-        try:
-            scene_client = self.scene._client()
-            if scene_client is None or scene_client._deleted:  # pylint: disable=protected-access
-                return
-        except (RuntimeError, AttributeError):
+        # Check if scene is still valid before modifying it
+        if self.scene.is_deleted:
             return
 
-        # Only handle auto mode here - on/off modes are handled by simulation_state listener
+        # Only handle auto mode here - on/off modes are handled by simulation_state
         envelope_mode = simulation_state.envelope_mode
         if envelope_mode != "auto":
             return
 
-        # Check if robot TCP is near the workspace boundary
+        # Check if hull is ready
         if not workspace_envelope._generated or workspace_envelope.max_reach <= 0:
             return
 
@@ -300,34 +567,17 @@ class EnvelopeMixin:
 
         if show_envelope:
             # Create envelope if needed
-            if not self.envelope_object and workspace_envelope.max_reach > 0:
-                try:
-                    effective_radius = workspace_envelope.get_radius_with_tool_offset(
-                        self._current_tool_offset_z
-                    )
-                    with self.simulation_group:
-                        self.envelope_object = ui.scene.sphere(
-                            radius=effective_radius,
-                            width_segments=32,
-                            height_segments=32,
-                            wireframe=True,
-                        ).with_name("envelope:sphere")
-                        self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.3)
-                    self._envelope_visible = True
-                except Exception as e:
-                    logging.error(f"Failed to create envelope sphere: {e}")
-            elif self.envelope_object and not self._envelope_visible:
+            if not self.envelope_object:
+                self._create_envelope_object()
+            elif not self._envelope_visible:
                 self.envelope_object.visible(True)
                 self._envelope_visible = True
 
             # Apply proximity clipping
             if self.envelope_object:
-                effective_radius = workspace_envelope.get_radius_with_tool_offset(
-                    self._current_tool_offset_z
-                )
                 approaching_positions = [(tcp_x, tcp_y, tcp_z)]
                 clipping_planes = self._calculate_envelope_clipping_planes(
-                    approaching_positions, effective_radius
+                    approaching_positions, max_reach
                 )
                 if clipping_planes and self.scene:
                     envelope_id = str(self.envelope_object.id)
@@ -349,7 +599,7 @@ class EnvelopeMixin:
         Called from _update_simulation_view in the main class.
 
         Args:
-            approaching_positions: List of (x, y, z) positions approaching the boundary
+            approaching_positions: List of (x, y, z) positions approaching boundary
         """
         envelope_mode = simulation_state.envelope_mode
         show_envelope = False
@@ -361,37 +611,16 @@ class EnvelopeMixin:
         # "off" mode: show_envelope stays False
 
         if show_envelope:
+            # Trigger generation if needed (checks cache first)
             if not workspace_envelope._generated:
-                workspace_envelope.generate()
+                workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
 
-            # Create wireframe sphere at max reach radius (adjusted for tool offset)
-            if not self.envelope_object and workspace_envelope.max_reach > 0:
-                try:
-                    # Calculate effective radius with tool offset
-                    effective_radius = workspace_envelope.get_radius_with_tool_offset(
-                        self._current_tool_offset_z
-                    )
-                    with self.simulation_group:
-                        # Create wireframe sphere showing workspace boundary
-                        self.envelope_object = ui.scene.sphere(
-                            radius=effective_radius,
-                            width_segments=32,
-                            height_segments=32,
-                            wireframe=True,
-                        ).with_name("envelope:sphere")
-                        self.envelope_object.material(SceneColors.ENVELOPE_HEX, 0.3)
-                    self._envelope_visible = True
-                    logging.debug(
-                        f"Created envelope sphere with radius {effective_radius:.3f}m "
-                        f"(tool offset: {self._current_tool_offset_z:.3f}m)"
-                    )
-                except Exception as e:
-                    logging.error(f"Failed to create envelope sphere: {e}")
-            elif self.envelope_object:
-                # Only call visible(True) if state changed
-                if not self._envelope_visible:
-                    self.envelope_object.visible(True)
-                    self._envelope_visible = True
+            # Create hull mesh if ready
+            if not self.envelope_object and workspace_envelope._generated:
+                self._create_envelope_object()
+            elif self.envelope_object and not self._envelope_visible:
+                self.envelope_object.visible(True)
+                self._envelope_visible = True
 
             # Apply proximity clipping in auto mode
             if (
@@ -399,17 +628,14 @@ class EnvelopeMixin:
                 and self.envelope_object
                 and approaching_positions
             ):
-                effective_radius = workspace_envelope.get_radius_with_tool_offset(
-                    self._current_tool_offset_z
-                )
                 clipping_planes = self._calculate_envelope_clipping_planes(
-                    approaching_positions, effective_radius
+                    approaching_positions, workspace_envelope.max_reach
                 )
                 if clipping_planes and self.scene:
                     envelope_id = str(self.envelope_object.id)
                     self.scene.set_clipping_planes(envelope_id, clipping_planes)
             elif envelope_mode == "on" and self.envelope_object and self.scene:
-                # In "on" mode, clear any clipping to show the full sphere
+                # In "on" mode, clear any clipping to show the full hull
                 envelope_id = str(self.envelope_object.id)
                 self.scene.clear_clipping_planes(envelope_id)
         else:
@@ -427,15 +653,14 @@ class EnvelopeMixin:
         approaching_positions: List[Tuple[float, float, float]],
         max_reach: float,
     ) -> List[SceneClipPlane]:
-        """Calculate clipping planes to show only nearby portions of the envelope sphere.
+        """Calculate clipping planes to show only nearby portions of the envelope.
 
-        For each approaching object, creates a clipping plane that reveals a spherical
-        cap of the envelope near that object. Objects farther from the boundary get
-        smaller visible caps.
+        For each approaching object, creates a clipping plane that reveals a
+        cap of the envelope near that object.
 
         Args:
-            approaching_positions: List of (x, y, z) positions approaching the boundary
-            max_reach: Maximum reach radius of the envelope sphere
+            approaching_positions: List of (x, y, z) positions approaching boundary
+            max_reach: Maximum reach radius of the envelope
 
         Returns:
             List of plane definitions for set_clipping_planes()
@@ -455,7 +680,7 @@ class EnvelopeMixin:
             ny = y / dist
             nz = z / dist
 
-            # Calculate plane distance to show a spherical cap
+            # Calculate plane distance to show a cap
             # How close to boundary (0 = at boundary, positive = inside)
             distance_to_boundary = max_reach - dist
 
@@ -480,23 +705,33 @@ class EnvelopeMixin:
 
         return planes
 
-    def _update_envelope_radius(self) -> None:
-        """Update envelope sphere radius based on current tool offset."""
-        if not self.envelope_object:
-            return
+    def _update_envelope_for_tool_change(self, tool_offset_z: float) -> None:
+        """Handle tool offset change - regenerate hull if needed.
 
-        # Calculate effective radius with tool offset
-        effective_radius = workspace_envelope.get_radius_with_tool_offset(
-            self._current_tool_offset_z
-        )
-
-        if effective_radius > 0:
-            # Delete old sphere and create new one with updated radius
-            try:
-                self.envelope_object.delete()
+        Args:
+            tool_offset_z: New tool Z offset in meters
+        """
+        if workspace_envelope.needs_regeneration(tool_offset_z):
+            logger.info(
+                "Tool offset changed to %.4fm, regenerating workspace hull",
+                tool_offset_z,
+            )
+            # Delete current envelope object
+            if self.envelope_object:
+                try:
+                    self.envelope_object.delete()
+                except Exception:
+                    pass
                 self.envelope_object = None
                 self._envelope_visible = False
-                # Will be recreated on next _update_simulation_view call
-                simulation_state.notify_changed()
-            except Exception as e:
-                logging.warning(f"Failed to update envelope radius: {e}")
+
+            # Reset and regenerate
+            workspace_envelope.reset()
+            workspace_envelope.generate(tool_offset_z=tool_offset_z)
+
+    def _update_envelope_radius(self) -> None:
+        """Update envelope for current tool offset.
+
+        Called when tool selection changes.
+        """
+        self._update_envelope_for_tool_change(self._current_tool_offset_z)

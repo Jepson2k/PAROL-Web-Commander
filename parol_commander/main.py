@@ -11,14 +11,14 @@ import contextlib
 import argparse
 from typing import cast, Callable
 import numpy as np
-from parol6.utils.se3_utils import so3_rpy
 
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.elements.tooltip import Tooltip
 from parol6 import AsyncRobotClient, ServerManager, is_server_running, manage_server
+from parol6.server.loop_timer import LoopMetrics, PhaseMetrics, format_hz_summary
 from parol6.tools import TOOL_CONFIGS
-from importlib.resources import files, as_file
+from importlib.resources import as_file
 
 from parol_commander.common.logging_config import (
     attach_ui_log,
@@ -42,6 +42,7 @@ from parol_commander.state import (
     controller_state,
     ui_state,
     readiness_state,
+    global_phase_timer,
 )
 from parol_commander.components.io import IoPage
 from parol_commander.components.gripper import GripperPage
@@ -57,8 +58,12 @@ from parol_commander.services.urdf_scene import (
 )
 from parol_commander.services.keybindings import keybindings_manager, Keybinding
 from parol_commander.services.path_visualizer import warm_process_pool
+from parol_commander.numba_pipelines import (
+    angle_pipeline,
+    pose_extraction_pipeline,
+    warmup_pipelines,
+)
 from importlib.resources import files as pkg_files
-
 
 STATIC_DIR = pkg_files("parol_commander").joinpath("static")
 ng_app.add_static_files("/static", str(STATIC_DIR))
@@ -101,18 +106,35 @@ server_manager: ServerManager | None = None
 # Persistent connection warning notification
 _connection_notification: ui.notification | None = None
 
-# Pre-allocated buffers to avoid per-call allocations in hot paths
+# Pre-allocated buffers for numba pipelines (scratch space)
 _rotation_matrix_buffer: np.ndarray = np.zeros((3, 3), dtype=np.float64)
-_translation_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
-_valid_angles_buffer: np.ndarray = np.zeros(6, dtype=np.float64)
-_angles_rad_buffer: np.ndarray = np.zeros(6, dtype=np.float64)
+_rpy_rad_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
 _angles_ordered_buffer: np.ndarray = np.zeros(6, dtype=np.float64)
+_pose_result_buffer: np.ndarray = np.zeros(6, dtype=np.float64)  # [x,y,z,rx,ry,rz]
 _DEG_TO_RAD: float = math.pi / 180.0
+
+# Angle pipeline config arrays - populated from urdf_scene.config when available
+_angle_signs_array: np.ndarray = np.ones(6, dtype=np.float64)
+_angle_offsets_array: np.ndarray = np.zeros(6, dtype=np.float64)
+_index_mapping_array: np.ndarray = np.arange(6, dtype=np.int32)
+_urdf_reorder_array: np.ndarray = np.arange(6, dtype=np.int32)
+_angle_pipeline_config_valid: bool = False
+
+# Frontend timing metrics (unified via LoopMetrics)
+_ui_metrics = LoopMetrics()
+_work_metrics = PhaseMetrics()
+_wait_metrics = PhaseMetrics()
+_last_work_end: float = 0.0
 
 
 def _update_connection_notification() -> None:
     """Show or dismiss persistent notification based on robot connection state."""
     global _connection_notification
+
+    # Skip if page not ready - avoid modifying elements during page serialization
+    if not readiness_state.page_ready.is_set():
+        return
+
     needs_warning = not robot_state.simulator_active and not robot_state.connected
 
     if needs_warning and _connection_notification is None:
@@ -131,7 +153,7 @@ def _update_connection_notification() -> None:
 async def initialize_urdf_scene() -> None:
     """Initialize the URDF scene with error handling."""
     # Resolve URDF from installed parol6 package and clear container if provided
-    urdf_res = files("parol6") / "urdf_model" / "urdf" / "PAROL6.urdf"
+    urdf_res = pkg_files("parol6") / "urdf_model" / "urdf" / "PAROL6.urdf"
 
     with as_file(urdf_res) as urdf_path:
         assert urdf_path
@@ -199,8 +221,8 @@ async def initialize_urdf_scene() -> None:
             tool_val = result.get("tool") if isinstance(result, dict) else None
             if tool_val:
                 ui_state.urdf_scene.update_tcp_pose_from_tool(tool_val)
-        except Exception as _e:
-            logging.error("Failed to sync TCP tool pose: %s", _e)
+        except Exception as e:
+            logging.error("Failed to sync TCP tool pose: %s", e)
 
         # Override the scene height and set closer camera position
         if ui_state.urdf_scene.scene:
@@ -247,87 +269,88 @@ async def initialize_urdf_scene() -> None:
         ui_state.urdf_scene.set_simulator_appearance(True)
 
 
-def update_urdf_angles(angles_deg: list[float]) -> None:
-    """Update URDF scene with new joint angles (degrees -> radians).
+def _init_angle_pipeline_config() -> None:
+    """Initialize angle pipeline config arrays from urdf_scene.config.
 
-    Uses pre-allocated buffers to avoid per-call memory allocations.
+    Call this once after URDF scene is initialized to precompute the mappings
+    needed by the numba angle_pipeline function.
     """
-    if not ui_state.urdf_scene:
-        return
+    global _angle_pipeline_config_valid
 
-    if not angles_deg or len(angles_deg) < 6:
+    if not ui_state.urdf_scene:
+        _angle_pipeline_config_valid = False
         return
 
     try:
-        # Validate and copy angles into pre-allocated buffer
-        for i in range(6):
-            angle = angles_deg[i]
-            # Type check: must be numeric (int or float) but not bool
-            if not isinstance(angle, (int, float)) or isinstance(angle, bool):
-                return  # Skip update for any non-numeric data
-            val = float(angle)
-            if not math.isfinite(val):
-                return  # Skip update for NaN or infinite values
-            _valid_angles_buffer[i] = val
-
-        # Cache config properties once (avoid repeated attribute lookups)
         config = ui_state.urdf_scene.config
-        angle_signs = config.angle_signs
-        angle_offsets = config.angle_offsets
-        deg_to_rad = config.deg_to_rad
-        joint_name_order = config.joint_name_order
         index_mapping = ui_state.urdf_index_mapping
+        joint_name_order = config.joint_name_order
+        urdf_joint_names = ui_state.urdf_scene.joint_names
 
-        # Convert degrees to radians with sign correction and index mapping
-        # Fill pre-allocated buffer directly
+        # Build combined mapping: for each output position, which input index to use
+        # and what sign/offset to apply
         for i in range(6):
             if i < len(index_mapping) and index_mapping[i] < 6:
                 controller_idx = index_mapping[i]
-                angle_deg = _valid_angles_buffer[controller_idx]
-                # Apply sign correction
-                sign = (
-                    1.0
-                    if controller_idx >= len(angle_signs)
-                    else (1.0 if angle_signs[controller_idx] >= 0 else -1.0)
-                )
-                # Apply offset
-                offset = (
-                    angle_offsets[controller_idx]
-                    if controller_idx < len(angle_offsets)
-                    else 0.0
-                )
-                angle_deg_corrected = angle_deg * sign + offset
-                # Convert to radians if needed
-                _angles_rad_buffer[i] = (
-                    angle_deg_corrected * _DEG_TO_RAD
-                    if deg_to_rad
-                    else angle_deg_corrected
-                )
-            else:
-                _angles_rad_buffer[i] = 0.0
+                _index_mapping_array[i] = controller_idx
 
-        # Reorder angles based on URDF joint names into pre-allocated buffer
-        urdf_joint_names = (
-            ui_state.urdf_scene.joint_names
-        )  # Already a list, no copy needed
-        for i, joint_name in enumerate(urdf_joint_names):
-            if i >= 6:
-                break
-            # Map URDF joint name back to our controller index
+                # Sign correction
+                if controller_idx < len(config.angle_signs):
+                    _angle_signs_array[i] = (
+                        1.0 if config.angle_signs[controller_idx] >= 0 else -1.0
+                    )
+                else:
+                    _angle_signs_array[i] = 1.0
+
+                # Offset
+                if controller_idx < len(config.angle_offsets):
+                    _angle_offsets_array[i] = config.angle_offsets[controller_idx]
+                else:
+                    _angle_offsets_array[i] = 0.0
+            else:
+                _index_mapping_array[i] = i
+                _angle_signs_array[i] = 1.0
+                _angle_offsets_array[i] = 0.0
+
+        # Build URDF reorder mapping
+        for i, joint_name in enumerate(urdf_joint_names[:6]):
             try:
                 urdf_idx = joint_name_order.index(joint_name)
-                _angles_ordered_buffer[i] = (
-                    _angles_rad_buffer[urdf_idx] if urdf_idx < 6 else 0.0
-                )
-            except (ValueError, KeyError):
-                _angles_ordered_buffer[i] = 0.0
+                _urdf_reorder_array[i] = urdf_idx if urdf_idx < 6 else i
+            except ValueError:
+                _urdf_reorder_array[i] = i
 
-        # Pass buffer directly (set_axis_values accepts array-like)
-        ui_state.urdf_scene.set_axis_values(_angles_ordered_buffer)
+        _angle_pipeline_config_valid = True
+        logging.debug("Angle pipeline config initialized")
 
     except Exception as e:
-        # Use debug level since this is expected during test teardown when clients are deleted
-        logging.debug("Failed to update URDF angles: %s", e)
+        logging.debug("Failed to init angle pipeline config: %s", e)
+        _angle_pipeline_config_valid = False
+
+
+def update_urdf_angles(angles_deg: np.ndarray) -> None:
+    """Update URDF scene with new joint angles (degrees -> radians)."""
+    global _angle_pipeline_config_valid
+
+    if not ui_state.urdf_scene or len(angles_deg) < 6:
+        return
+
+    # Initialize config on first call
+    if not _angle_pipeline_config_valid:
+        _init_angle_pipeline_config()
+
+    # Pass numpy array directly to numba pipeline (no copy needed)
+    if not angle_pipeline(
+        angles_deg,
+        _index_mapping_array,
+        _angle_signs_array,
+        _angle_offsets_array,
+        _urdf_reorder_array,
+        _angles_ordered_buffer,
+    ):
+        return
+
+    ui_state.urdf_scene.set_axis_values(_angles_ordered_buffer)
 
 
 # --------------- Controller controls ---------------
@@ -430,87 +453,57 @@ async def check_ping() -> None:
 # --------------- UI Update Functions ---------------
 def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
-    angles = robot_state.angles or []
-    pose = robot_state.pose or []
-    io = robot_state.io or []
-    gr = robot_state.gripper or []
-
     # Skip position/angle updates when in editing mode (editing sync handles these)
     skip_position_updates = robot_state.editing_mode
 
-    # Update URDF scene with new angles using proper update function with mapping/signs
-    if angles and not skip_position_updates:
-        update_urdf_angles(angles)
+    # Update URDF scene with new angles and TCP ball
+    if not skip_position_updates:
+        with global_phase_timer.phase("scene"):
+            update_urdf_angles(robot_state.angles.deg)
+            if ui_state.urdf_scene:
+                ui_state.urdf_scene.update_from_robot_state()
 
-    # Update TCP jog ball and envelope from robot state
-    if ui_state.urdf_scene and not skip_position_updates:
-        ui_state.urdf_scene.update_from_robot_state()
+    if not skip_position_updates:
+        # robot_state.pose is already numpy float64 - pass directly to numba
+        pose_extraction_pipeline(
+            robot_state.pose,
+            _rotation_matrix_buffer,
+            _rpy_rad_buffer,
+            _pose_result_buffer,
+        )
 
-    if pose and len(pose) >= 12 and not skip_position_updates:
-        # Pose matrix flattened; indices 3,7,11 as XYZ (always WRF)
-        if len(pose) >= 16:
-            try:
-                # Extract rotation matrix into pre-allocated buffer (row-major)
-                _rotation_matrix_buffer[0, 0] = pose[0]
-                _rotation_matrix_buffer[0, 1] = pose[1]
-                _rotation_matrix_buffer[0, 2] = pose[2]
-                _rotation_matrix_buffer[1, 0] = pose[4]
-                _rotation_matrix_buffer[1, 1] = pose[5]
-                _rotation_matrix_buffer[1, 2] = pose[6]
-                _rotation_matrix_buffer[2, 0] = pose[8]
-                _rotation_matrix_buffer[2, 1] = pose[9]
-                _rotation_matrix_buffer[2, 2] = pose[10]
+        robot_state.x = _pose_result_buffer[0]
+        robot_state.y = _pose_result_buffer[1]
+        robot_state.z = _pose_result_buffer[2]
+        # Set both scalar fields (for UI binding) and OrientationArray (for rad access)
+        robot_state.rx = _pose_result_buffer[3]
+        robot_state.ry = _pose_result_buffer[4]
+        robot_state.rz = _pose_result_buffer[5]
+        robot_state.orientation.set_deg(_pose_result_buffer[3:6])
 
-                # Extract translation into pre-allocated buffer (mm)
-                _translation_buffer[0] = pose[3]
-                _translation_buffer[1] = pose[7]
-                _translation_buffer[2] = pose[11]
+    # Push IO derived fields into bindable RobotState (numpy int32 array)
+    robot_state.io_in1 = int(robot_state.io[0])
+    robot_state.io_in2 = int(robot_state.io[1])
+    robot_state.io_out1 = int(robot_state.io[2])
+    robot_state.io_out2 = int(robot_state.io[3])
+    robot_state.io_estop = int(robot_state.io[4])
 
-                # WRF: use original values
-                robot_state.x = float(_translation_buffer[0])
-                robot_state.y = float(_translation_buffer[1])
-                robot_state.z = float(_translation_buffer[2])
-                robot_state.rx, robot_state.ry, robot_state.rz = so3_rpy(
-                    _rotation_matrix_buffer, degrees=True
-                )
-            except Exception:
-                # Fallback to zeros on extraction error
-                robot_state.x = 0.0
-                robot_state.y = 0.0
-                robot_state.z = 0.0
-                robot_state.rx = 0.0
-                robot_state.ry = 0.0
-                robot_state.rz = 0.0
-        else:
-            # Partial pose data, extract translation only
-            robot_state.x = float(pose[3])
-            robot_state.y = float(pose[7])
-            robot_state.z = float(pose[11])
-
-    if len(io) >= 5:
-        in1, in2, out1, out2, estop = io[:5]
-
-        # Push IO derived fields into bindable RobotState
-        robot_state.io_in1 = int(in1)
-        robot_state.io_in2 = int(in2)
-        robot_state.io_out1 = int(out1)
-        robot_state.io_out2 = int(out2)
-        robot_state.io_estop = int(estop)
-
-    if len(gr) >= 6:
-        gid, pos, spd, cur, status_b, obj = gr[:6]
-        # Push gripper derived fields into bindable RobotState
-        robot_state.grip_id = int(gid)
-        robot_state.grip_pos = int(pos)
-        robot_state.grip_speed = int(spd)
-        robot_state.grip_current = int(cur)
-        robot_state.grip_obj = int(obj)
+    # Push gripper derived fields into bindable RobotState (numpy int32 array)
+    robot_state.grip_id = int(robot_state.gripper[0])
+    robot_state.grip_pos = int(robot_state.gripper[1])
+    robot_state.grip_speed = int(robot_state.gripper[2])
+    robot_state.grip_current = int(robot_state.gripper[3])
+    robot_state.grip_obj = int(robot_state.gripper[5])
 
     # Monitor E-STOP state changes and show/hide dialog as needed
     control_panel.check_estop_state_change()
 
     # Notify listeners that robot state has changed (for envelope proximity updates)
     # Must wrap with client context since this may be called from background task
+    # Skip if page not ready to avoid race with NiceGUI page serialization
+    if not readiness_state.page_ready.is_set():
+        return
+
     try:
         with ui.context.client:
             _update_connection_notification()
@@ -772,9 +765,9 @@ def build_page_content() -> None:
                                 ui.run_javascript(
                                     f"PanelResize.onTabChange('bottom', '{bottom_tab}')"
                                 )
-                        logging.debug(f"Restored active tabs: {saved_tabs}")
+                        logging.debug("Restored active tabs: %s", saved_tabs)
                 except Exception as e:
-                    logging.debug(f"Could not restore active tabs: {e}")
+                    logging.debug("Could not restore active tabs: %s", e)
                 # Signal app ready after tabs are restored
                 ui.run_javascript("PanelResize.onAppReady()")
 
@@ -820,10 +813,10 @@ def _setup_keybindings() -> None:
 
 def _setup_first_time_tutorial() -> None:
     """Set up the first-time tutorial dialog for new users."""
-    client = ui.context.client
+    ui_client = ui.context.client
 
     async def check_first_visit():
-        with client:
+        with ui_client:
             help_menu.check_first_visit()
 
     asyncio.create_task(check_first_visit())
@@ -1181,7 +1174,7 @@ async def index_page():
     try:
         # Quick ping to check if robot is connected
         result = await client.ping()
-        serial = result["serial_connected"] if result else False
+        serial = result.serial_connected if result else False
 
         robot_state.connected = bool(serial)
 
@@ -1242,72 +1235,86 @@ async def index_page():
 
 async def _status_consumer() -> None:
     """Consume multicast status and update shared robot_state."""
+    global _last_work_end
+
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_for_server_ready(timeout=5.0)
-        async for status in client.status_stream():
+        async for status in client.status_stream_shared():
             try:
-                angles = status.get("angles") or []
-                pose = status.get("pose") or []
-                io_val = status.get("io") or []
-                gr_val = status.get("gripper") or []
+                # Track loop timing via LoopMetrics
+                now = time.perf_counter()
+                _ui_metrics.tick(now)
 
-                # Coerce to expected list[int]/list[float] types for RobotState
-                angles_list = angles if isinstance(angles, list) else robot_state.angles
-                pose_list = pose if isinstance(pose, list) else robot_state.pose
+                # Track true wait time (end of last work → now)
+                if _last_work_end > 0:
+                    true_wait_s = now - _last_work_end
+                    _wait_metrics.record(true_wait_s)
 
-                if isinstance(io_val, list) and all(
-                    isinstance(x, (int, bool)) for x in io_val
-                ):
-                    io_list = [int(x) for x in io_val]
-                else:
-                    io_list = robot_state.io
+                # Rate-limited debug log every 3s
+                if _ui_metrics.should_log(now, 3.0):
+                    # Compute stats before logging
+                    _work_metrics.compute_stats()
+                    _wait_metrics.compute_stats()
+                    for p in global_phase_timer.phases.values():
+                        p.compute_stats()
 
-                if isinstance(gr_val, list) and all(
-                    isinstance(x, (int, bool)) for x in gr_val
-                ):
-                    gr_list = [int(x) for x in gr_val]
-                else:
-                    gr_list = robot_state.gripper
+                    # Build phase timing string for non-zero phases
+                    phase_strs = []
+                    for name, phase in global_phase_timer.phases.items():
+                        if phase.mean_s > 0.00001:
+                            phase_strs.append(f"{name}={phase.mean_s * 1000:.2f}")
 
-                # Skip angles update when in editing mode (editing sync handles these)
-                if not robot_state.editing_mode:
-                    robot_state.angles = angles_list or robot_state.angles
-                robot_state.pose = pose_list or robot_state.pose
-                robot_state.io = io_list
-                robot_state.gripper = gr_list
+                    logging.debug(
+                        "ui: %s | work=%.2f(p99=%.1f) wait=%.1f(p99=%.1f) | %s",
+                        format_hz_summary(_ui_metrics),
+                        _work_metrics.mean_s * 1000,
+                        _work_metrics.p99_s * 1000,
+                        _wait_metrics.mean_s * 1000,
+                        _wait_metrics.p99_s * 1000,
+                        " ".join(phase_strs),
+                    )
 
-                # Signal backend ready on first valid STATUS with 6 angles
-                if len(robot_state.angles) >= 6:
-                    readiness_state.signal_backend_ready()
-                    # Also signal simulator ready (idempotent - only fires once per toggle)
-                    readiness_state.signal_simulator_ready()
+                # Direct timing for total work (bypass PhaseTimer nesting issues)
+                _work_start = time.perf_counter()
 
-                # New movement enablement arrays
-                joint_en = status.get("joint_en") or None
-                cart_en_wrf = status.get("cart_en_wrf") or None
-                cart_en_trf = status.get("cart_en_trf") or None
-                if isinstance(joint_en, list) and len(joint_en) == 12:
-                    robot_state.joint_en = [int(x) for x in joint_en]
-                if isinstance(cart_en_wrf, list) and len(cart_en_wrf) == 12:
-                    robot_state.cart_en_wrf = [int(x) for x in cart_en_wrf]
-                if isinstance(cart_en_trf, list) and len(cart_en_trf) == 12:
-                    robot_state.cart_en_trf = [int(x) for x in cart_en_trf]
+                # Wrap all processing to measure total work time
+                with global_phase_timer.phase("status"):
+                    # Copy status data (in-place fills to avoid allocations)
+                    if not robot_state.editing_mode:
+                        robot_state.angles.set_deg(status.angles)
+                    robot_state.pose[:] = status.pose
+                    robot_state.io[:] = status.io
+                    robot_state.gripper[:] = status.gripper
 
-                # Propagate task fields from STATUS if present
-                robot_state.action_current = status.get("action_current") or ""
-                robot_state.action_state = status.get("action_state") or "IDLE"
-                robot_state.last_update_ts = time.time()
+                    # Signal backend ready on first valid STATUS with non-zero angles
+                    if robot_state.angles[0] != 0.0 or robot_state.angles[5] != 0.0:
+                        readiness_state.signal_backend_ready()
+                        readiness_state.signal_simulator_ready()
 
-                # Update UI directly from multicast consumer
-                update_ui_from_status()
-                # Refresh enablement visuals in control panel
-                if callable(getattr(control_panel, "refresh_joint_enablement", None)):
+                    # Movement enablement arrays
+                    robot_state.joint_en[:] = status.joint_en
+                    robot_state.cart_en_wrf[:] = status.cart_en_wrf
+                    robot_state.cart_en_trf[:] = status.cart_en_trf
+
+                    robot_state.action_current = status.action_current
+                    robot_state.action_state = status.action_state or "IDLE"
+                    robot_state.last_update_ts = time.time()
+
+                    # Update UI from status
+                    update_ui_from_status()
+
+                    # Update panels
+                    readout_panel.update_conn_io()
+                    readout_panel.update_action_visibility()
                     control_panel.refresh_joint_enablement()
-                if callable(
-                    getattr(control_panel, "sync_cartesian_button_states", None)
-                ):
                     control_panel.sync_cartesian_button_states()
+
+                # Record direct work time
+                _work_end = time.perf_counter()
+                _work_metrics.record(_work_end - _work_start)
+                _last_work_end = _work_end  # For true wait tracking
+
             except Exception as e:
                 logging.debug("Status consumer parse error: %s", e)
     except asyncio.CancelledError:
@@ -1400,10 +1407,17 @@ def main():
 
     # Configure logging
     configure_logging(config.log_level)
-    logging.info(f"Webserver bind: host={config.server_host} port={config.server_port}")
     logging.info(
-        f"Controller target: host={config.controller_host} port={config.controller_port}"
+        "Webserver bind: host=%s port=%s", config.server_host, config.server_port
     )
+    logging.info(
+        "Controller target: host=%s port=%s",
+        config.controller_host,
+        config.controller_port,
+    )
+
+    # Pre-compile numba functions to avoid JIT lag during hot path
+    warmup_pipelines()
 
     try:
         ui.run(

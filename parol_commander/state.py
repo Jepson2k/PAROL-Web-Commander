@@ -3,7 +3,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, TYPE_CHECKING
+
+import numpy as np
 from nicegui import binding
+from parol6.server.loop_timer import PhaseTimer
 from typing_extensions import dataclass_transform
 
 # Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
@@ -19,6 +22,88 @@ if TYPE_CHECKING:
         return cls  # type: ignore[return-value]
 else:
     bindable_dataclass = binding.bindable_dataclass
+
+
+class AngleArray:
+    """Dual-representation angle array storing both degrees and radians.
+
+    Provides zero-allocation access to angles in either unit. Conversion
+    happens once at update time via set_deg() or set_rad().
+    """
+
+    __slots__ = ("_deg", "_rad")
+
+    def __init__(self, size: int = 6) -> None:
+        self._deg = np.zeros(size, dtype=np.float64)
+        self._rad = np.zeros(size, dtype=np.float64)
+
+    @property
+    def deg(self) -> np.ndarray:
+        """Angles in degrees."""
+        return self._deg
+
+    @property
+    def rad(self) -> np.ndarray:
+        """Angles in radians."""
+        return self._rad
+
+    def set_deg(self, values: np.ndarray) -> None:
+        """Set angles from degrees, computing radians in-place."""
+        self._deg[:] = values
+        np.deg2rad(self._deg, out=self._rad)
+
+    def set_rad(self, values: np.ndarray) -> None:
+        """Set angles from radians, computing degrees in-place."""
+        self._rad[:] = values
+        np.rad2deg(self._rad, out=self._deg)
+
+    def __len__(self) -> int:
+        return len(self._deg)
+
+    def __getitem__(self, idx: int) -> float:
+        """Index access returns degrees (for backwards compatibility)."""
+        return float(self._deg[idx])
+
+
+class OrientationArray:
+    """Dual-representation orientation array storing both degrees and radians.
+
+    Stores rx, ry, rz (roll, pitch, yaw) in both units. Conversion
+    happens once at update time via set_deg() or set_rad().
+    """
+
+    __slots__ = ("_deg", "_rad")
+
+    def __init__(self) -> None:
+        self._deg = np.zeros(3, dtype=np.float64)
+        self._rad = np.zeros(3, dtype=np.float64)
+
+    @property
+    def deg(self) -> np.ndarray:
+        """Orientation in degrees [rx, ry, rz]."""
+        return self._deg
+
+    @property
+    def rad(self) -> np.ndarray:
+        """Orientation in radians [rx, ry, rz]."""
+        return self._rad
+
+    def set_deg(self, values: np.ndarray) -> None:
+        """Set orientation from degrees, computing radians in-place."""
+        self._deg[:] = values
+        np.deg2rad(self._deg, out=self._rad)
+
+    def set_rad(self, values: np.ndarray) -> None:
+        """Set orientation from radians, computing degrees in-place."""
+        self._rad[:] = values
+        np.rad2deg(self._rad, out=self._deg)
+
+    def __len__(self) -> int:
+        return len(self._deg)
+
+    def __getitem__(self, idx: int) -> float:
+        """Index access returns degrees (for backwards compatibility)."""
+        return float(self._deg[idx])
 
 
 @dataclass
@@ -177,20 +262,52 @@ class RecordingState:
 
 
 # Extended shared state singletons for cross-module access
-@bindable_dataclass
+# Only scalar fields are bindable - numpy arrays are excluded to avoid comparison issues
+@bindable_dataclass(
+    bindable_fields=[
+        "connected",
+        "x",
+        "y",
+        "z",
+        "rx",
+        "ry",
+        "rz",
+        "io_in1",
+        "io_in2",
+        "io_out1",
+        "io_out2",
+        "io_estop",
+        "grip_id",
+        "grip_pos",
+        "grip_speed",
+        "grip_current",
+        "grip_obj",
+        "simulator_active",
+        "action_current",
+        "action_state",
+        "editing_mode",
+    ]
+)
 class RobotState:
-    angles: list[float] = field(default_factory=list)  # len=6 in degrees
-    pose: list[float] = field(
-        default_factory=list
-    )  # len=16 homogeneous transform flattened
-    io: list[int] = field(default_factory=list)  # [in1,in2,out1,out2,estop]
-    gripper: list[int] = field(default_factory=list)  # [id,pos,spd,cur,status,obj]
+    # Preallocated arrays for zero-allocation hot path updates
+    angles: AngleArray = field(default_factory=AngleArray)  # joint angles (deg/rad)
+    orientation: OrientationArray = field(
+        default_factory=OrientationArray
+    )  # rx/ry/rz (deg/rad)
+    pose: np.ndarray = field(
+        default_factory=lambda: np.zeros(16, dtype=np.float64)
+    )  # homogeneous transform flattened
+    io: np.ndarray = field(
+        default_factory=lambda: np.zeros(5, dtype=np.int32)
+    )  # [in1,in2,out1,out2,estop]
+    gripper: np.ndarray = field(
+        default_factory=lambda: np.zeros(6, dtype=np.int32)
+    )  # [id,pos,spd,cur,status,obj]
     # Movement enablement arrays from STATUS (12 ints each)
-    joint_en: list[int] = field(default_factory=lambda: [1] * 12)
-    cart_en_wrf: list[int] = field(default_factory=lambda: [1] * 12)
-    cart_en_trf: list[int] = field(default_factory=lambda: [1] * 12)
+    joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
+    cart_en_wrf: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
+    cart_en_trf: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
     connected: bool = False
-    last_update_ts: float = 0.0
     # Derived scalars for convenient, high-performance UI bindings
     x: float = 0.0
     y: float = 0.0
@@ -211,6 +328,7 @@ class RobotState:
     simulator_active: bool = False
     action_current: str = ""
     action_state: str = ""
+    last_update_ts: float = 0.0  # timestamp of last STATUS update
     action_queue: list[dict] = field(default_factory=list)
     # Editing mode - when True, x/y/z/angles are controlled by target editor
     editing_mode: bool = False
@@ -482,3 +600,13 @@ recording_state: RecordingState = RecordingState()
 playback_state: PlaybackState = PlaybackState()
 readiness_state: ReadinessState = ReadinessState()
 editor_tabs_state: EditorTabsState = EditorTabsState()
+
+# Global timing instrumentation - import and use from any module
+# Usage: with global_phase_timer.phase("my_operation"): ...
+global_phase_timer = PhaseTimer(
+    [
+        "status",  # Receiving/parsing status + updating panels
+        "scene",  # 3D scene updates (angles, TCP ball, envelope)
+        "jog",  # Joint and cartesian jog API calls
+    ]
+)

@@ -4,7 +4,7 @@ TCP Controls Mixin for UrdfScene.
 Provides TCP TransformControls functionality:
 - Enable/disable TransformControls on TCP ball
 - Handle transform events for direct Cartesian moves (jogging) or IK (editing)
-- Frame and mode switching (translate/rotate, WRF/TRF)
+- Mode switching (translate/rotate)
 
 The TCP ball behavior depends on RobotAppearanceMode:
 - LIVE/SIMULATOR: Streams Cartesian jog moves to backend
@@ -17,7 +17,6 @@ import math
 from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
-from scipy.spatial.transform import Rotation as ScipyRotation
 from nicegui import ui
 from nicegui.helpers import is_user_simulation
 
@@ -27,17 +26,12 @@ from .ik_solver import EditingIKSolver
 
 from .config import RobotAppearanceMode
 
-# Pre-allocated conversion constant
-_DEG_TO_RAD = math.pi / 180.0
-
 
 class TCPControlsMixin:
     """Mixin providing TCP TransformControls functionality for UrdfScene."""
 
     # These attributes are defined in the main UrdfScene class
     scene: Any
-    tcp_anchor: Any
-    tcp_offset: Any
     _appearance_mode: RobotAppearanceMode
     _editing_angles: List[float]
     joint_groups: dict
@@ -55,31 +49,33 @@ class TCPControlsMixin:
         """Initialize TCP controls state variables."""
         # TCP TransformControls state
         self._tcp_transform_enabled: bool = False
+        self._tcp_enable_in_progress: bool = (
+            False  # Guard against concurrent enablement
+        )
         self._tcp_transform_mode: str = "translate"  # "translate" or "rotate"
-        self._tcp_last_position: Optional[Tuple[float, float, float]] = None
-        self._tcp_last_rotation: Optional[Tuple[float, float, float]] = None
 
         self._tcp_cartesian_move_callback: Optional[Callable[[List[float]], None]] = (
             None
         )
-        self._tcp_cartesian_move_rel_trf_callback: Optional[
-            Callable[[List[float]], None]
-        ] = None
         self._tcp_cartesian_move_start_callback: Optional[Callable[[], None]] = None
         self._tcp_cartesian_move_end_callback: Optional[Callable[[], None]] = None
-        self._tcp_drag_start_pos: Optional[Tuple[float, float, float]] = None
-        self._tcp_drag_start_rot: Optional[Tuple[float, float, float]] = None
+        self._tcp_drag_start_rot_deg: Optional[Tuple[float, float, float]] = None
         self._tcp_ball: Any | None = None
         self._tcp_ball_dragging: bool = False
-        self._control_frame: str = "WRF"  # 'TRF' or 'WRF'
         self._tcp_fk_solver: Optional[EditingIKSolver] = None
-        self._editing_rotation: Optional[List[float]] = None
+        self._editing_rotation: List[float] = [0.0, 0.0, 0.0]
+        self._editing_rotation_set: bool = False  # Track if rotation was explicitly set
 
         # Pre-allocated buffers to avoid per-call allocations
-        self._angles_rad_buffer: List[float] = [0.0] * 6
         self._target_pos_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
         self._target_orientation_buffer: np.ndarray = np.zeros(3, dtype=np.float64)
         self._pose_mm_buffer: List[float] = [0.0] * 6
+
+        # FK dirty checking cache - skip FK when angles unchanged
+        self._last_fk_angles_tuple: Optional[Tuple[float, ...]] = None
+        self._last_fk_angles_raw: Optional[np.ndarray] = (
+            None  # For fast LIVE mode comparison
+        )
 
     def on_tcp_cartesian_move(self, callback: Callable[[List[float]], None]) -> None:
         """Register callback to receive absolute TCP position for Cartesian moves.
@@ -92,19 +88,6 @@ class TCPControlsMixin:
             callback: Function to call with target pose in mm/degrees
         """
         self._tcp_cartesian_move_callback = callback
-
-    def on_tcp_cartesian_move_rel_trf(
-        self, callback: Callable[[List[float]], None]
-    ) -> None:
-        """Register callback to receive relative TCP delta in Tool Reference Frame.
-
-        The callback receives delta as [dx_mm, dy_mm, dz_mm, drx_deg, dry_deg, drz_deg].
-        This is used for TRF mode where movement is relative to the tool orientation.
-
-        Args:
-            callback: Function to call with delta in mm/degrees (tool frame)
-        """
-        self._tcp_cartesian_move_rel_trf_callback = callback
 
     def on_tcp_cartesian_move_start(self, callback: Callable[[], None]) -> None:
         """Register callback to be called when a TCP TransformControls drag starts."""
@@ -135,11 +118,6 @@ class TCPControlsMixin:
             if self._tcp_ball:
                 self._tcp_ball.visible(False)
 
-    def set_control_frame(self, _frame: str) -> None:
-        """No-op: Control frame is fixed to WRF for translation gizmo."""
-        # Frame is always WRF for TransformControls (world space)
-        self._control_frame = "WRF"
-
     def set_gizmo_display_mode(self, mode: str) -> None:
         """Toggle gizmo display between translation and rotation modes.
 
@@ -162,6 +140,10 @@ class TCPControlsMixin:
         Args:
             mode: "translate" or "rotate"
         """
+        # Guard against concurrent enablement attempts
+        if self._tcp_transform_enabled or self._tcp_enable_in_progress:
+            return
+
         if not self.scene:
             logging.warning("Cannot enable TCP transform controls: scene not available")
             return
@@ -172,6 +154,9 @@ class TCPControlsMixin:
                 "Cannot enable TCP transform controls: jog ball not available"
             )
             return
+
+        # Mark enablement in progress to prevent concurrent attempts
+        self._tcp_enable_in_progress = True
 
         # Store mode
         self._tcp_transform_mode = mode.lower()
@@ -194,13 +179,14 @@ class TCPControlsMixin:
             logging.debug(
                 "User simulation detected; skipping TCP TransformControls enablement"
             )
+            self._tcp_enable_in_progress = False
             return
 
         # Enable TransformControls with a short Python-side retry until the object exists on JS
         async def _enable_with_retry():
             try:
                 attempts = 20  # ~1s total at 50ms intervals
-                for i in range(attempts):
+                for _ in range(attempts):
                     # Try to enable now
                     self.scene.run_method(
                         "enable_transform_controls",
@@ -217,16 +203,15 @@ class TCPControlsMixin:
                     if ok:
                         if self._tcp_ball:
                             self._tcp_ball.visible(True)
-                        # Store initial position/rotation for delta calculation
-                        self._tcp_last_position = None
-                        self._tcp_last_rotation = None
                         self._tcp_transform_enabled = True
-                        logging.debug(f"Enabled TCP TransformControls in {mode} mode")
+                        logging.debug("Enabled TCP TransformControls in %s mode", mode)
                         return
                 logging.warning("Failed to enable TCP TransformControls after retries")
             except (TimeoutError, asyncio.CancelledError):
                 # Scene is shutting down, bail out gracefully
                 logging.debug("TCP TransformControls enablement cancelled (shutdown)")
+            finally:
+                self._tcp_enable_in_progress = False
 
         # Use explicit scene context to avoid stale slot errors
         with self.scene:
@@ -247,8 +232,7 @@ class TCPControlsMixin:
             self._tcp_ball.visible(False)
 
         self._tcp_transform_enabled = False
-        self._tcp_last_position = None
-        self._tcp_last_rotation = None
+        self._tcp_enable_in_progress = False  # Reset guard on disable
         logging.debug("Disabled TCP TransformControls")
 
     def set_tcp_transform_mode(self, mode: str) -> None:
@@ -273,11 +257,7 @@ class TCPControlsMixin:
         if hasattr(self.scene, "set_transform_mode"):
             self.scene.set_transform_mode(tcp_object_id, self._tcp_transform_mode)
 
-        # Reset delta tracking
-        self._tcp_last_position = None
-        self._tcp_last_rotation = None
-
-        logging.debug(f"Changed TCP TransformControls mode to {mode}")
+        logging.debug("Changed TCP TransformControls mode to %s", mode)
 
     def _ensure_tcp_ball(self) -> None:
         """Create the unified TCP ball if missing.
@@ -306,9 +286,35 @@ class TCPControlsMixin:
         The position source depends on the appearance mode:
         - LIVE/SIMULATOR: Uses robot_state.angles (live robot position)
         - EDITING: Uses _editing_angles (editing target position)
+
+        Uses dirty checking to skip expensive FK computation when angles unchanged.
         """
         if not self._tcp_ball or self._tcp_ball_dragging:
             return
+
+        # Get current angles for dirty checking (before FK solver init)
+        if self._appearance_mode == RobotAppearanceMode.EDITING:
+            # EDITING mode: _editing_angles is already in radians
+            if len(self._editing_angles) < 6:
+                return
+            angles_rad = self._editing_angles
+            # Use tuple for cache comparison (editing angles are a list)
+            angles_tuple = tuple(angles_rad[:6])
+            if angles_tuple == self._last_fk_angles_tuple:
+                return
+            self._last_fk_angles_tuple = angles_tuple
+        else:
+            # LIVE/SIMULATOR mode: use pre-computed radians from AngleArray
+            if len(robot_state.angles) < 6:
+                return
+            angles_deg = robot_state.angles.deg
+            if self._last_fk_angles_raw is not None and np.array_equal(
+                angles_deg[:6], self._last_fk_angles_raw
+            ):
+                return
+            # Cache current angles for dirty checking
+            self._last_fk_angles_raw = angles_deg[:6].copy()
+            angles_rad = robot_state.angles.rad
 
         # Lazy-init FK solver
         if self._tcp_fk_solver is None:
@@ -318,29 +324,8 @@ class TCPControlsMixin:
                 logging.warning("FK solver init failed: %s", e)
                 return
 
-        # Get angles based on mode - use pre-allocated buffer
-        buf = self._angles_rad_buffer
-        if self._appearance_mode == RobotAppearanceMode.EDITING:
-            # Use editing angles (already in radians)
-            for i in range(6):
-                buf[i] = (
-                    self._editing_angles[i] if i < len(self._editing_angles) else 0.0
-                )
-        else:
-            # Use live robot angles (deg -> rad) - vectorized conversion
-            angles = getattr(robot_state, "angles", None)
-            if angles:
-                n = min(len(angles), 6)
-                for i in range(n):
-                    buf[i] = float(angles[i]) * _DEG_TO_RAD
-                for i in range(n, 6):
-                    buf[i] = 0.0
-            else:
-                for i in range(6):
-                    buf[i] = 0.0
-
         try:
-            ee_pose = self._tcp_fk_solver.forward_kinematics(buf)
+            ee_pose = self._tcp_fk_solver.forward_kinematics(angles_rad)
             # FK returns [x, y, z, rx, ry, rz] in meters and radians (XYZ Euler)
             self._tcp_ball.move(float(ee_pose[0]), float(ee_pose[1]), float(ee_pose[2]))
             # Use rotate_euler to set XYZ Euler angles directly, avoiding matrix conversion issues
@@ -370,68 +355,22 @@ class TCPControlsMixin:
         if object_name not in ("tcp:ball", "tcp:jog_ball", "tcp:offset"):
             return
 
-        # Record starting position on first event of drag session
+        # Record starting rotation on first event of drag session
         if not self._tcp_ball_dragging:
-            # Get starting position from robot state (convert mm to m)
-            self._tcp_drag_start_pos = (
-                robot_state.x / 1000.0,
-                robot_state.y / 1000.0,
-                robot_state.z / 1000.0,
-            )
-            # Get starting rotation from robot state (convert deg to rad)
-            self._tcp_drag_start_rot = (
-                math.radians(robot_state.rx),
-                math.radians(robot_state.ry),
-                math.radians(robot_state.rz),
-            )
-
-        # Mark that TCP ball is being dragged - prevents FK from overwriting position
-        self._tcp_ball_dragging = True
+            # Get starting rotation from robot state (pre-computed degrees)
+            self._tcp_drag_start_rot_deg = tuple(robot_state.orientation.deg)
+            # Mark that TCP ball is being dragged - prevents FK from overwriting position
+            self._tcp_ball_dragging = True
+            # Notify drag-start to consumers (for jogging mode)
+            if self._appearance_mode != RobotAppearanceMode.EDITING:
+                if self._tcp_cartesian_move_start_callback:
+                    self._tcp_cartesian_move_start_callback()
 
         # Route to mode-specific handler
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._handle_tcp_transform_for_ik(e)
         else:
             self._handle_tcp_transform_for_cartesian(e)
-
-    def _get_current_rotation_matrix(self) -> np.ndarray:
-        """Get current tool rotation matrix from FK.
-
-        Returns:
-            3x3 rotation matrix representing current tool orientation
-        """
-        # Lazy-init FK solver
-        if self._tcp_fk_solver is None:
-            try:
-                self._tcp_fk_solver = EditingIKSolver.from_urdf_scene(self)
-            except Exception as err:
-                logging.warning("FK solver init failed: %s", err)
-                return np.eye(3)
-
-        # Get current angles from robot state - use pre-allocated buffer
-        buf = self._angles_rad_buffer
-        angles = getattr(robot_state, "angles", None)
-        if angles:
-            n = min(len(angles), 6)
-            for i in range(n):
-                buf[i] = float(angles[i]) * _DEG_TO_RAD
-            for i in range(n, 6):
-                buf[i] = 0.0
-        else:
-            for i in range(6):
-                buf[i] = 0.0
-
-        # Use FK to get rotation matrix
-        try:
-            ee_pose = self._tcp_fk_solver.forward_kinematics(buf)
-            # ee_pose is [x, y, z, rx, ry, rz] in meters and radians (XYZ Euler)
-            R = ScipyRotation.from_euler(
-                "XYZ", [ee_pose[3], ee_pose[4], ee_pose[5]]
-            ).as_matrix()
-            return R
-        except Exception as err:
-            logging.debug("FK rotation matrix failed: %s", err)
-            return np.eye(3)
 
     def _handle_tcp_transform_for_cartesian(self, e) -> None:
         """Handle TCP ball drag in LIVE/SIMULATOR mode - stream Cartesian moves.
@@ -450,52 +389,40 @@ class TCPControlsMixin:
                 new_y = e.y if e.y is not None else 0.0
                 new_z = e.z if e.z is not None else 0.0
 
-            current_pos = (float(new_x), float(new_y), float(new_z))
-
-            # Record last position (no deadband filtering)
-            self._tcp_last_position = current_pos
-
             # Use absolute world coordinates
             if self._tcp_cartesian_move_callback:
-                # Use rotation from drag START to avoid rotation during translation
-                if self._tcp_drag_start_rot is not None:
-                    rx_deg = math.degrees(self._tcp_drag_start_rot[0])
-                    ry_deg = math.degrees(self._tcp_drag_start_rot[1])
-                    rz_deg = math.degrees(self._tcp_drag_start_rot[2])
-                else:
-                    rx_deg = robot_state.rx
-                    ry_deg = robot_state.ry
-                    rz_deg = robot_state.rz
                 # Reuse pre-allocated buffer
                 buf = self._pose_mm_buffer
-                buf[0] = current_pos[0] * 1000.0  # x: m -> mm
-                buf[1] = current_pos[1] * 1000.0  # y: m -> mm
-                buf[2] = current_pos[2] * 1000.0  # z: m -> mm
-                buf[3] = rx_deg  # Keep orientation from drag start
-                buf[4] = ry_deg
-                buf[5] = rz_deg
+                buf[0] = float(new_x) * 1000.0  # x: m -> mm
+                buf[1] = float(new_y) * 1000.0  # y: m -> mm
+                buf[2] = float(new_z) * 1000.0  # z: m -> mm
+                # Use rotation from drag START to avoid rotation during translation
+                if self._tcp_drag_start_rot_deg is not None:
+                    buf[3] = self._tcp_drag_start_rot_deg[0]
+                    buf[4] = self._tcp_drag_start_rot_deg[1]
+                    buf[5] = self._tcp_drag_start_rot_deg[2]
+                else:
+                    buf[3] = robot_state.rx
+                    buf[4] = robot_state.ry
+                    buf[5] = robot_state.rz
                 self._tcp_cartesian_move_callback(buf)
 
         else:  # rotate mode
-            # Get rotation values (radians)
-            rx = e.rx if e.rx is not None else 0.0
-            ry = e.ry if e.ry is not None else 0.0
-            rz = e.rz if e.rz is not None else 0.0
-
-            current_rot = (float(rx), float(ry), float(rz))
-            # Record last rotation (no deadband filtering)
-            self._tcp_last_rotation = current_rot
-
             # Use absolute rotation values
             if self._tcp_cartesian_move_callback:
+                # Get rotation values (radians from event)
+                rx = e.rx if e.rx is not None else 0.0
+                ry = e.ry if e.ry is not None else 0.0
+                rz = e.rz if e.rz is not None else 0.0
+
                 # Reuse pre-allocated buffer
                 buf = self._pose_mm_buffer
                 buf[0] = robot_state.x  # Keep current position (already in mm)
                 buf[1] = robot_state.y
                 buf[2] = robot_state.z
-                buf[3] = math.degrees(current_rot[0])  # rx: rad -> deg
-                buf[4] = math.degrees(current_rot[1])  # ry: rad -> deg
-                buf[5] = math.degrees(current_rot[2])  # rz: rad -> deg
+                buf[3] = math.degrees(rx)  # rx: rad -> deg
+                buf[4] = math.degrees(ry)  # ry: rad -> deg
+                buf[5] = math.degrees(rz)  # rz: rad -> deg
                 self._tcp_cartesian_move_callback(buf)
 
     def _handle_tcp_transform_for_ik(self, e) -> None:
@@ -525,11 +452,10 @@ class TCPControlsMixin:
             target_orientation = orient_buf
 
             # Store edited rotation for reference
-            if self._editing_rotation is None:
-                self._editing_rotation = [0.0, 0.0, 0.0]
             self._editing_rotation[0] = float(rx)
             self._editing_rotation[1] = float(ry)
             self._editing_rotation[2] = float(rz)
+            self._editing_rotation_set = True
 
             # Get current position from FK (maintain position while rotating)
             fk_result = self._tcp_fk_solver.forward_kinematics(self._editing_angles)
@@ -553,7 +479,7 @@ class TCPControlsMixin:
             target_pos[2] = float(new_z)
 
             # If we have a stored rotation from previous rotate mode, use it
-            if self._editing_rotation is not None:
+            if self._editing_rotation_set:
                 orient_buf = self._target_orientation_buffer
                 orient_buf[0] = self._editing_rotation[0]
                 orient_buf[1] = self._editing_rotation[1]
@@ -574,10 +500,8 @@ class TCPControlsMixin:
 
         if result.success:
             # Update editing angles without repositioning TCP ball (user is dragging it)
-            # Copy values in place to avoid list allocation
-            for i, a in enumerate(result.angles):
-                if i < len(self._editing_angles):
-                    self._editing_angles[i] = a
+            # Copy values in place using slice assignment
+            self._editing_angles[:6] = result.angles[:6]
             # Apply to robot joints
             for joint_name, q in zip(self.joint_names, self._editing_angles):
                 if joint_name in self.joint_groups and joint_name in self.joint_trafos:

@@ -7,3 +7,5 @@ programs/*
 build/*
 *.egg-info
 screenshots*
+*.nbc
+*.nbi

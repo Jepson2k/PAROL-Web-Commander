@@ -8,6 +8,7 @@ import sys
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pytest
 from nicegui import run as nicegui_run
 from nicegui.testing import general as nicegui_testing_general
@@ -75,31 +76,37 @@ TEST_WINDOW_HEIGHT = 1080
 def set_screen_window_size(
     request: pytest.FixtureRequest,
 ) -> None:
-    """Set browser window size to 1920x1080 for screen tests.
+    """Set browser window size and page load timeout for screen tests.
 
     This ensures consistent layout across all browser tests.
     Only runs when a test actually uses the screen fixture.
     """
-    # Only set window size if this test actually uses the screen fixture
     if "screen" not in request.fixturenames:
         return
-    # Get the screen fixture value (it's already been set up if we're here)
     screen_fixture: Screen = request.getfixturevalue("screen")
     screen_fixture.selenium.set_window_size(TEST_WINDOW_WIDTH, TEST_WINDOW_HEIGHT)
+    screen_fixture.selenium.set_page_load_timeout(
+        8
+    )  # WebGL needs more time on slow runners
 
 
 @pytest.fixture(scope="session", autouse=True)
-def silence_selenium_logging():
-    """Reduce Selenium/urllib3/webdriver logging verbosity.
+def silence_noisy_logging():
+    """Reduce verbosity of noisy third-party loggers.
 
-    Selenium debug output includes base64-encoded screenshots which flood
-    the terminal. Set to WARNING to suppress this noise.
+    Selenium debug output includes base64-encoded screenshots.
+    Numba debug output floods with SSA/IR details during JIT compilation.
     """
     logging.getLogger("selenium").setLevel(logging.INFO)
     logging.getLogger("selenium.webdriver").setLevel(logging.INFO)
     logging.getLogger("selenium.webdriver.remote").setLevel(logging.INFO)
     logging.getLogger("urllib3").setLevel(logging.INFO)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
+    # Silence numba JIT compilation debug spam
+    logging.getLogger("numba").setLevel(logging.WARNING)
+    logging.getLogger("numba.core").setLevel(logging.WARNING)
+    # Silence toppra debug output
+    logging.getLogger("toppra").setLevel(logging.WARNING)
     yield
 
 
@@ -251,6 +258,12 @@ def test_env_config() -> Generator[None, None, None]:
     Sets up fake serial and simulator modes so tests can run without hardware.
     These are only set if not already present in the environment.
     """
+    from pathlib import Path
+
+    # Ensure .nicegui storage directory exists to avoid FileNotFoundError on teardown
+    nicegui_storage_dir = Path(".nicegui")
+    nicegui_storage_dir.mkdir(exist_ok=True)
+
     controller_port, multicast_port = _get_test_ports()
     env_defaults: dict[str, str] = {
         "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
@@ -262,6 +275,8 @@ def test_env_config() -> Generator[None, None, None]:
         "PAROL_CONTROLLER_PORT": str(controller_port),
         "PAROL6_CONTROLLER_PORT": str(controller_port),
         "PAROL6_STATUS_MULTICAST_PORT": str(multicast_port),
+        # Skip slow envelope generation by default (tests that need it enable explicitly)
+        "PAROL_SKIP_ENVELOPE": "1",
     }
 
     originals: dict[str, str | None] = {}
@@ -318,11 +333,12 @@ def reset_state(request: pytest.FixtureRequest):
     # Reset readiness events
     readiness_state.reset()
 
-    # Reset robot state
-    state_module.robot_state.angles = list(HOME_ANGLES_DEG)
-    state_module.robot_state.pose = []
-    state_module.robot_state.io = [0, 0, 0, 0, 1]  # ESTOP OK by default
-    state_module.robot_state.gripper = [0, 0, 0, 0, 0, 0]
+    # Reset robot state - use proper array types
+    state_module.robot_state.angles.set_deg(np.array(HOME_ANGLES_DEG, dtype=np.float64))
+    state_module.robot_state.orientation.set_deg(np.zeros(3, dtype=np.float64))
+    state_module.robot_state.pose = np.zeros(16, dtype=np.float64)
+    state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
+    state_module.robot_state.gripper = np.zeros(6, dtype=np.int32)
     state_module.robot_state.connected = False
     state_module.robot_state.x = 0.0
     state_module.robot_state.y = 0.0
@@ -335,9 +351,9 @@ def reset_state(request: pytest.FixtureRequest):
     state_module.robot_state.io_out1 = 0
     state_module.robot_state.io_out2 = 0
     state_module.robot_state.io_estop = 1
-    state_module.robot_state.joint_en = [1] * 12
-    state_module.robot_state.cart_en_wrf = [1] * 12
-    state_module.robot_state.cart_en_trf = [1] * 12
+    state_module.robot_state.joint_en = np.ones(12, dtype=np.int32)
+    state_module.robot_state.cart_en_wrf = np.ones(12, dtype=np.int32)
+    state_module.robot_state.cart_en_trf = np.ones(12, dtype=np.int32)
     state_module.robot_state.last_update_ts = 0.0
     state_module.robot_state.action_state = ""
     state_module.robot_state.action_current = ""
@@ -537,6 +553,27 @@ async def controller_reset(
             await client.reset()
             await client.enable()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
-            await client.home(wait=True, timeout=5.0)
+            # Use short timeouts since simulator homing is instant
+            await client.home(
+                wait=True,
+                timeout=5.0,
+                motion_start_timeout=0.1,  # Don't wait long for motion to start
+                settle_window=0.05,  # Robot settles instantly in simulator
+            )
 
     yield
+
+
+@pytest.fixture
+def enable_envelope() -> Generator[None, None, None]:
+    """Enable envelope generation for tests that specifically need it.
+
+    By default, PAROL_SKIP_ENVELOPE=1 is set to speed up tests.
+    Use this fixture for tests that verify envelope functionality.
+    """
+    original = os.environ.pop("PAROL_SKIP_ENVELOPE", None)
+    yield
+    if original is not None:
+        os.environ["PAROL_SKIP_ENVELOPE"] = original
+    else:
+        os.environ["PAROL_SKIP_ENVELOPE"] = "1"

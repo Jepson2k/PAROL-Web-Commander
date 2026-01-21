@@ -7,8 +7,20 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
 
 from tests.helpers.wait import screen_wait_for_scene_ready
+
+
+def _retry_find_elements(finder_func, retries: int = 3, delay: float = 0.2):
+    """Retry finding elements to handle StaleElementReferenceException."""
+    for i in range(retries):
+        try:
+            return finder_func()
+        except StaleElementReferenceException:
+            if i == retries - 1:
+                raise
+            time.sleep(delay)
 
 
 @pytest.mark.browser
@@ -48,12 +60,14 @@ def test_context_menu_has_options(screen) -> None:
     actions.context_click(canvas).perform()
     time.sleep(0.3)
 
-    menu = WebDriverWait(screen.selenium, 5).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".q-menu"))
-    )
+    # Find menu items with retry to handle stale element
+    def find_menu_items():
+        menu = WebDriverWait(screen.selenium, 5).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".q-menu"))
+        )
+        return menu.find_elements(By.CSS_SELECTOR, ".q-item")
 
-    # Should have menu items
-    menu_items = menu.find_elements(By.CSS_SELECTOR, ".q-item")
+    menu_items = _retry_find_elements(find_menu_items)
     assert len(menu_items) > 0, "Context menu should have options"
 
 
@@ -89,7 +103,7 @@ def test_context_menu_closes_on_click_outside(screen) -> None:
 
 
 @pytest.mark.browser
-def test_envelope_visible_when_mode_on(screen) -> None:
+def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
     """Test that envelope sphere is visible in scene when mode is 'on'.
 
     Uses the Settings UI to change envelope mode, then verifies the envelope
@@ -98,8 +112,18 @@ def test_envelope_visible_when_mode_on(screen) -> None:
     screen.open("/")
     screen_wait_for_scene_ready(screen)
 
-    # Wait for envelope generation to complete (happens in background)
-    time.sleep(2.0)
+    # Wait for envelope generation to complete (polling instead of fixed sleep)
+    # Hull generation with 500k samples takes ~3-5s plus process pool overhead
+    from parol_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+
+    for _ in range(150):  # Up to 15 seconds
+        if workspace_envelope._generated and workspace_envelope.stl_url:
+            break
+        time.sleep(0.1)
+
+    assert workspace_envelope._generated, (
+        "Envelope should be generated before testing visibility"
+    )
 
     # Click Settings tab (find by text content)
     settings_tab = WebDriverWait(screen.selenium, 5).until(
@@ -138,7 +162,7 @@ def test_envelope_visible_when_mode_on(screen) -> None:
         )
     )
     on_option.click()
-    time.sleep(0.5)
+    time.sleep(1.0)  # Wait for envelope to be added to scene
 
     # Check for envelope object in the three.js scene
     result = screen.selenium.execute_script(

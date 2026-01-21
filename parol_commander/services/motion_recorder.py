@@ -3,13 +3,13 @@
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Optional, List
-from parol_commander.state import editor_tabs_state
+from dataclasses import dataclass
+
 import numpy as np
 from parol6.utils.se3_utils import so3_rpy
 
 from parol_commander.state import (
+    editor_tabs_state,
     recording_state,
     robot_state,
     ui_state,
@@ -17,6 +17,12 @@ from parol_commander.state import (
 from parol_commander.common.logging_config import TRACE_ENABLED
 
 logger = logging.getLogger(__name__)
+
+# Actions that receive TARGET:uuid markers in recorded code for interactive 3D editing.
+# Only actions with editable position parameters (list literals) benefit from markers.
+# Related: MOVE_TYPE_COLORS in theme.py maps move types to path colors.
+# TODO: Consolidate action metadata into a central registry (actions.py)
+_MOTION_ACTIONS = ("move_joints", "move_cartesian")
 
 
 @dataclass
@@ -28,16 +34,6 @@ class ActiveJog:
     axis_info: str  # e.g., "J1+", "X+", "RZ-"
 
 
-@dataclass
-class RecordedAction:
-    """A captured robot action during recording."""
-
-    timestamp: float
-    action_type: str  # move_joints, move_cartesian, home, gripper, io, delay
-    params: dict = field(default_factory=dict)
-    marker_id: Optional[str] = None  # UUID for TARGET marker (motion commands only)
-
-
 class MotionRecorder:
     """Records robot actions as code snippets.
 
@@ -47,50 +43,60 @@ class MotionRecorder:
     """
 
     def __init__(self):
-        self._active_jog: Optional[ActiveJog] = None
+        self._active_jog: ActiveJog | None = None
         self._last_action_time: float = 0.0
 
-    def _get_wrf_pose(self) -> List[float]:
+    def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
 
         Returns [x, y, z, rx, ry, rz] in mm/deg with RPY order='xyz'.
         """
-
         pose = robot_state.pose
-        if pose and len(pose) >= 12:
+        if len(pose) >= 12:
             # Extract translation (column 4 of 4x4 matrix, indices 3, 7, 11)
             x_mm = float(pose[3])
             y_mm = float(pose[7])
             z_mm = float(pose[11])
 
             # Extract rotation matrix (3x3 upper-left)
-            if len(pose) >= 11:
-                R = np.array(
-                    [
-                        [float(pose[0]), float(pose[1]), float(pose[2])],
-                        [float(pose[4]), float(pose[5]), float(pose[6])],
-                        [float(pose[8]), float(pose[9]), float(pose[10])],
-                    ]
-                )
-                rx, ry, rz = so3_rpy(R, degrees=True)
-                return [x_mm, y_mm, z_mm, float(rx), float(ry), float(rz)]
+            R = np.array(
+                [
+                    [float(pose[0]), float(pose[1]), float(pose[2])],
+                    [float(pose[4]), float(pose[5]), float(pose[6])],
+                    [float(pose[8]), float(pose[9]), float(pose[10])],
+                ],
+                dtype=np.float64,
+            )
+            rpy_rad = np.zeros(3, dtype=np.float64)
+            so3_rpy(R, rpy_rad)
+            rpy_deg = np.degrees(rpy_rad)
+            return [
+                x_mm,
+                y_mm,
+                z_mm,
+                float(rpy_deg[0]),
+                float(rpy_deg[1]),
+                float(rpy_deg[2]),
+            ]
 
         # Fallback to current displayed values
         logger.warning(
             "_get_wrf_pose: falling back to display values (pose data incomplete)"
         )
         return [
-            robot_state.x,
-            robot_state.y,
-            robot_state.z,
-            robot_state.rx,
-            robot_state.ry,
-            robot_state.rz,
+            robot_state.x or 0.0,
+            robot_state.y or 0.0,
+            robot_state.z or 0.0,
+            robot_state.rx or 0.0,
+            robot_state.ry or 0.0,
+            robot_state.rz or 0.0,
         ]
 
-    def _get_current_angles(self) -> List[float]:
+    def _get_current_angles(self) -> list[float]:
         """Get current joint angles as list."""
-        return list(robot_state.angles) if robot_state.angles else [0.0] * 6
+        return (
+            list(robot_state.angles.deg) if len(robot_state.angles) >= 6 else [0.0] * 6
+        )
 
     def toggle_recording(self) -> None:
         """Toggle recording state on/off."""
@@ -108,7 +114,7 @@ class MotionRecorder:
         Returns:
             True if anchor should be inserted (positions differ), False otherwise.
         """
-        if not robot_state.angles:
+        if len(robot_state.angles) < 6:
             return True
 
         current_angles_deg = self._get_current_angles()
@@ -125,7 +131,7 @@ class MotionRecorder:
         return self._compare_positions(simulated_angles_deg, current_angles_deg)
 
     def _compare_positions(
-        self, script_end_deg: List[float], current_deg: List[float]
+        self, script_end_deg: list[float], current_deg: list[float]
     ) -> bool:
         """Compare script end position with current robot position.
 
@@ -135,7 +141,7 @@ class MotionRecorder:
         deltas = [script - cur for script, cur in zip(script_end_deg, current_deg)]
         max_delta = max(abs(d) for d in deltas)
 
-        logger.info(
+        logger.debug(
             "Anchor check:\n"
             "  Script ends at: [%s]\n"
             "  Robot now at:   [%s]\n"
@@ -147,9 +153,7 @@ class MotionRecorder:
             max_delta,
         )
 
-        if max_delta > 0.5:
-            return True
-        return False
+        return bool(max_delta > 0.5)
 
     def _start_recording(self) -> None:
         """Start a new recording session."""
@@ -158,10 +162,10 @@ class MotionRecorder:
         self._last_action_time = 0.0
 
         # Log the initial position for reference
-        if robot_state.angles:
+        if len(robot_state.angles) >= 6:
             logger.info(
                 "Recording started - initial joints: %s deg",
-                [f"{a:.1f}" for a in robot_state.angles],
+                [f"{a:.1f}" for a in robot_state.angles.deg],
             )
         if (
             robot_state.x is not None
@@ -180,7 +184,7 @@ class MotionRecorder:
 
         # Insert anchor move_joints command only if current position differs from
         # where the script would end (simulated using dry run client)
-        if robot_state.angles and self._should_insert_anchor():
+        if len(robot_state.angles) >= 6 and self._should_insert_anchor():
             angles = self._get_current_angles()
             args = ", ".join(f"{a:.2f}" for a in angles)
             anchor_snippet = (
@@ -228,18 +232,17 @@ class MotionRecorder:
 
         # Get duration for motion commands (to estimate when action completes)
         duration = params.get("duration", 0.0)
+        is_motion_action = action_type in _MOTION_ACTIONS
 
         # Update _last_action_time to estimated completion time for motion commands
         # For instant commands (home, gripper, io), use current time
-        if action_type in ("move_joints", "move_cartesian") and duration > 0:
+        if is_motion_action and duration > 0:
             self._last_action_time = now + duration
         else:
             self._last_action_time = now
 
         # Generate marker for motion commands (for interactive targets)
-        marker_id = None
-        if action_type in ("move_joints", "move_cartesian"):
-            marker_id = uuid.uuid4().hex[:8]  # Short UUID
+        marker_id = uuid.uuid4().hex[:8] if is_motion_action else None
 
         # Generate and insert code
         snippet = self._generate_code(action_type, params, marker_id)
@@ -252,7 +255,7 @@ class MotionRecorder:
         logger.debug("Recorded action: %s", action_type)
 
     def _generate_code(
-        self, action_type: str, params: dict, marker_id: Optional[str]
+        self, action_type: str, params: dict, marker_id: str | None
     ) -> str:
         """Generate Python code snippet for an action.
 
@@ -387,7 +390,7 @@ class MotionRecorder:
             val = textarea.value or ""
 
             # Count lines before insertion for flash highlighting
-            lines_before = len(val.splitlines()) if val else 0
+            lines_before = len(val.splitlines())
 
             if val and not val.endswith("\n"):
                 val += "\n"
@@ -398,7 +401,7 @@ class MotionRecorder:
 
             # Flash the newly added line
             new_line_number = lines_before + 1
-            ui_state.editor_panel._flash_editor_lines([new_line_number])
+            ui_state.editor_panel.flash_editor_lines([new_line_number])
         else:
             logger.error("Editor textarea not ready - open Program tab first")
 

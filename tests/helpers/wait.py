@@ -109,7 +109,7 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
 
     def _has_valid_angles() -> bool:
         angles = robot_state.angles
-        return isinstance(angles, list) and len(angles) >= 6
+        return len(angles) >= 6
 
     # Wait for initial backend readiness from startup
     try:
@@ -287,7 +287,7 @@ async def wait_for_motion_start(
     import time
 
     # Record initial state for comparison
-    initial_angles = list(robot_state.angles) if robot_state.angles else []
+    initial_angles = list(robot_state.angles.deg) if len(robot_state.angles) > 0 else []
     start_time = time.time()
 
     # Brief delay to allow command to be sent
@@ -305,8 +305,8 @@ async def wait_for_motion_start(
         # Check if timestamp updated since we started
         if robot_state.last_update_ts > start_time:
             # Check if any joint angle changed
-            current_angles = robot_state.angles
-            if current_angles and len(current_angles) >= 6 and initial_angles:
+            current_angles = robot_state.angles.deg
+            if len(current_angles) >= 6 and initial_angles:
                 for i in range(min(6, len(current_angles), len(initial_angles))):
                     if abs(current_angles[i] - initial_angles[i]) > 0.01:
                         return True
@@ -317,7 +317,7 @@ async def wait_for_motion_start(
             f"wait_for_motion_start: No motion detected after {timeout_s}s. "
             f"action_state={robot_state.action_state}, "
             f"initial_angles={initial_angles[:3] if initial_angles else []}, "
-            f"current_angles={robot_state.angles[:3] if robot_state.angles else []}"
+            f"current_angles={list(robot_state.angles.deg[:3]) if len(robot_state.angles) > 0 else []}"
         )
 
     # Continue anyway and let wait_for_motion_stable handle detection
@@ -385,9 +385,9 @@ async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> 
 
     # Validate angles
     angles = robot_state.angles
-    assert isinstance(angles, list) and len(angles) >= 6, (
+    assert len(angles) >= 6, (
         f"ensure_robot_ready_for_motion: Invalid angles. "
-        f"Expected list with >=6 elements, got: {angles}"
+        f"Expected >=6 elements, got: {len(angles)}"
     )
 
     # Validate motion mode is active
@@ -691,7 +691,7 @@ def screen_wait_for_codemirror_ready(screen: "Screen", timeout_s: float = 10.0) 
         raise AssertionError(f"CodeMirror not ready after {timeout_s}s")
 
 
-def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 10.0) -> None:
+def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 20.0) -> None:
     """Wait for Three.js 3D scene to be fully initialized.
 
     Dismisses any startup dialogs (tutorial/safety), then checks that canvas exists

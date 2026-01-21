@@ -6,12 +6,16 @@ execution. Results are collected and applied to SimulationState in the main proc
 """
 
 import asyncio
+import builtins
+import linecache
 import logging
 import os
+import sys
 import traceback
 from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock
+import numpy as np
 
 from nicegui import run
 
@@ -47,13 +51,28 @@ def _warm_worker() -> bool:
     return True
 
 
+def _is_test_environment() -> bool:
+    """Detect if running under pytest or similar test environment."""
+    return (
+        "pytest" in sys.modules
+        or "__main__" not in sys.modules
+        or os.environ.get("PYTEST_CURRENT_TEST") is not None
+    )
+
+
 async def warm_process_pool() -> None:
     """Pre-warm all process pool workers by importing heavy modules.
 
     This should be called once at app startup (after NiceGUI has initialized
     the process pool). Each worker process will import roboticstoolbox/spatialmath
     once, and subsequent simulations will be fast since workers are reused.
+
+    Skipped in test environments where multiprocessing spawn doesn't work properly.
     """
+    if _is_test_environment():
+        logger.debug("Skipping process pool warming in test environment")
+        return
+
     # ProcessPoolExecutor uses cpu_count() workers by default
     worker_count = os.cpu_count() or 4
     logger.info("Warming %d process pool workers (importing RTB)...", worker_count)
@@ -65,7 +84,6 @@ async def warm_process_pool() -> None:
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
-        raise e
         logger.warning("Failed to warm process pool workers: %s", e)
 
 
@@ -89,7 +107,7 @@ def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:
 
 def _run_simulation_isolated(
     program_text: str,
-    initial_joints_rad: list[float] | None = None,
+    initial_joints_rad: np.ndarray | None = None,
     initial_pose_m: list[float] | None = None,
     max_segments: int = MAX_PATH_SEGMENTS,
 ) -> dict[str, Any]:
@@ -114,9 +132,6 @@ def _run_simulation_isolated(
         - error: Error message if simulation failed, else None
         - total_steps: Number of segments generated
     """
-    import sys
-    import asyncio
-
     # Local collectors (not shared with main process)
     local_segments: list[dict] = []
     local_targets: list[dict] = []
@@ -245,8 +260,6 @@ def _run_simulation_isolated(
 
         # Create mock time module and insert into sys.modules
         # This ensures `import time` returns our mock instead of real time module
-        import builtins
-
         class MockTimeModule(ModuleType):
             """Mock time module with no-op sleep for simulation."""
 
@@ -295,8 +308,6 @@ def _run_simulation_isolated(
 
         # Populate linecache with program source so DryRunRobotClient can find
         # source lines for TARGET marker detection
-        import linecache
-
         lines = program_text.splitlines(keepends=True)
         # Ensure lines end with newline for linecache compatibility
         if lines and not lines[-1].endswith("\n"):
@@ -372,7 +383,7 @@ def _run_simulation_isolated(
 
     # Enforce segment limit
     if len(local_segments) > max_segments:
-        local_segments = local_segments[:max_segments]
+        del local_segments[max_segments:]
         truncated = True
 
     return {
@@ -436,14 +447,12 @@ class PathVisualizer:
             # NOTE: No notify_changed() here - we notify once at the end after new data arrives
 
             # Get current robot joint angles for initial position
-            # robot_state.angles is in degrees, convert to radians
-            initial_joints_rad: list[float] | None = None
-            if robot_state.angles:
-                import numpy as np
-
-                initial_joints_rad = np.deg2rad(robot_state.angles).tolist()
+            initial_joints_rad: np.ndarray | None = None
+            if len(robot_state.angles) >= 6:
+                initial_joints_rad = robot_state.angles.rad
                 logger.debug(
-                    "Using current robot joints as initial: %s deg", robot_state.angles
+                    "Using current robot joints as initial: %s deg",
+                    robot_state.angles.deg,
                 )
 
             # Get current robot pose for initial position (more accurate than FK)
@@ -488,8 +497,20 @@ class PathVisualizer:
                 logger.error("Simulation subprocess timed out (sim_id=%d)", sim_id)
                 return "Simulation timed out"
             except Exception as e:
-                logger.error("Simulation subprocess failed (sim_id=%d): %s", sim_id, e)
-                return f"Simulation failed: {e}"
+                # Fallback to in-process execution when subprocess fails
+                # (common in test environments where process pool is unavailable)
+                logger.warning(
+                    "Subprocess simulation failed (sim_id=%d): %s, using sync",
+                    sim_id,
+                    e,
+                )
+                try:
+                    result = _run_simulation_isolated(
+                        program_text, initial_joints_rad, initial_pose_m
+                    )
+                except Exception as e2:
+                    logger.error("Sync simulation also failed: %s", e2)
+                    return f"Simulation failed: {e2}"
 
             # Handle errors
             if result.get("error"):
@@ -541,15 +562,8 @@ class PathVisualizer:
                     )
 
             # Reset scene tracking counter and clear old path objects
-            if ui_state.urdf_scene and hasattr(
-                ui_state.urdf_scene, "_rendered_segment_count"
-            ):
-                ui_state.urdf_scene._rendered_segment_count = 0
-                # Clear old path scene objects so they don't accumulate
-                if hasattr(ui_state.urdf_scene, "_path_objects"):
-                    for obj in ui_state.urdf_scene._path_objects:
-                        obj.delete()
-                    ui_state.urdf_scene._path_objects.clear()
+            if ui_state.urdf_scene:
+                ui_state.urdf_scene.invalidate_paths()
 
             # Trigger scene update via event-driven notification
             simulation_state.notify_changed()

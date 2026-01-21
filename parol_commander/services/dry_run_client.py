@@ -8,6 +8,7 @@ Uses shared geometry generators from parol6.motion.geometry for accurate path
 visualization of circles, arcs, splines, and joint-space TCP arcs.
 """
 
+import linecache
 import logging
 import inspect
 import re
@@ -36,6 +37,21 @@ logger = logging.getLogger(__name__)
 
 # Default standby position in radians - use PAROL6's actual standby position (kept as array)
 DEFAULT_STANDBY_RAD = np.deg2rad(STANDBY_ANGLES_DEG)
+
+# Pre-compiled regex patterns for performance
+_TARGET_MARKER_RE = re.compile(r"#\s*TARGET:(\w+)")
+_LITERAL_LIST_RE = re.compile(
+    r"move_(?:joints|cartesian|pose)\s*\(\s*\["
+    r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+    r"(?:\s*,\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)*\s*\]"
+)
+
+
+def _pad_pose(pose: list[float]) -> list[float]:
+    """Pad a pose list to 6 elements with zeros."""
+    if len(pose) >= 6:
+        return pose[:6]
+    return pose + [0.0] * (6 - len(pose))
 
 
 def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:
@@ -90,7 +106,7 @@ class DryRunRobotClient:
     target_collector: list[dict] = field(default_factory=list)
 
     # Initial joint state (optional - if None, uses DEFAULT_STANDBY_RAD)
-    initial_joints: list[float] | None = None
+    initial_joints: list[float] | np.ndarray | None = None
 
     # Initial pose (optional - if provided, use directly instead of FK computation)
     # Format: [x, y, z, rx, ry, rz] where x/y/z in meters, rx/ry/rz in degrees
@@ -104,8 +120,10 @@ class DryRunRobotClient:
     _current_pose: list[float] = field(
         default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     )
+    _rpy_buffer: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
     _tool_name: str = "NONE"
-    _current_step_index: int = 0
 
     # Configuration (for API compatibility)
     host: str = "127.0.0.1"
@@ -150,17 +168,28 @@ class DryRunRobotClient:
             T = robot.fkine(self._current_joints)
 
             # T is spatialmath SE3 from fkine, extract values
-            rpy_deg = so3_rpy(T.R, degrees=True)
+            so3_rpy(T.R, self._rpy_buffer)
             self._current_pose = [
                 float(T.t[0]),
                 float(T.t[1]),
                 float(T.t[2]),
-                float(rpy_deg[0]),
-                float(rpy_deg[1]),
-                float(rpy_deg[2]),
+                float(np.degrees(self._rpy_buffer[0])),
+                float(np.degrees(self._rpy_buffer[1])),
+                float(np.degrees(self._rpy_buffer[2])),
             ]
         except Exception as e:
-            logger.warning(f"FK calculation failed: {e}, keeping current pose")
+            logger.warning("FK calculation failed: %s, keeping current pose", e)
+
+    def _get_current_pose_mm(self) -> list[float]:
+        """Get current pose in mm/deg format for geometry generators."""
+        return [
+            self._current_pose[0] * 1000.0,
+            self._current_pose[1] * 1000.0,
+            self._current_pose[2] * 1000.0,
+            self._current_pose[3],
+            self._current_pose[4],
+            self._current_pose[5],
+        ]
 
     def _get_caller_line_number(self) -> int:
         """Attempt to find the line number in the executed script."""
@@ -177,14 +206,6 @@ class DryRunRobotClient:
     def _get_source_line(self, line_no: int) -> str:
         """Get the source code line from the executed script."""
         try:
-            frame = inspect.currentframe()
-            while frame:
-                if frame.f_code.co_filename == "simulation_script.py":
-                    break
-                frame = frame.f_back
-
-            import linecache
-
             line = linecache.getline("simulation_script.py", line_no)
             if line:
                 return line.strip()
@@ -194,13 +215,12 @@ class DryRunRobotClient:
 
     def _extract_target_marker(self, line: str) -> str | None:
         """Extract TARGET:uuid marker from a code line comment."""
-        match = re.search(r"#\s*TARGET:(\w+)", line)
+        match = _TARGET_MARKER_RE.search(line)
         return match.group(1) if match else None
 
     def _has_literal_list_args(self, line: str) -> bool:
         """Check if move command has literal list arguments (not variables)."""
-        pattern = r"move_(?:joints|cartesian|pose)\s*\(\s*\[\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?(?:\s*,\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)*\s*\]"
-        return bool(re.search(pattern, line))
+        return bool(_LITERAL_LIST_RE.search(line))
 
     def _collect_segment(
         self,
@@ -251,16 +271,14 @@ class DryRunRobotClient:
             }
             self.target_collector.append(target)
             if marker_id:
-                logger.debug(f"Created target {target_id} at line {line_no}")
+                logger.debug("Created target %s at line %d", target_id, line_no)
             else:
-                logger.debug(f"Auto-generated target {target_id} at line {line_no}")
+                logger.debug("Auto-generated target %s at line %d", target_id, line_no)
         elif marker_id:
             # Has marker but uses variables - can't create editable target
             logger.debug(
-                f"Skipped target {marker_id} - line has variable args (not editable)"
+                "Skipped target %s - line has variable args (not editable)", marker_id
             )
-
-        self._current_step_index += 1
 
     def _collect_multipoint_segment(
         self,
@@ -297,7 +315,7 @@ class DryRunRobotClient:
         if not valid:
             color = MOVE_TYPE_COLORS["invalid"]
         elif not timing_feasible:
-            color = MOVE_TYPE_COLORS.get("timing_warning", "#FFA500")  # Orange
+            color = MOVE_TYPE_COLORS["timing_warning"]
         else:
             color = get_color_for_move_type(move_type, valid)
 
@@ -338,15 +356,13 @@ class DryRunRobotClient:
             }
             self.target_collector.append(target)
             if marker_id:
-                logger.debug(f"Created target {target_id} at line {line_no}")
+                logger.debug("Created target %s at line %d", target_id, line_no)
             else:
-                logger.debug(f"Auto-generated target {target_id} at line {line_no}")
+                logger.debug("Auto-generated target %s at line %d", target_id, line_no)
         elif marker_id:
             logger.debug(
-                f"Skipped target {marker_id} - line has variable args (not editable)"
+                "Skipped target %s - line has variable args (not editable)", marker_id
             )
-
-        self._current_step_index += 1
 
     def _validate_path_ik(
         self,
@@ -369,15 +385,16 @@ class DryRunRobotClient:
         all_valid = True
         q_prev = self._current_joints.copy()
 
+        T_target = np.zeros((4, 4), dtype=np.float64)
         for i, pose in enumerate(poses_mm_deg):
-            T_target = se3_from_rpy(
+            se3_from_rpy(
                 pose[0] / 1000.0,  # mm -> m
                 pose[1] / 1000.0,
                 pose[2] / 1000.0,
-                pose[3],
-                pose[4],
-                pose[5],
-                degrees=True,
+                np.radians(pose[3]),
+                np.radians(pose[4]),
+                np.radians(pose[5]),
+                T_target,
             )
             ik_res = solve_ik(robot, T_target, q_prev, quiet_logging=True)
             if ik_res.success and ik_res.q is not None:
@@ -420,7 +437,7 @@ class DryRunRobotClient:
             )
             return estimated, feasible
         except Exception as e:
-            logger.debug(f"Timing validation failed: {e}")
+            logger.debug("Timing validation failed: %s", e)
             return None, True  # Assume feasible if validation fails
 
     # --- Motion Interface Implementation ---
@@ -443,7 +460,7 @@ class DryRunRobotClient:
                     self._current_joints, target_rad, allow_recovery=True, log=True
                 )
             except Exception as e:
-                logger.warning(f"Limit check failed: {e}, assuming valid")
+                logger.warning("Limit check failed: %s, assuming valid", e)
                 valid = True
 
             # Generate TCP arc for joint-space motion (joints interpolate linearly,
@@ -461,7 +478,7 @@ class DryRunRobotClient:
             tcp_poses_m[:, :3] /= 1000.0
 
             # Timing validation
-            estimated_duration, timing_feasible = self._validate_timing(
+            estimated_duration, _ = self._validate_timing(
                 joint_path, duration, velocity_percent=speed or 100.0
             )
 
@@ -479,7 +496,7 @@ class DryRunRobotClient:
             self._update_pose_from_joints()
             return True
         except Exception as e:
-            logger.error(f"move_joints simulation failed: {e}")
+            logger.error("move_joints simulation failed: %s", e)
             return False
 
     def move_cartesian(
@@ -496,14 +513,15 @@ class DryRunRobotClient:
             start_pose = self._current_pose
 
             pos_m = [pose[0] / 1000.0, pose[1] / 1000.0, pose[2] / 1000.0]
-            T_target = se3_from_rpy(
+            T_target = np.zeros((4, 4), dtype=np.float64)
+            se3_from_rpy(
                 pos_m[0],
                 pos_m[1],
                 pos_m[2],
-                pose[3],
-                pose[4],
-                pose[5],
-                degrees=True,
+                np.radians(pose[3]),
+                np.radians(pose[4]),
+                np.radians(pose[5]),
+                T_target,
             )
 
             if PAROL6_ROBOT.robot is None:
@@ -525,7 +543,7 @@ class DryRunRobotClient:
             self._collect_segment(start_pose, end_pose_m, valid, "cartesian")
             return True
         except Exception as e:
-            logger.error(f"move_cartesian simulation failed: {e}")
+            logger.error("move_cartesian simulation failed: %s", e)
             return False
 
     def move_pose(
@@ -561,35 +579,39 @@ class DryRunRobotClient:
         try:
             # Current pose is stored in meters for x/y/z
             # _current_pose = [x_m, y_m, z_m, rx_deg, ry_deg, rz_deg]
-            T_current = se3_from_rpy(
+            T_current = np.zeros((4, 4), dtype=np.float64)
+            se3_from_rpy(
                 self._current_pose[0],  # x in meters
                 self._current_pose[1],  # y in meters
                 self._current_pose[2],  # z in meters
-                self._current_pose[3],  # rx in degrees
-                self._current_pose[4],  # ry in degrees
-                self._current_pose[5],  # rz in degrees
-                degrees=True,
+                np.radians(self._current_pose[3]),  # rx in radians
+                np.radians(self._current_pose[4]),  # ry in radians
+                np.radians(self._current_pose[5]),  # rz in radians
+                T_current,
             )
 
             # Create delta transform in tool frame
             # Deltas: [dx, dy, dz] in mm -> convert to meters
             # Deltas: [rx, ry, rz] in degrees
-            delta_se3 = se3_from_rpy(
+            delta_se3 = np.zeros((4, 4), dtype=np.float64)
+            se3_from_rpy(
                 deltas[0] / 1000.0,  # dx mm -> m
                 deltas[1] / 1000.0,  # dy mm -> m
                 deltas[2] / 1000.0,  # dz mm -> m
-                deltas[3] if len(deltas) > 3 else 0.0,
-                deltas[4] if len(deltas) > 4 else 0.0,
-                deltas[5] if len(deltas) > 5 else 0.0,
-                degrees=True,
+                np.radians(deltas[3] if len(deltas) > 3 else 0.0),
+                np.radians(deltas[4] if len(deltas) > 4 else 0.0),
+                np.radians(deltas[5] if len(deltas) > 5 else 0.0),
+                delta_se3,
             )
 
             # Apply in TRF: post-multiply for tool-relative motion
-            T_target = T_current * delta_se3
+            T_target = T_current @ delta_se3
 
             # Extract new pose [x_m, y_m, z_m, rx_deg, ry_deg, rz_deg]
-            trans = T_target.translation()
-            rpy_deg = se3_rpy(T_target, degrees=True)
+            trans = T_target[:3, 3]
+            rpy_rad = np.zeros(3, dtype=np.float64)
+            se3_rpy(T_target, rpy_rad)
+            rpy_deg = np.degrees(rpy_rad)
             new_pose_m = [
                 float(trans[0]),
                 float(trans[1]),
@@ -612,7 +634,7 @@ class DryRunRobotClient:
                 new_pose_mm, duration, speed, accel, profile, tracking, wait
             )
         except Exception as e:
-            logger.error(f"move_cartesian_rel_trf simulation failed: {e}")
+            logger.error("move_cartesian_rel_trf simulation failed: %s", e)
             return False
 
     # --- Smooth Motion Methods (basic visualization) ---
@@ -635,7 +657,7 @@ class DryRunRobotClient:
             return True
 
         for wp in waypoints:
-            wp_full = wp[:6] if len(wp) >= 6 else wp + [0.0] * (6 - len(wp))
+            wp_full = _pad_pose(wp)
             pos_m = [wp_full[0] / 1000.0, wp_full[1] / 1000.0, wp_full[2] / 1000.0]
             end_pose_m = [
                 pos_m[0],
@@ -648,14 +670,15 @@ class DryRunRobotClient:
             start_pose = self._current_pose
 
             try:
-                T_target = se3_from_rpy(
+                T_target = np.zeros((4, 4), dtype=np.float64)
+                se3_from_rpy(
                     pos_m[0],
                     pos_m[1],
                     pos_m[2],
-                    end_pose_m[3],
-                    end_pose_m[4],
-                    end_pose_m[5],
-                    degrees=True,
+                    np.radians(end_pose_m[3]),
+                    np.radians(end_pose_m[4]),
+                    np.radians(end_pose_m[5]),
+                    T_target,
                 )
 
                 if PAROL6_ROBOT.robot is not None:
@@ -690,21 +713,10 @@ class DryRunRobotClient:
             return True
 
         try:
-            # Get current pose in mm for geometry generator
-            current_mm = [
-                self._current_pose[0] * 1000.0,
-                self._current_pose[1] * 1000.0,
-                self._current_pose[2] * 1000.0,
-                self._current_pose[3],
-                self._current_pose[4],
-                self._current_pose[5],
-            ]
+            current_mm = self._get_current_pose_mm()
 
             # Prepend current position if first waypoint is far
-            wps = [
-                wp[:6] if len(wp) >= 6 else wp + [0.0] * (6 - len(wp))
-                for wp in waypoints
-            ]
+            wps = [_pad_pose(wp) for wp in waypoints]
             first_wp_dist = np.linalg.norm(
                 np.array(wps[0][:3]) - np.array(current_mm[:3])
             )
@@ -744,7 +756,7 @@ class DryRunRobotClient:
 
             return True
         except Exception as e:
-            logger.error(f"smooth_spline simulation failed: {e}")
+            logger.error("smooth_spline simulation failed: %s", e)
             return False
 
     def smooth_circle(
@@ -765,15 +777,7 @@ class DryRunRobotClient:
     ) -> bool:
         """Create full circle path using geometry generator."""
         try:
-            # Get current pose in mm for geometry generator
-            current_mm = [
-                self._current_pose[0] * 1000.0,
-                self._current_pose[1] * 1000.0,
-                self._current_pose[2] * 1000.0,
-                self._current_pose[3],
-                self._current_pose[4],
-                self._current_pose[5],
-            ]
+            current_mm = self._get_current_pose_mm()
 
             # Handle center_mode
             if center_mode == "TOOL":
@@ -836,7 +840,7 @@ class DryRunRobotClient:
 
             return True
         except Exception as e:
-            logger.error(f"smooth_circle simulation failed: {e}")
+            logger.error("smooth_circle simulation failed: %s", e)
             return False
 
     def smooth_arc_center(
@@ -854,22 +858,8 @@ class DryRunRobotClient:
     ) -> bool:
         """Create full arc path using geometry generator (center-defined)."""
         try:
-            # Get current pose in mm for geometry generator
-            current_mm = [
-                self._current_pose[0] * 1000.0,
-                self._current_pose[1] * 1000.0,
-                self._current_pose[2] * 1000.0,
-                self._current_pose[3],
-                self._current_pose[4],
-                self._current_pose[5],
-            ]
-
-            # Ensure end_pose has 6 elements
-            ep = (
-                end_pose[:6]
-                if len(end_pose) >= 6
-                else end_pose + [0.0] * (6 - len(end_pose))
-            )
+            current_mm = self._get_current_pose_mm()
+            ep = _pad_pose(end_pose)
 
             # Generate arc geometry (returns poses in mm)
             gen = CircularMotion(control_rate=50)
@@ -911,7 +901,7 @@ class DryRunRobotClient:
 
             return True
         except Exception as e:
-            logger.error(f"smooth_arc_center simulation failed: {e}")
+            logger.error("smooth_arc_center simulation failed: %s", e)
             return False
 
     def smooth_arc_param(
@@ -930,22 +920,8 @@ class DryRunRobotClient:
     ) -> bool:
         """Create full arc path using geometry generator (parameter-defined)."""
         try:
-            # Get current pose in mm for geometry generator
-            current_mm = [
-                self._current_pose[0] * 1000.0,
-                self._current_pose[1] * 1000.0,
-                self._current_pose[2] * 1000.0,
-                self._current_pose[3],
-                self._current_pose[4],
-                self._current_pose[5],
-            ]
-
-            # Ensure end_pose has 6 elements
-            ep = (
-                end_pose[:6]
-                if len(end_pose) >= 6
-                else end_pose + [0.0] * (6 - len(end_pose))
-            )
+            current_mm = self._get_current_pose_mm()
+            ep = _pad_pose(end_pose)
 
             # Generate arc geometry from endpoints and radius
             gen = CircularMotion(control_rate=50)
@@ -987,7 +963,7 @@ class DryRunRobotClient:
 
             return True
         except Exception as e:
-            logger.error(f"smooth_arc_param simulation failed: {e}")
+            logger.error("smooth_arc_param simulation failed: %s", e)
             return False
 
     def smooth_helix(
@@ -1040,11 +1016,7 @@ class DryRunRobotClient:
         """Create path segments for blended motion."""
         for seg in segments:
             if "pose" in seg:
-                p = (
-                    seg["pose"][:6]
-                    if len(seg["pose"]) >= 6
-                    else seg["pose"] + [0.0] * (6 - len(seg["pose"]))
-                )
+                p = _pad_pose(seg["pose"])
                 end_m = [p[0] / 1000.0, p[1] / 1000.0, p[2] / 1000.0, p[3], p[4], p[5]]
                 self._collect_segment(self._current_pose, end_m, True, "smooth")
                 self._current_pose = end_m
@@ -1092,7 +1064,7 @@ class DryRunRobotClient:
         self._current_joints = DEFAULT_STANDBY_RAD.copy()
         self._update_pose_from_joints()
 
-        if len(self.segment_collector) > 0:
+        if self.segment_collector:
             self._collect_segment(start_pose, self._current_pose, True, "joints")
 
         return True
@@ -1129,7 +1101,7 @@ class DryRunRobotClient:
         try:
             PAROL6_ROBOT.apply_tool(tool_name)
         except Exception as e:
-            logger.warning(f"Could not apply tool: {e}")
+            logger.warning("Could not apply tool: %s", e)
         return True
 
     def get_tool(self) -> dict | None:
@@ -1137,16 +1109,17 @@ class DryRunRobotClient:
 
     def get_pose(self, frame: Literal["WRF", "TRF"] = "WRF") -> list[float] | None:
         # Convert [x,y,z,rx,ry,rz] in mm/deg to 4x4 matrix (flattened)
-        T = se3_from_rpy(
+        T = np.zeros((4, 4), dtype=np.float64)
+        se3_from_rpy(
             self._current_pose[0],
             self._current_pose[1],
             self._current_pose[2],
-            self._current_pose[3],
-            self._current_pose[4],
-            self._current_pose[5],
-            degrees=True,
+            np.radians(self._current_pose[3]),
+            np.radians(self._current_pose[4]),
+            np.radians(self._current_pose[5]),
+            T,
         )
-        return T.matrix().flatten().tolist()
+        return T.flatten().tolist()
 
     def get_angles(self) -> list[float] | None:
         return np.rad2deg(self._current_joints).tolist()
@@ -1277,7 +1250,7 @@ class AsyncDryRunRobotClient:
         self,
         segment_collector: list[dict] | None = None,
         target_collector: list[dict] | None = None,
-        initial_joints: list[float] | None = None,
+        initial_joints: list[float] | np.ndarray | None = None,
         initial_pose: list[float] | None = None,
         host: str = "127.0.0.1",
         port: int = 5001,

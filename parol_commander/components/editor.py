@@ -6,10 +6,13 @@ import inspect
 import logging
 import re
 import time
-from typing import Any, Callable
 import uuid
+from typing import Any, Callable
 
+import numpy as np
 from nicegui import ui, context, Client
+from parol6 import AsyncRobotClient
+from parol6.config import HOME_ANGLES_DEG
 
 from parol_commander.common.theme import get_theme, PathColors
 from parol_commander.constants import REPO_ROOT, config
@@ -19,6 +22,8 @@ from parol_commander.state import (
     ui_state,
     EditorTab,
     editor_tabs_state,
+    playback_state,
+    recording_state,
 )
 from parol_commander.services.script_runner import (
     ScriptProcessHandle,
@@ -29,13 +34,14 @@ from parol_commander.services.script_runner import (
 from parol_commander.services.path_visualizer import path_visualizer
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.services.stepping_client import GUIStepController
-from parol_commander.state import playback_state, recording_state
-from parol6 import AsyncRobotClient
-import numpy as np
-from parol6.config import HOME_ANGLES_DEG
+
+logger = logging.getLogger(__name__)
 
 # Home position in radians
 DEFAULT_HOME_JOINTS_RAD = list(np.deg2rad(HOME_ANGLES_DEG))
+
+# Cached robot commands (populated lazily)
+_robot_commands_cache: dict | None = None
 
 
 # ---- Command Discovery Functions ----
@@ -67,7 +73,11 @@ def categorize_command(name: str, doc: str) -> str:
 
 
 def discover_robot_commands() -> dict:
-    """Introspect AsyncRobotClient to find all available commands."""
+    """Introspect AsyncRobotClient to find all available commands (cached)."""
+    global _robot_commands_cache
+    if _robot_commands_cache is not None:
+        return _robot_commands_cache
+
     commands = {}
 
     for name in dir(AsyncRobotClient):
@@ -78,7 +88,7 @@ def discover_robot_commands() -> dict:
             continue
 
         sig = inspect.signature(attr)
-        doc = (attr.__doc__ or "").strip().split("\n")[0]  # First line only
+        doc = (attr.__doc__ or "").strip().splitlines()[0] if attr.__doc__ else ""
         category = categorize_command(name, doc)
 
         commands[name] = {
@@ -88,6 +98,7 @@ def discover_robot_commands() -> dict:
             "docstring": doc or "No description available",
         }
 
+    _robot_commands_cache = commands
     return commands
 
 
@@ -239,8 +250,6 @@ print(f"Robot status: {{status}}")
         if key not in snippets:
             all_commands = discover_robot_commands()
             if key in all_commands:
-                # Generate basic template based on method name and signature
-                all_commands[key]["signature"]
                 doc = all_commands[key]["docstring"]
                 return f"rbt.{key}(...)  # {doc}"
 
@@ -255,7 +264,7 @@ print(f"Robot status: {{status}}")
         # Motion commands that can use current position
         if use_current_position:
             if method_name == "move_joints":
-                angles = list(robot_state.angles)
+                angles = list(robot_state.angles.deg)
                 return f"rbt.move_joints({angles}, speed={speed}, accel={accel})"
             elif method_name in ("move_pose", "move_cartesian"):
                 x, y, z = robot_state.x, robot_state.y, robot_state.z
@@ -273,7 +282,7 @@ print(f"Robot status: {{status}}")
             if val and not val.endswith("\n"):
                 val += "\n"
             self.program_textarea.value = val + snippet + "\n"
-            logging.info("Added Python snippet: %s", snippet)
+            logger.info("Added Python snippet: %s", snippet)
 
     def sync_code_from_target(self, target_id: str, pose: list[float]) -> None:
         """Update the program code with the new pose for a specific target.
@@ -290,10 +299,10 @@ print(f"Robot status: {{status}}")
         try:
             current_value = self.program_textarea.value
             if current_value is None:
-                logging.debug("Sync skipped: codemirror value is None")
+                logger.debug("Sync skipped: codemirror value is None")
                 return
         except (AttributeError, RuntimeError) as e:
-            logging.debug(f"Sync skipped: codemirror not ready - {e}")
+            logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
         content = current_value
@@ -309,7 +318,7 @@ print(f"Robot status: {{status}}")
                 break
 
         if found_line_idx is None:
-            logging.warning(f"Sync failed: Target marker {target_id} not found in code")
+            logger.warning("Sync failed: Target marker %s not found in code", target_id)
             return
 
         line = lines[found_line_idx]
@@ -340,10 +349,10 @@ print(f"Robot status: {{status}}")
             # Update text area (this will trigger debounced simulation)
             self.program_textarea.value = "\n".join(lines)
 
-            logging.info(f"Synced code for target {target_id}: {new_pose_str}")
+            logger.info("Synced code for target %s: %s", target_id, new_pose_str)
         else:
-            logging.warning(
-                f"Sync failed: Could not find coordinate list in line: {line}"
+            logger.warning(
+                "Sync failed: Could not find coordinate list in line: %s", line
             )
 
     def delete_target_code(self, target_id: str) -> None:
@@ -364,10 +373,10 @@ print(f"Robot status: {{status}}")
         if len(new_lines) < len(lines):
             # Line was removed - update editor
             self.program_textarea.value = "\n".join(new_lines)
-            logging.info(f"Deleted target {target_id} from code")
+            logger.info("Deleted target %s from code", target_id)
             # Re-simulation will trigger automatically via debounced on_change
         else:
-            logging.warning(f"Target {target_id} marker not found for deletion")
+            logger.warning("Target %s marker not found for deletion", target_id)
 
     def add_target_code(self, pose: list[float], move_type: str) -> str | None:
         """Add target code to the editor and return the marker ID.
@@ -416,9 +425,9 @@ print(f"Robot status: {{status}}")
 
         # Flash the newly added line
         new_line_number = lines_before + 1
-        self._flash_editor_lines([new_line_number])
+        self.flash_editor_lines([new_line_number])
 
-        logging.info(f"Added target code with marker {marker_id}: {code_line}")
+        logger.info("Added target code with marker %s: %s", marker_id, code_line)
         return marker_id
 
     def add_joint_target_code(self, joint_angles: list[float]) -> str | None:
@@ -463,12 +472,12 @@ print(f"Robot status: {{status}}")
 
         # Flash the newly added line
         new_line_number = lines_before + 1
-        self._flash_editor_lines([new_line_number])
+        self.flash_editor_lines([new_line_number])
 
-        logging.info(f"Added joint target code with marker {marker_id}: {code_line}")
+        logger.info("Added joint target code with marker %s: %s", marker_id, code_line)
         return marker_id
 
-    def _flash_editor_lines(self, line_numbers: list[int]) -> None:
+    def flash_editor_lines(self, line_numbers: list[int]) -> None:
         """Flash specific lines in the CodeMirror editor to highlight newly added content.
 
         Args:
@@ -514,7 +523,7 @@ print(f"Robot status: {{status}}")
             if self._ui_client:
                 self._ui_client.run_javascript(js_code)
             else:
-                logging.debug("Cannot flash editor tab: no client available")
+                logger.debug("Cannot flash editor tab: no client available")
 
     def _is_editor_panel_visible(self) -> bool:
         """Check if the editor panel is currently visible (not collapsed)."""
@@ -602,10 +611,10 @@ print(f"Robot status: {{status}}")
                 dirty_dot.set_visibility(False)
 
             ui.notify(f"Loaded {name}", color="positive")
-            logging.info("Loaded program %s", name)
+            logger.info("Loaded program %s", name)
         except Exception as e:
             ui.notify(f"Load failed: {e}", color="negative")
-            logging.error("Load failed: %s", e)
+            logger.error("Load failed: %s", e)
 
     async def save_program(self, as_name: str | None = None) -> None:
         """Save the active tab's program to a file."""
@@ -668,7 +677,7 @@ print(f"Robot status: {{status}}")
                     dlg.close()
                 except Exception as ex:
                     ui.notify(f"Upload failed: {ex}", color="negative")
-                    logging.error("File upload failed: %s", ex)
+                    logger.error("File upload failed: %s", ex)
                 finally:
                     spinner.visible = False
 
@@ -810,11 +819,11 @@ print(f"Robot status: {{status}}")
             asyncio.create_task(self._monitor_script_completion(h, filename, ui_client))
 
             ui.notify(f"Started script: {filename}", color="positive")
-            logging.info("Started script: %s", filename)
+            logger.info("Started script: %s", filename)
 
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
-            logging.error("Failed to start script: %s", e)
+            logger.error("Failed to start script: %s", e)
             self.script_running = False
             self._step_session_id = None
             if self._step_controller:
@@ -853,7 +862,7 @@ print(f"Robot status: {{status}}")
                             # Highlight the executing line in the editor
                             self._highlight_executing_line(step)
 
-                            logging.debug(
+                            logger.debug(
                                 "Script event: %s completed (step %d)", method, step
                             )
 
@@ -861,9 +870,9 @@ print(f"Robot status: {{status}}")
                 await asyncio.sleep(0.05)
 
         except asyncio.CancelledError:
-            logging.debug("Event watcher task cancelled")
+            logger.debug("Event watcher task cancelled")
         except Exception as e:
-            logging.error("Error in event watcher: %s", e)
+            logger.error("Error in event watcher: %s", e)
 
     async def _monitor_script_completion(
         self, handle: ScriptProcessHandle, filename: str, ui_client: Any
@@ -900,10 +909,10 @@ print(f"Robot status: {{status}}")
                         f"Script finished: {filename} (exit {rc})",
                         color="positive" if rc == 0 else "warning",
                     )
-                    logging.info("Script %s finished with code %s", filename, rc)
+                    logger.info("Script %s finished with code %s", filename, rc)
                     await self.client.stream_on()
         except Exception as e:
-            logging.error("Error monitoring script process: %s", e)
+            logger.error("Error monitoring script process: %s", e)
             # Best-effort reset if still active with UI client context
             with ui_client:
                 if self.script_handle is handle:
@@ -954,11 +963,11 @@ print(f"Robot status: {{status}}")
             await self.client.stream_on()
 
             ui.notify("Script stopped", color="warning")
-            logging.info("Script stopped by user")
+            logger.info("Script stopped by user")
 
         except Exception as e:
             ui.notify(f"Error stopping script: {e}", color="negative")
-            logging.error("Error stopping script: %s", e)
+            logger.error("Error stopping script: %s", e)
             # State already cleared above
 
     async def _run_simulation(
@@ -1055,8 +1064,8 @@ print(f"Robot status: {{status}}")
                             break
 
                 modified = True
-                logging.info(
-                    f"Added TARGET marker {new_id} to line {target.line_number}"
+                logger.info(
+                    "Added TARGET marker %s to line %d", new_id, target.line_number
                 )
 
         if modified:
@@ -1098,7 +1107,7 @@ print(f"Robot status: {{status}}")
         schedule_time = time.time()
         # Cancel any pending simulation timer
         if self._simulation_debounce_timer is not None:
-            logging.debug(
+            logger.debug(
                 "DEBOUNCE: Cancelling pending timer (had timer=%s)",
                 self._simulation_debounce_timer,
             )
@@ -1111,7 +1120,7 @@ print(f"Robot status: {{status}}")
         async def run_simulation_quietly():
             """Run simulation without notifications (silent auto-update)."""
             fire_time = time.time()
-            logging.debug(
+            logger.debug(
                 "DEBOUNCE: Timer fired after %.3fs (scheduled at %.3f, fired at %.3f)",
                 fire_time - schedule_time,
                 schedule_time,
@@ -1119,16 +1128,16 @@ print(f"Robot status: {{status}}")
             )
             self._simulation_debounce_timer = None
             try:
-                logging.debug("DEBOUNCE: Starting simulation...")
+                logger.debug("DEBOUNCE: Starting simulation...")
                 await self._run_simulation(notify=False, tab_id=target_tab_id)
-                logging.debug("DEBOUNCE: Simulation completed successfully")
+                logger.debug("DEBOUNCE: Simulation completed successfully")
             except Exception as e:
                 # Log error but don't crash the UI - show subtle notification
-                logging.error("Auto-simulation failed: %s", e, exc_info=True)
+                logger.error("Auto-simulation failed: %s", e, exc_info=True)
                 ui.notify(f"Simulation error: {e}", color="negative", timeout=3000)
 
         # Schedule new simulation after debounce delay
-        logging.debug(
+        logger.debug(
             "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
         )
         self._simulation_debounce_timer = ui.timer(
@@ -1549,10 +1558,10 @@ print(f"Robot status: {{status}}")
                 dirty_dot.set_visibility(False)
 
             ui.notify(f"Saved {name}", color="positive")
-            logging.info("Saved program %s", name)
+            logger.info("Saved program %s", name)
         except Exception as e:
             ui.notify(f"Save failed: {e}", color="negative")
-            logging.error("Save failed: %s", e)
+            logger.error("Save failed: %s", e)
 
     def _download_tab(self, tab: EditorTab) -> None:
         """Download tab content to user's device."""
@@ -1564,7 +1573,7 @@ print(f"Robot status: {{status}}")
         filename = tab.filename.strip() or "program.py"
         ui.download(content.encode("utf-8"), filename)
         ui.notify(f"Downloading {filename}", color="info")
-        logging.info("Downloaded program %s", filename)
+        logger.info("Downloaded program %s", filename)
 
     async def _save_active_tab(self) -> None:
         """Save the currently active tab."""
@@ -1594,14 +1603,14 @@ print(f"Robot status: {{status}}")
                     self._step_controller.signal_pause()
                 playback_state.is_playing = False
                 simulation_state.is_playing = False
-                logging.debug("Script paused")
+                logger.debug("Script paused")
             else:
                 # Currently paused, play it
                 if self._step_controller:
                     self._step_controller.signal_play()
                 playback_state.is_playing = True
                 simulation_state.is_playing = True
-                logging.debug("Script playing")
+                logger.debug("Script playing")
             self._update_play_button()
         else:
             # No script running - start the script
@@ -1676,7 +1685,7 @@ print(f"Robot status: {{status}}")
         if self.script_running and self._step_controller:
             # Signal script to execute one command and pause
             self._step_controller.signal_step()
-            logging.debug("Step forward signal sent to script")
+            logger.debug("Step forward signal sent to script")
         else:
             # Simulation mode - advance visualization
             if simulation_state.current_step_index < simulation_state.total_steps - 1:
@@ -1697,13 +1706,24 @@ print(f"Robot status: {{status}}")
 
     def _on_speed_change(self, value: float) -> None:
         """Handle speed slider change."""
+        self._set_speed(value)
+
+    def _set_speed(self, value: float) -> None:
+        """Set playback speed."""
         simulation_state.playback_speed = value
         playback_state.playback_speed = value
 
-    def _set_speed(self, value: float) -> None:
-        """Set playback speed from FAB menu selection."""
-        simulation_state.playback_speed = value
-        playback_state.playback_speed = value
+    def _get_segment_border_radius(self, idx: int, num_segments: int) -> str:
+        """Get CSS border-radius for a scrub bar segment based on position."""
+        is_first = idx == 0
+        is_last = idx == num_segments - 1
+        if is_first and is_last:
+            return "border-radius: 9999px;"
+        elif is_first:
+            return "border-radius: 9999px 0 0 9999px;"
+        elif is_last:
+            return "border-radius: 0 9999px 9999px 0;"
+        return ""
 
     def _update_scrub_segments(self) -> None:
         """Update the segmented scrub bar to match path_segments.
@@ -1729,27 +1749,10 @@ print(f"Robot status: {{status}}")
         # Create segment elements
         with self._scrub_container:
             for idx, segment in enumerate(segments):
-                # Get segment color (default to gray if not set)
-                color = segment.color if segment.color else PathColors.CARTESIAN
-
-                # Determine if this is first/last for rounded corners
-                is_first = idx == 0
+                color = segment.color or PathColors.CARTESIAN
                 is_last = idx == num_segments - 1
                 is_current = idx == simulation_state.current_step_index
-
-                # Build border-radius for first/last segments
-                border_radius = ""
-                if is_first and is_last:
-                    border_radius = (
-                        "border-radius: 9999px;"  # Fully rounded (single segment)
-                    )
-                elif is_first:
-                    border_radius = "border-radius: 9999px 0 0 9999px;"  # Left rounded
-                elif is_last:
-                    border_radius = "border-radius: 0 9999px 9999px 0;"  # Right rounded
-
-                # Create clickable segment div - use brightness filter for highlight
-                # Add right border for separation (except last segment)
+                border_radius = self._get_segment_border_radius(idx, num_segments)
                 segment_border = (
                     "border-right: 1px solid rgba(0,0,0,0.3);" if not is_last else ""
                 )
@@ -1775,21 +1778,8 @@ print(f"Robot status: {{status}}")
                 color = (
                     simulation_state.path_segments[idx].color or PathColors.CARTESIAN
                 )
-
-                # Determine if this is first/last for rounded corners
-                is_first = idx == 0
                 is_last = idx == num_segments - 1
-
-                # Build border-radius for first/last segments
-                border_radius = ""
-                if is_first and is_last:
-                    border_radius = "border-radius: 9999px;"
-                elif is_first:
-                    border_radius = "border-radius: 9999px 0 0 9999px;"
-                elif is_last:
-                    border_radius = "border-radius: 0 9999px 9999px 0;"
-
-                # Add right border for separation (except last segment)
+                border_radius = self._get_segment_border_radius(idx, num_segments)
                 segment_border = (
                     "border-right: 1px solid rgba(0,0,0,0.3);" if not is_last else ""
                 )
