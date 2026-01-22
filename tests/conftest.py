@@ -426,6 +426,7 @@ def kill_stale_controllers() -> Generator[None, None, None]:
 def session_controller(
     test_env_config: None,
     kill_stale_controllers: None,
+    warmup_jit_cache: None,
 ) -> Generator["ServerManager", None, None]:
     """Session-scoped controller shared by all tests.
 
@@ -450,6 +451,19 @@ def session_controller(
         yield server_manager
     finally:
         server_manager.stop_controller()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def warmup_jit_cache() -> None:
+    """Pre-warm numba JIT cache before controller starts.
+
+    Without cache, JIT compilation takes 20+ seconds which exceeds the 10s
+    controller startup timeout. By warming up first, we populate the cache
+    so the controller's warmup is fast.
+    """
+    from parol6.utils.warmup import warmup_jit
+
+    warmup_jit()
 
 
 @pytest.fixture(scope="session", autouse=True)
