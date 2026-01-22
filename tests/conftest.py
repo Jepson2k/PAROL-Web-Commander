@@ -454,7 +454,7 @@ def session_controller(
 
 
 @pytest.fixture(scope="session", autouse=True)
-def warmup_jit_cache() -> None:
+def warmup_jit_cache(silence_noisy_logging: None) -> None:
     """Pre-warm numba JIT cache before controller starts.
 
     Without cache, JIT compilation takes 20+ seconds which exceeds the 10s
