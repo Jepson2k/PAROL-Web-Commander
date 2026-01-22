@@ -7,7 +7,7 @@ from nicegui.testing import User
 from nicegui import ui, app as ng_app
 from typing import Any
 
-from tests.helpers.wait import wait_for_page_ready
+from tests.helpers.wait import wait_for_app_ready
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
 app_storage: Any = getattr(ng_app, "storage")
@@ -21,7 +21,7 @@ async def test_settings_tab_accessible(user: User) -> None:
     the settings content with serial port selection.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Settings is embedded in the control panel (bottom-left HUD)
     # The control panel has tabs: "Joint Jog", "Cartesian Jog", "Settings"
@@ -46,7 +46,7 @@ async def test_serial_port_select_exists(user: User) -> None:
     We verify the select element exists with the correct label.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Navigate to Settings tab
     settings_tab = user.find(kind=ui.tab, content="Settings")
@@ -64,7 +64,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
     from parol_commander.state import simulation_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Navigate to Settings tab
     settings_tab = user.find(kind=ui.tab, content="Settings")
@@ -91,7 +91,7 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     from parol_commander.state import simulation_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Navigate to Settings tab
     settings_tab = user.find(kind=ui.tab, content="Settings")
@@ -119,7 +119,7 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     - Notify simulation_state of the change
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Navigate to Settings tab
     settings_tab = user.find(kind=ui.tab, content="Settings")
@@ -163,7 +163,7 @@ async def test_tool_selection_changes_tool(user: User) -> None:
 async def test_theme_selection_exists(user: User) -> None:
     """Test that theme toggle exists and has expected options."""
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Navigate to Settings tab
     settings_tab = user.find(kind=ui.tab, content="Settings")

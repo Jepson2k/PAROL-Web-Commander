@@ -16,7 +16,7 @@ from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.elements.tooltip import Tooltip
 from parol6 import AsyncRobotClient, ServerManager, is_server_running, manage_server
-from parol6.server.loop_timer import LoopMetrics, PhaseMetrics, format_hz_summary
+from parol6.server.loop_timer import LoopMetrics, format_hz_summary
 from parol6.tools import TOOL_CONFIGS
 from importlib.resources import as_file
 
@@ -122,17 +122,17 @@ _angle_pipeline_config_valid: bool = False
 
 # Frontend timing metrics (unified via LoopMetrics)
 _ui_metrics = LoopMetrics()
-_work_metrics = PhaseMetrics()
-_wait_metrics = PhaseMetrics()
-_last_work_end: float = 0.0
+
+# Startup completion event - used by _on_shutdown() to wait for _on_startup() to finish
+_startup_complete: asyncio.Event = asyncio.Event()
 
 
 def _update_connection_notification() -> None:
     """Show or dismiss persistent notification based on robot connection state."""
     global _connection_notification
 
-    # Skip if page not ready - avoid modifying elements during page serialization
-    if not readiness_state.page_ready.is_set():
+    # Skip if app not ready - avoid modifying elements during page serialization
+    if not readiness_state.app_ready.is_set():
         return
 
     needs_warning = not robot_state.simulator_active and not robot_state.connected
@@ -500,8 +500,8 @@ def update_ui_from_status() -> None:
 
     # Notify listeners that robot state has changed (for envelope proximity updates)
     # Must wrap with client context since this may be called from background task
-    # Skip if page not ready to avoid race with NiceGUI page serialization
-    if not readiness_state.page_ready.is_set():
+    # Skip if app not ready to avoid race with NiceGUI page serialization
+    if not readiness_state.app_ready.is_set():
         return
 
     try:
@@ -1021,83 +1021,98 @@ def _register_handlers() -> None:
         """
         global server_manager
 
-        # Pre-warm process pool workers with RTB imports (runs in background)
-        # This makes subsequent path visualizations fast since workers are reused
-        asyncio.create_task(warm_process_pool())
-
-        # Start controller and streaming on server startup
         try:
-            port = ng_app.storage.general.get("com_port", "")
-        except Exception:
-            port = ""
-        try:
-            if not controller_state.running:
-                await start_controller(port)
+            # Pre-warm process pool workers with RTB imports (runs in background)
+            # This makes subsequent path visualizations fast since workers are reused
+            asyncio.create_task(warm_process_pool())
 
-            # Ensure controller is responsive before deciding initial mode
-            with contextlib.suppress(Exception):
-                await client.wait_for_server_ready(timeout=5.0)
-
-            await client.stream_on()
-
-            # Determine initial mode based on persisted port and serial connectivity
-            serial_connected = False
+            # Start controller and streaming on server startup
             try:
-                result = await client.ping()
-                serial_connected = result["serial_connected"] if result else False
+                port = ng_app.storage.general.get("com_port", "")
             except Exception:
-                serial_connected = False
-
-            robot_state.connected = bool(serial_connected)
-
-            # Startup policy:
-            # - If no serial port specified -> start simulator
-            # - If serial port specified and serial connected -> start robot
-            # - If serial port specified but not connected -> start simulator
-            if not port or not serial_connected:
-                if not robot_state.simulator_active:
-                    logging.debug(
-                        "startup: enabling simulator (no port or serial not connected)"
-                    )
-                    try:
-                        await client.simulator_on()
-                    except Exception as e:
-                        logging.error("startup: simulator_on failed: %s", e)
-                robot_state.simulator_active = True
-                # Controller now waits for first frame, so no extra delay needed
-                try:
-                    await client.enable()
-                except Exception as e:
-                    logging.warning("startup: enable failed (may retry): %s", e)
-            else:
-                # Robot mode (physical serial connected)
-                robot_state.simulator_active = False
-                try:
-                    await client.enable()
-                except Exception as e:
-                    logging.warning("startup: enable failed (may retry): %s", e)
-
-            # Set saved motion profile
+                port = ""
             try:
-                saved_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
-                await client.set_profile(saved_profile)
-                logging.debug("startup: set motion profile to %s", saved_profile)
-            except Exception as e:
-                logging.warning("startup: set_profile failed: %s", e)
+                if not controller_state.running:
+                    await start_controller(port)
 
-        except Exception as e:
-            logging.error("App startup init failed: %s", e)
-            # Clean up server_manager if startup failed
-            if server_manager:
-                server_manager.stop_controller()
-                server_manager = None
-            # Re-raise so tests and callers see a hard failure
-            raise
+                # Ensure controller is responsive before deciding initial mode
+                with contextlib.suppress(Exception):
+                    await client.wait_for_server_ready(timeout=5.0)
+
+                await client.stream_on()
+
+                # Determine initial mode based on persisted port and serial connectivity
+                serial_connected = False
+                try:
+                    result = await client.ping()
+                    serial_connected = result["serial_connected"] if result else False
+                except Exception:
+                    serial_connected = False
+
+                robot_state.connected = bool(serial_connected)
+
+                # Startup policy:
+                # - If no serial port specified -> start simulator
+                # - If serial port specified and serial connected -> start robot
+                # - If serial port specified but not connected -> start simulator
+                if not port or not serial_connected:
+                    if not robot_state.simulator_active:
+                        logging.debug(
+                            "startup: enabling simulator (no port or serial not connected)"
+                        )
+                        try:
+                            await client.simulator_on()
+                        except Exception as e:
+                            logging.error("startup: simulator_on failed: %s", e)
+                    robot_state.simulator_active = True
+                    # Controller now waits for first frame, so no extra delay needed
+                    try:
+                        await client.enable()
+                    except Exception as e:
+                        logging.warning("startup: enable failed (may retry): %s", e)
+                else:
+                    # Robot mode (physical serial connected)
+                    robot_state.simulator_active = False
+                    try:
+                        await client.enable()
+                    except Exception as e:
+                        logging.warning("startup: enable failed (may retry): %s", e)
+
+                # Set saved motion profile
+                try:
+                    saved_profile = ng_app.storage.general.get(
+                        "motion_profile", "TOPPRA"
+                    )
+                    await client.set_profile(saved_profile)
+                    logging.debug("startup: set motion profile to %s", saved_profile)
+                except Exception as e:
+                    logging.warning("startup: set_profile failed: %s", e)
+
+            except Exception as e:
+                logging.error("App startup init failed: %s", e)
+                # Clean up server_manager if startup failed
+                if server_manager:
+                    server_manager.stop_controller()
+                    server_manager = None
+                # Re-raise so tests and callers see a hard failure
+                raise
+        finally:
+            # Signal startup complete (even on failure, so shutdown doesn't wait forever)
+            _startup_complete.set()
+            readiness_state.mark_startup_done()
 
     @ng_app.on_shutdown
     async def _on_shutdown() -> None:
         """NiceGUI shutdown hook - ensure controller and child processes are stopped."""
         logging.debug("Nicegui Shutting Down...")
+
+        # Wait for startup to complete first (with timeout to avoid hanging forever)
+        try:
+            await asyncio.wait_for(_startup_complete.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logging.warning(
+                "Shutdown: startup did not complete within 10s, proceeding anyway"
+            )
 
         # Stop any running script processes first
         try:
@@ -1225,18 +1240,16 @@ async def index_page():
     # Page-scoped connectivity check (1 Hz)
     ping_timer = ui.timer(interval=1.0, callback=check_ping, active=True)
 
-    # Signal full page readiness for tests
-    async def _signal_page_ready():
+    # Mark page as ready for tests
+    async def _mark_page_done():
         await asyncio.sleep(0)  # Yield to event loop to ensure timers are wired
-        readiness_state.signal_page_ready()
+        readiness_state.mark_page_done()
 
-    asyncio.create_task(_signal_page_ready())
+    asyncio.create_task(_mark_page_done())
 
 
 async def _status_consumer() -> None:
     """Consume multicast status and update shared robot_state."""
-    global _last_work_end
-
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_for_server_ready(timeout=5.0)
@@ -1246,16 +1259,8 @@ async def _status_consumer() -> None:
                 now = time.perf_counter()
                 _ui_metrics.tick(now)
 
-                # Track true wait time (end of last work → now)
-                if _last_work_end > 0:
-                    true_wait_s = now - _last_work_end
-                    _wait_metrics.record(true_wait_s)
-
                 # Rate-limited debug log every 3s
                 if _ui_metrics.should_log(now, 3.0):
-                    # Compute stats before logging
-                    _work_metrics.compute_stats()
-                    _wait_metrics.compute_stats()
                     for p in global_phase_timer.phases.values():
                         p.compute_stats()
 
@@ -1266,19 +1271,11 @@ async def _status_consumer() -> None:
                             phase_strs.append(f"{name}={phase.mean_s * 1000:.2f}")
 
                     logging.debug(
-                        "ui: %s | work=%.2f(p99=%.1f) wait=%.1f(p99=%.1f) | %s",
+                        "ui: %s | %s",
                         format_hz_summary(_ui_metrics),
-                        _work_metrics.mean_s * 1000,
-                        _work_metrics.p99_s * 1000,
-                        _wait_metrics.mean_s * 1000,
-                        _wait_metrics.p99_s * 1000,
                         " ".join(phase_strs),
                     )
 
-                # Direct timing for total work (bypass PhaseTimer nesting issues)
-                _work_start = time.perf_counter()
-
-                # Wrap all processing to measure total work time
                 with global_phase_timer.phase("status"):
                     # Copy status data (in-place fills to avoid allocations)
                     if not robot_state.editing_mode:
@@ -1287,10 +1284,9 @@ async def _status_consumer() -> None:
                     robot_state.io[:] = status.io
                     robot_state.gripper[:] = status.gripper
 
-                    # Signal backend ready on first valid STATUS with non-zero angles
+                    # Mark backend ready on first valid STATUS with non-zero angles
                     if robot_state.angles[0] != 0.0 or robot_state.angles[5] != 0.0:
-                        readiness_state.signal_backend_ready()
-                        readiness_state.signal_simulator_ready()
+                        readiness_state.mark_backend_done()
 
                     # Movement enablement arrays
                     robot_state.joint_en[:] = status.joint_en
@@ -1309,11 +1305,6 @@ async def _status_consumer() -> None:
                     readout_panel.update_action_visibility()
                     control_panel.refresh_joint_enablement()
                     control_panel.sync_cartesian_button_states()
-
-                # Record direct work time
-                _work_end = time.perf_counter()
-                _work_metrics.record(_work_end - _work_start)
-                _last_work_end = _work_end  # For true wait tracking
 
             except Exception as e:
                 logging.debug("Status consumer parse error: %s", e)

@@ -90,12 +90,12 @@ async def wait_for_motion_stable(
 
 
 async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
-    """Enable simulator mode and wait for backend to be ready.
+    """Enable simulator mode and wait for it to be ready.
 
     This helper handles race conditions between test fixtures and app startup:
-    1. Waits for initial backend readiness from startup
+    1. Waits for app to be ready (startup + backend + page)
     2. Validates we have valid angles (6 values)
-    3. Toggles simulator if needed and waits for simulator_ready event
+    3. Toggles simulator if needed
 
     Args:
         user: NiceGUI User test fixture
@@ -111,74 +111,62 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
         angles = robot_state.angles
         return len(angles) >= 6
 
-    # Wait for initial backend readiness from startup
+    # Wait for app to be ready first
     try:
-        await asyncio.wait_for(readiness_state.backend_ready.wait(), timeout=2.0)
+        await asyncio.wait_for(readiness_state.app_ready.wait(), timeout=timeout_s)
     except asyncio.TimeoutError:
-        pass  # May not be set yet, continue
+        raise TimeoutError(
+            f"enable_sim: App not ready after {timeout_s}s. "
+            f"startup={readiness_state._startup_done}, "
+            f"backend={readiness_state._backend_done}, "
+            f"page={readiness_state._page_done}"
+        ) from None
 
     # If we have valid angles and simulator is active, we're good
     if _has_valid_angles() and robot_state.simulator_active:
         return
 
-    # Need to ensure simulator is enabled
-    readiness_state.reset_simulator_ready()
-
+    # Toggle simulator if needed
     if not robot_state.simulator_active:
         user.find(marker="btn-robot-toggle").click()
         await asyncio.sleep(0.1)
 
     # Wait for simulator_active flag to be set by the toggle handler
-    for _ in range(20):
-        if robot_state.simulator_active:
-            break
-        await asyncio.sleep(0.1)
-
-    # Wait for simulator_ready event (set when STATUS arrives after toggle)
-    try:
-        await asyncio.wait_for(
-            readiness_state.simulator_ready.wait(), timeout=timeout_s
-        )
-    except asyncio.TimeoutError:
-        if not _has_valid_angles():
-            raise TimeoutError(
-                f"enable_sim: Simulator not ready after {timeout_s}s. "
-                f"simulator_active={robot_state.simulator_active}, "
-                f"angles={robot_state.angles}"
-            ) from None
-
-    # Final validation - poll for angles to be populated
-    for _ in range(20):
-        if _has_valid_angles():
+    for _ in range(int(timeout_s / 0.1)):
+        if robot_state.simulator_active and _has_valid_angles():
             return
         await asyncio.sleep(0.1)
 
     if not _has_valid_angles():
         raise TimeoutError(
-            f"enable_sim: No valid angles after waiting. angles={robot_state.angles}"
+            f"enable_sim: No valid angles after waiting. "
+            f"simulator_active={robot_state.simulator_active}, "
+            f"angles={robot_state.angles}"
         )
 
 
-async def wait_for_backend_ready(timeout_s: float = 5.0) -> None:
-    """Wait for backend streaming to be active with valid robot data.
+async def wait_for_app_ready(timeout_s: float = 10.0) -> None:
+    """Wait for app to be fully ready (startup + backend + page).
 
-    This waits for the first valid STATUS message with 6 angles,
-    indicating the backend controller is streaming data.
+    This is the primary wait function for tests. It ensures all components
+    are initialized and the app is in a stable state for testing.
 
     Args:
         timeout_s: Maximum time to wait
 
     Raises:
-        TimeoutError: If backend doesn't become ready within timeout
+        TimeoutError: If app doesn't become ready within timeout
     """
     from parol_commander.state import readiness_state
 
     try:
-        await asyncio.wait_for(readiness_state.backend_ready.wait(), timeout=timeout_s)
+        await asyncio.wait_for(readiness_state.app_ready.wait(), timeout=timeout_s)
     except asyncio.TimeoutError:
         raise TimeoutError(
-            f"Backend not ready after {timeout_s}s. "
-            f"backend_ready_ts={readiness_state.backend_ready_ts}"
+            f"App not ready after {timeout_s}s. "
+            f"startup={readiness_state._startup_done}, "
+            f"backend={readiness_state._backend_done}, "
+            f"page={readiness_state._page_done}"
         ) from None
 
 
@@ -204,56 +192,6 @@ async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:
         raise TimeoutError(
             f"URDF scene not ready after {timeout_s}s. "
             f"urdf_scene_ready_ts={readiness_state.urdf_scene_ready_ts}"
-        ) from None
-
-
-async def wait_for_page_ready(timeout_s: float = 5.0) -> None:
-    """Wait for full page initialization including all components.
-
-    This is the most comprehensive wait - use for tests that need
-    everything initialized (backend + URDF + UI timers).
-
-    Args:
-        timeout_s: Maximum time to wait
-
-    Raises:
-        TimeoutError: If page doesn't become fully ready within timeout
-    """
-    from parol_commander.state import readiness_state
-
-    try:
-        await asyncio.wait_for(readiness_state.page_ready.wait(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        raise TimeoutError(
-            f"Page not ready after {timeout_s}s. "
-            f"backend={readiness_state.backend_ready.is_set()}, "
-            f"urdf={readiness_state.urdf_scene_ready.is_set()}, "
-            f"page_ready_ts={readiness_state.page_ready_ts}"
-        ) from None
-
-
-async def wait_for_simulator_ready(timeout_s: float = 2.0) -> None:
-    """Wait for simulator to be fully operational after toggle.
-
-    This waits for the simulator_ready event, which is signaled when the
-    first valid STATUS message arrives after a simulator toggle.
-
-    Args:
-        timeout_s: Maximum time to wait
-
-    Raises:
-        TimeoutError: If simulator doesn't become ready within timeout
-    """
-    from parol_commander.state import readiness_state
-
-    try:
-        await asyncio.wait_for(
-            readiness_state.simulator_ready.wait(), timeout=timeout_s
-        )
-    except asyncio.TimeoutError:
-        raise TimeoutError(
-            f"Simulator not ready after {timeout_s}s. "
-            f"simulator_ready_ts={readiness_state.simulator_ready_ts}"
         ) from None
 
 
@@ -366,21 +304,23 @@ async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> 
 
     Args:
         robot_state: The RobotState instance to check
-        timeout_s: Maximum time to wait for backend_ready
+        timeout_s: Maximum time to wait for app_ready
 
     Raises:
-        TimeoutError: If backend_ready not signaled within timeout
+        TimeoutError: If app_ready not signaled within timeout
         AssertionError: If robot state is invalid for motion
     """
     from parol_commander.state import readiness_state
 
-    # Wait for backend to be streaming
+    # Wait for app to be ready
     try:
-        await asyncio.wait_for(readiness_state.backend_ready.wait(), timeout=timeout_s)
+        await asyncio.wait_for(readiness_state.app_ready.wait(), timeout=timeout_s)
     except asyncio.TimeoutError:
         raise TimeoutError(
-            f"ensure_robot_ready_for_motion: backend_ready not signaled after {timeout_s}s. "
-            f"backend_ready_ts={readiness_state.backend_ready_ts}"
+            f"ensure_robot_ready_for_motion: app_ready not signaled after {timeout_s}s. "
+            f"startup={readiness_state._startup_done}, "
+            f"backend={readiness_state._backend_done}, "
+            f"page={readiness_state._page_done}"
         ) from None
 
     # Validate angles

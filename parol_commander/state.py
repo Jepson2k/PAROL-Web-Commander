@@ -528,45 +528,59 @@ class ReadinessState:
     instead of using blind sleep() calls.
 
     Events:
-        backend_ready: Set when backend streaming is active with valid robot data
+        app_ready: Set when app is fully ready (startup done + backend streaming + page init)
         urdf_scene_ready: Set when URDF 3D scene is fully initialized
-        page_ready: Set when all page components are initialized
-        simulator_ready: Set when simulator mode is fully operational after toggle
     """
 
-    backend_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    app_ready: asyncio.Event = field(default_factory=asyncio.Event)
     urdf_scene_ready: asyncio.Event = field(default_factory=asyncio.Event)
-    page_ready: asyncio.Event = field(default_factory=asyncio.Event)
-    simulator_ready: asyncio.Event = field(default_factory=asyncio.Event)
 
-    backend_ready_ts: float = 0.0
+    app_ready_ts: float = 0.0
     urdf_scene_ready_ts: float = 0.0
-    page_ready_ts: float = 0.0
-    simulator_ready_ts: float = 0.0
+
+    # Internal tracking flags for app_ready
+    _startup_done: bool = False
+    _backend_done: bool = False
+    _page_done: bool = False
 
     def reset(self) -> None:
         """Reset all events for test isolation."""
-        self.backend_ready = asyncio.Event()
+        self.app_ready = asyncio.Event()
         self.urdf_scene_ready = asyncio.Event()
-        self.page_ready = asyncio.Event()
-        self.simulator_ready = asyncio.Event()
-        self.backend_ready_ts = 0.0
+        self.app_ready_ts = 0.0
         self.urdf_scene_ready_ts = 0.0
-        self.page_ready_ts = 0.0
-        self.simulator_ready_ts = 0.0
+        self._startup_done = False
+        self._backend_done = False
+        self._page_done = False
 
-    def reset_simulator_ready(self) -> None:
-        """Reset simulator_ready event (call before simulator toggle)."""
-        self.simulator_ready = asyncio.Event()
-        self.simulator_ready_ts = 0.0
-        logging.debug("Readiness: simulator_ready reset")
+    def _check_app_ready(self) -> None:
+        """Check if all conditions are met and signal app_ready if so."""
+        if self._startup_done and self._backend_done and self._page_done:
+            if not self.app_ready.is_set():
+                self.app_ready_ts = time.time()
+                self.app_ready.set()
+                logging.debug("Readiness: app_ready signaled")
 
-    def signal_backend_ready(self) -> None:
-        """Signal that backend is ready (call from _status_consumer)."""
-        if not self.backend_ready.is_set():
-            self.backend_ready_ts = time.time()
-            self.backend_ready.set()
-            logging.debug("Readiness: backend_ready signaled")
+    def mark_startup_done(self) -> None:
+        """Mark startup as complete (call from _on_startup finally block)."""
+        if not self._startup_done:
+            self._startup_done = True
+            logging.debug("Readiness: startup done")
+            self._check_app_ready()
+
+    def mark_backend_done(self) -> None:
+        """Mark backend as ready (call from _status_consumer on first valid status)."""
+        if not self._backend_done:
+            self._backend_done = True
+            logging.debug("Readiness: backend done")
+            self._check_app_ready()
+
+    def mark_page_done(self) -> None:
+        """Mark page as ready (call from index_page after setup)."""
+        if not self._page_done:
+            self._page_done = True
+            logging.debug("Readiness: page done")
+            self._check_app_ready()
 
     def signal_urdf_scene_ready(self) -> None:
         """Signal that URDF scene is ready (call from initialize_urdf_scene)."""
@@ -574,20 +588,6 @@ class ReadinessState:
             self.urdf_scene_ready_ts = time.time()
             self.urdf_scene_ready.set()
             logging.debug("Readiness: urdf_scene_ready signaled")
-
-    def signal_page_ready(self) -> None:
-        """Signal full page readiness (call from index_page after setup)."""
-        if not self.page_ready.is_set():
-            self.page_ready_ts = time.time()
-            self.page_ready.set()
-            logging.debug("Readiness: page_ready signaled")
-
-    def signal_simulator_ready(self) -> None:
-        """Signal that simulator is ready (call from _status_consumer after toggle)."""
-        if not self.simulator_ready.is_set():
-            self.simulator_ready_ts = time.time()
-            self.simulator_ready.set()
-            logging.debug("Readiness: simulator_ready signaled")
 
 
 # Module-level singletons

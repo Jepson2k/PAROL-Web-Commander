@@ -16,7 +16,7 @@ from tests.helpers.wait import (
     simulate_click,
     wait_for_motion_stable,
     wait_for_motion_start,
-    wait_for_page_ready,
+    wait_for_app_ready,
     wait_for_value_change,
 )
 
@@ -29,7 +29,7 @@ async def test_joint_jog_button_sends_jog_joint(user: User, robot_state) -> None
     button causes the reported J1 angle to change.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -65,7 +65,7 @@ async def test_cartesian_axis_disabled_when_at_limit(user: User, robot_state) ->
     for that direction should become disabled to prevent motion beyond limits.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
 
     # Switch to cartesian jog tab
@@ -88,7 +88,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -130,7 +130,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -202,7 +202,7 @@ async def test_joint_jog_one_degree_step(
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -240,7 +240,7 @@ async def test_cartesian_jog_one_mm_step(
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -280,7 +280,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -329,7 +329,7 @@ async def test_cartesian_jog_rapid_clicks(
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -380,7 +380,7 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
     from parol_commander.constants import JOINT_LIMITS_DEG
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -438,7 +438,7 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
     from parol_commander.state import robot_state as rs
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
 
     # Get initial J1 angle

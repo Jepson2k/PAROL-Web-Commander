@@ -6,7 +6,7 @@ import pytest
 from nicegui.testing import User
 
 from tests.helpers.wait import (
-    wait_for_page_ready,
+    wait_for_app_ready,
     enable_sim,
 )
 
@@ -22,7 +22,7 @@ async def test_program_tab_visible(user: User) -> None:
 async def test_open_program_tab(user: User) -> None:
     """Test opening the program editor tab via click."""
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Click program tab
     user.find(marker="tab-program").click()
@@ -55,7 +55,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
 
     user.find(marker="tab-program").click()
@@ -109,7 +109,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
     from parol_commander.state import ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -156,7 +156,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
 async def test_commands_button_clickable(user: User) -> None:
     """Test that clicking the commands button doesn't error."""
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -184,7 +184,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     from parol_commander.state import recording_state, ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
 
     user.find(marker="tab-program").click()
@@ -240,7 +240,7 @@ async def test_recording_notification_appears_and_disappears(
     from parol_commander.state import recording_state, ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
 
     user.find(marker="tab-program").click()
@@ -284,7 +284,7 @@ async def test_panel_can_be_reopened(user: User) -> None:
     When reopened, the play button should be visible again.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Open editor by clicking program tab
     user.find(marker="tab-program").click()
@@ -315,7 +315,7 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
     from parol_commander.state import ui_state, editor_tabs_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -358,7 +358,7 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     from parol_commander.state import ui_state, editor_tabs_state, simulation_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -428,7 +428,7 @@ async def test_create_and_remove_tab(user: User) -> None:
     from parol_commander.state import editor_tabs_state, ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -481,7 +481,7 @@ async def test_step_button_enabled_when_script_running(user: User, robot_state) 
     from parol_commander.state import ui_state, editor_tabs_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
 
     user.find(marker="tab-program").click()
@@ -541,7 +541,7 @@ async def test_unmarked_targets_get_uuid_annotation(user: User) -> None:
     from parol_commander.state import editor_tabs_state, ui_state
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)

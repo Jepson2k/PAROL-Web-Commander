@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_page_ready
+from tests.helpers.wait import wait_for_app_ready
 
 
 @pytest.mark.integration
@@ -16,7 +16,7 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
     for SET_IO notifications and (if available) updated IO state.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Open the I/O tab
     user.find(marker="tab-io").click()
@@ -50,7 +50,7 @@ async def test_gripper_tab_calibrate_button_sends_notification(user: User) -> No
     when the calibrate button is clicked in the gripper tab.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Open the Gripper tab
     user.find(marker="tab-gripper").click()
@@ -80,7 +80,7 @@ async def test_gripper_move_goto_sends_notification(user: User) -> None:
     when the Move GoTo button is clicked in the gripper tab.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Open the Gripper tab
     user.find(marker="tab-gripper").click()

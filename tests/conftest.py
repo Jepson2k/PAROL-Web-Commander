@@ -24,8 +24,6 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
-from nicegui.testing.user_plugin import user_simulation
-from nicegui.testing.general_fixtures import get_path_to_main_file
 from parol6.client.manager import is_server_running
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
@@ -476,7 +474,6 @@ def session_client(
     Performs initial setup (simulator_on, stream_on, enable) once per session.
     The controller_reset fixture can be used for per-test reset if needed.
     """
-    import asyncio
     from parol6 import AsyncRobotClient
 
     controller_port, _ = _get_test_ports()
@@ -503,50 +500,6 @@ def session_client(
             loop.run_until_complete(client.close())
         finally:
             loop.close()
-
-
-async def _cleanup_nicegui_app():
-    """Clean up NiceGUI app resources before teardown.
-
-    NiceGUI's test framework clears shutdown handlers without calling them,
-    so _on_shutdown() in main.py never runs. We need to:
-    1. Cancel the status_consumer_task (async generator won't exit immediately)
-    2. Close the client to stop the multicast listener
-    """
-    try:
-        from parol_commander import main as main_module
-
-        # Cancel the status consumer task first (it's consuming client.status_stream_shared())
-        status_task = getattr(main_module, "status_consumer_task", None)
-        if status_task is not None and not status_task.done():
-            status_task.cancel()
-            try:
-                await status_task
-            except asyncio.CancelledError:
-                pass
-
-        # Close the client - stops multicast listener and UDP transport
-        client = getattr(main_module, "client", None)
-        if client is not None and hasattr(client, "close"):
-            await client.close()
-    except Exception:
-        pass
-
-
-@pytest.fixture
-async def user(request: pytest.FixtureRequest):
-    """Custom user fixture that wraps NiceGUI's user_simulation with cleanup.
-
-    This ensures our app's background tasks are cancelled before
-    NiceGUI resets its globals, preventing asyncio event loop hangs.
-    """
-    async with user_simulation(
-        main_file=get_path_to_main_file(request)
-    ) as nicegui_user:
-        yield nicegui_user
-
-        # Cleanup BEFORE exiting the context manager (before NiceGUI resets)
-        await _cleanup_nicegui_app()
 
 
 @pytest.fixture(autouse=True)

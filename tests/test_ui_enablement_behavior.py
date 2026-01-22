@@ -5,7 +5,7 @@ import pytest
 from nicegui.testing import User
 
 from tests.helpers.wait import (
-    wait_for_page_ready,
+    wait_for_app_ready,
     enable_sim,
     ensure_robot_ready_for_motion,
     wait_for_motion_stable,
@@ -23,7 +23,7 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
     from parol_commander.constants import JOINT_LIMITS_DEG
 
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -65,7 +65,7 @@ async def test_cartesian_at_workspace_limit_disables_axis(
     certain cartesian directions should become disabled.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
@@ -96,7 +96,7 @@ async def test_joint_en_updates_on_motion(user: User, robot_state) -> None:
     which directions are still valid for motion.
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 

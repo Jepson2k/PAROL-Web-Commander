@@ -10,7 +10,7 @@ import asyncio
 import pytest
 from nicegui.testing import User
 
-from tests.helpers.wait import wait_for_page_ready
+from tests.helpers.wait import wait_for_app_ready
 
 
 @pytest.mark.integration
@@ -24,7 +24,7 @@ async def test_home_command_behavior(
     2. HOME is allowed and sends command when simulator is active
     """
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # --- Part 1: HOME blocked without connection ---
     # Override state after page load so HOME guard sees both flags as False
@@ -54,7 +54,7 @@ async def test_home_command_behavior(
 async def test_digital_estop_dialog_behavior(user: User, robot_state) -> None:
     """Digital E-STOP dialog should appear with Resume button."""
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Click E-STOP button to trigger digital estop
     user.find(marker="btn-estop").click()
@@ -79,7 +79,7 @@ async def test_digital_estop_blocked_when_physical_active(
 ) -> None:
     """Digital E-STOP button click should be blocked when physical E-STOP is active."""
     await user.open("/")
-    await wait_for_page_ready()
+    await wait_for_app_ready()
 
     # Set io_estop=0 to simulate physical estop being active
     # This blocks the digital estop click

@@ -19,7 +19,6 @@ from parol_commander.constants import (
     config,
 )
 from parol_commander.state import (
-    readiness_state,
     robot_state,
     ui_state,
     global_phase_timer,
@@ -1130,9 +1129,6 @@ class ControlPanel:
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
-            # Reset simulator_ready event before toggle so tests can wait for it
-            readiness_state.reset_simulator_ready()
-
             # Stop any running user script before mode switch (safety)
             editor_panel = getattr(ui_state, "editor_panel", None)
             if editor_panel and getattr(editor_panel, "script_running", False):
