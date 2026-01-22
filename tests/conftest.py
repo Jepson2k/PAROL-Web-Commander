@@ -5,6 +5,7 @@ import os
 import random
 import subprocess
 import sys
+import asyncio
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
@@ -508,13 +509,23 @@ async def _cleanup_nicegui_app():
     """Clean up NiceGUI app resources before teardown.
 
     NiceGUI's test framework clears shutdown handlers without calling them,
-    so _on_shutdown() in main.py never runs. We need to close the client
-    manually to stop the status_stream() async generator.
+    so _on_shutdown() in main.py never runs. We need to:
+    1. Cancel the status_consumer_task (async generator won't exit immediately)
+    2. Close the client to stop the multicast listener
     """
     try:
         from parol_commander import main as main_module
 
-        # Close the client - this sends a sentinel to status_stream() allowing it to exit
+        # Cancel the status consumer task first (it's consuming client.status_stream_shared())
+        status_task = getattr(main_module, "status_consumer_task", None)
+        if status_task is not None and not status_task.done():
+            status_task.cancel()
+            try:
+                await status_task
+            except asyncio.CancelledError:
+                pass
+
+        # Close the client - stops multicast listener and UDP transport
         client = getattr(main_module, "client", None)
         if client is not None and hasattr(client, "close"):
             await client.close()
