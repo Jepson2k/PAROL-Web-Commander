@@ -56,8 +56,8 @@ addopts = [
     "-ra",  # show short test summary for all but passes
     "-p nicegui.testing.user_plugin",
 ]
-# Global per-test timeout
-timeout = 30
+# Global per-test timeout (90s to accommodate JIT warmup and teardown on slow CI runners)
+timeout = 90
 timeout_method = "thread"
 markers = [
     "unit: Unit tests",

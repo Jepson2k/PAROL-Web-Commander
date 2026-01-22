@@ -269,7 +269,7 @@ def test_env_config() -> Generator[None, None, None]:
         "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
         "PAROL_WEBAPP_REQUIRE_READY": "1",
         "PAROL_EXCLUSIVE_START": "0",  # Allow reusing session-scoped controller
-        # "PAROL_TRACE": "1",
+        "PAROL_TRACE": "1",  # Enable trace logging for CI debugging
         "PAROL_LOG_LEVEL": "DEBUG",
         # Connect webapp to the session-randomized controller port
         "PAROL_CONTROLLER_PORT": str(controller_port),
@@ -423,23 +423,9 @@ def kill_stale_controllers() -> Generator[None, None, None]:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def warmup_jit_cache() -> None:
-    """Pre-warm numba JIT cache before controller starts.
-
-    Without cache, JIT compilation takes 20+ seconds which exceeds the 10s
-    controller startup timeout. By warming up first, we populate the cache
-    so the controller's warmup is fast.
-    """
-    from parol6.utils.warmup import warmup_jit
-
-    warmup_jit()
-
-
-@pytest.fixture(scope="session", autouse=True)
 def session_controller(
     test_env_config: None,
     kill_stale_controllers: None,
-    warmup_jit_cache: None,
 ) -> Generator["ServerManager", None, None]:
     """Session-scoped controller shared by all tests.
 

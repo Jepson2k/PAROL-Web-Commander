@@ -64,4 +64,4 @@ jobs:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
         run: |
-          pytest
+          pytest -vv --tb=long --log-cli-level=DEBUG

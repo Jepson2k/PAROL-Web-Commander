@@ -9,3 +9,7 @@ build/*
 screenshots*
 *.nbc
 *.nbi
+
+# Local development directories
+PAROL6-Desktop-robot-arm/
+nicegui/
