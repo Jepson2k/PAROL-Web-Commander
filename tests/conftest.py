@@ -60,7 +60,14 @@ def nicegui_chrome_options():
     options = _webdriver.ChromeOptions()
     if not os.environ.get("HEADED"):
         options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
+    options.add_argument("disable-search-engine-choice-screen")
+    options.add_argument("headless")
+    # Use SwiftShader for software WebGL in CI, hardware GL locally
+    if "GITHUB_ACTIONS" in os.environ:
+        options.add_argument("--use-gl=angle")
+        options.add_argument("--use-angle=swiftshader-webgl")
+    else:
+        options.add_argument("--use-gl=angle")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     return options
@@ -129,7 +136,12 @@ def class_driver(
     options = _webdriver.ChromeOptions()
     if not os.environ.get("HEADED"):
         options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
+    # Use SwiftShader for software WebGL in CI, hardware GL locally
+    if "GITHUB_ACTIONS" in os.environ:
+        options.add_argument("--use-gl=angle")
+        options.add_argument("--use-angle=swiftshader-webgl")
+    else:
+        options.add_argument("--use-gl=angle")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     # Disable CSS animations for deterministic testing
