@@ -571,7 +571,7 @@ class PathVisualizer:
                 ui_state.urdf_scene.invalidate_paths()
 
             # Trigger scene update via event-driven notification
-            simulation_state.notify_changed()
+            await simulation_state.notify_changed()
 
             # Return error message if any
             return result.get("error")

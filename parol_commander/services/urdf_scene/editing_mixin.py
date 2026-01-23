@@ -702,7 +702,7 @@ class EditingMixin:
                 scene_object_id="",
             )
             simulation_state.targets.append(new_target)
-            simulation_state.notify_changed()
+            asyncio.create_task(simulation_state.notify_changed())
 
     def _insert_joint_target_from_editing(self) -> None:
         """Insert joint target code."""

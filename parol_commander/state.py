@@ -248,8 +248,15 @@ class SimulationState:
         if callback in self._change_listeners:
             self._change_listeners.remove(callback)
 
-    def notify_changed(self) -> None:
-        """Notify all registered listeners that state has changed."""
+    async def notify_changed(self) -> None:
+        """Notify all registered listeners that state has changed.
+
+        Yields control before calling listeners to avoid modifying UI during
+        event handling, which can cause 'dictionary changed size during iteration'.
+        """
+        import asyncio
+
+        await asyncio.sleep(0)
         for cb in self._change_listeners:
             cb()
 

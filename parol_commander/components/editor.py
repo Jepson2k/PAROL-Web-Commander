@@ -1100,7 +1100,7 @@ print(f"Robot status: {{status}}")
                 simulation_state.path_segments = []
                 simulation_state.targets = []
                 simulation_state.total_steps = 0
-                simulation_state.notify_changed()
+                asyncio.create_task(simulation_state.notify_changed())
                 self._update_scrub_segments()
             return
 
@@ -1434,7 +1434,7 @@ print(f"Robot status: {{status}}")
         simulation_state.targets = list(tab.targets)
         simulation_state.current_step_index = 0
         simulation_state.total_steps = len(tab.path_segments)
-        simulation_state.notify_changed()
+        asyncio.create_task(simulation_state.notify_changed())
 
     def _create_tab_widget(self, tab: EditorTab) -> ui.tab | None:
         """Create a single tab widget with filename input, save button, close button."""

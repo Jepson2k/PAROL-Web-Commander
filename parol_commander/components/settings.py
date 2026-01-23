@@ -1,5 +1,6 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
+import asyncio
 import logging
 from typing import Literal, cast
 
@@ -129,11 +130,11 @@ class SettingsContent:
         ui.separator().classes("my-1")
 
         # Show Route Switch
-        def _on_show_route_change(e):
+        async def _on_show_route_change(e):
             val = bool(e.value) if hasattr(e, "value") else bool(e.args)
             simulation_state.paths_visible = val
             ng_app.storage.general["show_route"] = val
-            simulation_state.notify_changed()
+            await simulation_state.notify_changed()
 
         with ui.row().classes("items-center justify-between w-full overflow-hidden"):
             with ui.column().classes("gap-0 overflow-hidden"):
@@ -148,12 +149,12 @@ class SettingsContent:
 
         # Sync initial state
         simulation_state.paths_visible = prefs["show_route"]
-        simulation_state.notify_changed()
+        asyncio.create_task(simulation_state.notify_changed())
 
         ui.separator().classes("my-1")
 
         # Workspace Envelope Selection - dropdown
-        def _on_envelope_mode_change(e):
+        async def _on_envelope_mode_change(e):
             mode = e.value if hasattr(e, "value") else str(e.args)
             simulation_state.envelope_mode = mode
             ng_app.storage.general["envelope_mode"] = mode
@@ -163,7 +164,7 @@ class SettingsContent:
             elif mode == "on":
                 simulation_state.envelope_visible = True
             # "auto" is handled in urdf_scene update logic
-            simulation_state.notify_changed()
+            await simulation_state.notify_changed()
 
         with ui.row().classes("items-center justify-between w-full overflow-hidden"):
             with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
@@ -183,12 +184,12 @@ class SettingsContent:
             simulation_state.envelope_visible = False
         elif prefs["envelope_mode"] == "on":
             simulation_state.envelope_visible = True
-        simulation_state.notify_changed()
+        asyncio.create_task(simulation_state.notify_changed())
 
         ui.separator().classes("my-1")
 
         # Tool Selection - dropdown
-        def _on_tool_change(e):
+        async def _on_tool_change(e):
             tool = e.value if hasattr(e, "value") else str(e.args)
             ng_app.storage.general["selected_tool"] = tool
 
@@ -200,7 +201,7 @@ class SettingsContent:
 
             # Update envelope sphere radius if tool changes TCP Z offset
             # The envelope sphere will be updated on next simulation state change
-            simulation_state.notify_changed()
+            await simulation_state.notify_changed()
 
             ui.notify(f"Tool: {tool}", color="primary")
 

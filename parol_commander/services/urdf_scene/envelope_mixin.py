@@ -254,7 +254,7 @@ class WorkspaceEnvelope:
                             self.max_reach,
                             len(faces),
                         )
-                        simulation_state.notify_changed()
+                        await simulation_state.notify_changed()
                     else:
                         logger.warning("Failed to save hull STL")
                 else:
