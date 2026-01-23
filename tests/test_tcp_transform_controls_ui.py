@@ -432,9 +432,9 @@ class TestTCPTransformControls:
 
     def test_tcp_ball_exists_in_scene(self, class_screen: "Screen") -> None:
         """Test that TCP ball sphere exists in the Three.js scene after page load."""
-        screen_wait_for_scene_ready(class_screen, timeout_s=10.0)
+        screen_wait_for_scene_ready(class_screen, timeout_s=30.0)
 
-        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=10.0)
+        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
 
         if tcp_ball is None:
             objects = screen_list_scene_objects(class_screen)
@@ -447,7 +447,7 @@ class TestTCPTransformControls:
 
     def test_tcp_ball_at_tcp_position(self, class_screen: "Screen") -> None:
         """Test that TCP ball position matches robot TCP coordinates."""
-        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=10.0)
+        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
 
         assert tcp_ball is not None, "TCP ball should exist"
         pos = tcp_ball.get("position")
@@ -466,7 +466,7 @@ class TestTCPTransformControls:
 
     def test_tcp_transform_controls_attached(self, class_screen: "Screen") -> None:
         """Test that TransformControls gizmo is attached to TCP ball."""
-        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=10.0)
+        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
         assert tcp_ball is not None, "TCP ball should exist for TransformControls"
 
         result = find_gizmo_types(class_screen)
@@ -568,8 +568,8 @@ class TestTCPTransformControls:
 
     def test_tcp_ball_screen_position_available(self, class_screen: "Screen") -> None:
         """Test that we can get TCP ball screen coordinates for drag operations."""
-        screen_wait_for_scene_ready(class_screen, timeout_s=10.0)
-        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=10.0)
+        screen_wait_for_scene_ready(class_screen, timeout_s=30.0)
+        tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
         assert tcp_ball is not None, "TCP ball should exist"
 
         pos = get_tcp_screen_position(class_screen)

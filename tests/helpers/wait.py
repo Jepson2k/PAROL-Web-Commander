@@ -145,14 +145,14 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
         )
 
 
-async def wait_for_app_ready(timeout_s: float = 10.0) -> None:
+async def wait_for_app_ready(timeout_s: float = 20.0) -> None:
     """Wait for app to be fully ready (startup + backend + page).
 
     This is the primary wait function for tests. It ensures all components
     are initialized and the app is in a stable state for testing.
 
     Args:
-        timeout_s: Maximum time to wait
+        timeout_s: Maximum time to wait (default 20s for CI environments)
 
     Raises:
         TimeoutError: If app doesn't become ready within timeout
@@ -631,11 +631,14 @@ def screen_wait_for_codemirror_ready(screen: "Screen", timeout_s: float = 10.0) 
         raise AssertionError(f"CodeMirror not ready after {timeout_s}s")
 
 
-def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 20.0) -> None:
+def screen_wait_for_scene_ready(screen: "Screen", timeout_s: float = 30.0) -> None:
     """Wait for Three.js 3D scene to be fully initialized.
 
     Dismisses any startup dialogs (tutorial/safety), then checks that canvas exists
     and data-initializing attribute is removed, indicating scene has finished loading.
+
+    Args:
+        timeout_s: Maximum time to wait (default 30s for CI environments with SwiftShader)
     """
     from tests.helpers.browser_helpers import dismiss_dialogs
 
@@ -729,12 +732,12 @@ def screen_list_scene_objects(screen: "Screen") -> list[dict]:
     return result or []
 
 
-def screen_wait_for_tcp_ball(screen: "Screen", timeout_s: float = 10.0) -> dict | None:
+def screen_wait_for_tcp_ball(screen: "Screen", timeout_s: float = 20.0) -> dict | None:
     """Wait for TCP ball to exist in the Three.js scene.
 
     Args:
         screen: Selenium screen fixture
-        timeout_s: Maximum time to wait
+        timeout_s: Maximum time to wait (default 20s for CI environments)
 
     Returns:
         TCP ball object info, or None if timeout
