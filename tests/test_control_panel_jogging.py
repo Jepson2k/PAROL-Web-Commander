@@ -302,9 +302,12 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -
         await simulate_click(user, "btn-j1-plus", hold_ms=30)
         await asyncio.sleep(0.15)  # 150ms between clicks (~6-7 clicks/sec)
 
-    # Wait for all motion to complete
+    # Allow time for all motion commands to be processed before checking stability
+    await asyncio.sleep(0.5)
+
+    # Wait for all motion to complete (longer timeout and more stable ticks for CI)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=10.0, stable_ticks=30
+        lambda: robot_state.angles[0], timeout_s=15.0, stable_ticks=50
     )
 
     delta = final_j1 - initial_j1
@@ -355,9 +358,12 @@ async def test_cartesian_jog_rapid_clicks(
         await simulate_click(user, "axis-zplus", hold_ms=30)
         await asyncio.sleep(0.3)  # 300ms between clicks (~3 clicks/sec)
 
-    # Wait for all motion to complete
+    # Allow time for all motion commands to be processed before checking stability
+    await asyncio.sleep(0.5)
+
+    # Wait for all motion to complete (longer timeout and more stable ticks for CI)
     final_z = await wait_for_motion_stable(
-        lambda: float(robot_state.z), timeout_s=10.0, stable_ticks=30
+        lambda: float(robot_state.z), timeout_s=15.0, stable_ticks=50
     )
 
     delta = final_z - initial_z

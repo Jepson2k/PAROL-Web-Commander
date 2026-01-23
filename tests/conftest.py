@@ -282,9 +282,15 @@ def test_env_config() -> Generator[None, None, None]:
     """
     from pathlib import Path
 
-    # Ensure .nicegui storage directory exists to avoid FileNotFoundError on teardown
+    # Pre-create .nicegui storage directory and file. NiceGUI's user/screen fixtures
+    # don't create this - they rely on it existing. NiceGUI persists storage
+    # asynchronously via ThreadPoolExecutor, which logs ERROR if the file is missing.
+    # This prevents spurious ERROR logs that would fail tests using the screen fixture.
     nicegui_storage_dir = Path(".nicegui")
     nicegui_storage_dir.mkdir(exist_ok=True)
+    storage_file = nicegui_storage_dir / "storage-general.json"
+    if not storage_file.exists():
+        storage_file.write_text("{}")
 
     controller_port, multicast_port = _get_test_ports()
     env_defaults: dict[str, str] = {
@@ -298,6 +304,9 @@ def test_env_config() -> Generator[None, None, None]:
         "PAROL6_STATUS_MULTICAST_PORT": str(multicast_port),
         # Skip slow envelope generation by default (tests that need it enable explicitly)
         "PAROL_SKIP_ENVELOPE": "1",
+        # Reduce status broadcast rate for tests (50Hz is for human-perceived real-time,
+        # 20Hz is sufficient for automated tests and reduces CI load)
+        "PAROL6_STATUS_RATE_HZ": "20",
     }
 
     originals: dict[str, str | None] = {}
@@ -499,11 +508,12 @@ def session_client(
     from parol6 import AsyncRobotClient
 
     controller_port, _ = _get_test_ports()
-    client = AsyncRobotClient(host="127.0.0.1", port=controller_port)
+    # Use longer timeout for CI environments where scheduling can cause delays
+    client = AsyncRobotClient(host="127.0.0.1", port=controller_port, timeout=5.0)
 
     # Initial setup - wait for controller and enable simulator
     async def setup():
-        await client.wait_for_server_ready(timeout=5.0)
+        await client.wait_for_server_ready(timeout=10.0)
         await client.simulator_on()
         await client.stream_on()
         await client.enable()
@@ -549,15 +559,18 @@ async def controller_reset(
     if "user" in request.fixturenames or "screen" in request.fixturenames:
         controller_port, _ = _get_test_ports()
         # Create a fresh client on this test's event loop
-        async with AsyncRobotClient(host="127.0.0.1", port=controller_port) as client:
+        # Use longer timeout for CI environments where scheduling can cause delays
+        async with AsyncRobotClient(
+            host="127.0.0.1", port=controller_port, timeout=5.0
+        ) as client:
             await client.reset()
             await client.enable()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
             await client.home(
                 wait=True,
-                timeout=5.0,
-                motion_start_timeout=0.1,  # Don't wait long for motion to start
+                timeout=10.0,
+                motion_start_timeout=0.5,  # Allow more time for motion to start on slow CI
                 settle_window=0.05,  # Robot settles instantly in simulator
             )
 

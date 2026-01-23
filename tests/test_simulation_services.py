@@ -3,10 +3,12 @@
 These tests verify actual behavior rather than just checking if buttons exist.
 """
 
-import pytest
+import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import numpy as np
+import pytest
 
 from parol_commander.state import (
     simulation_state,
@@ -379,6 +381,11 @@ class TestMotionRecorder:
         # Count occurrences of move commands
         assert inserted_code.count("rbt.move_") >= 2
 
+    @pytest.mark.skipif(
+        "GITHUB_ACTIONS" in os.environ,
+        reason="Timing-dependent test: assumes code executes in <0.1s, which is "
+        "unreliable on CI runners where scheduling delays can exceed this threshold",
+    )
     def test_short_jogs_not_recorded(self, mock_editor):
         """Very short jogs (< 0.1s) should not be recorded as additional moves."""
         self._set_robot_pose(100.0, 100.0, 100.0)

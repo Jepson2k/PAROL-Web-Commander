@@ -49,6 +49,12 @@ HEADED=1 pytest tests/test_specific.py
 pytest tests/test_editor_integration.py -v
 ```
 
+### Test Environment Configuration
+
+Tests automatically configure reduced rates via `conftest.py`:
+- `PAROL6_STATUS_RATE_HZ=20` (vs 50Hz default) - reduces CI load
+- `PAROL6_FAKE_SERIAL=1` - uses simulator instead of hardware
+
 ### Test Markers
 
 - `@pytest.mark.integration` - Integration tests requiring full app setup
