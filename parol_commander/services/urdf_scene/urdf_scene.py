@@ -479,6 +479,16 @@ class UrdfScene(
         except RuntimeError:
             return
 
+        # Wrap all scene operations in try/except to handle client deletion during shutdown
+        try:
+            self._do_update_simulation_view()
+        except RuntimeError as e:
+            if "client" in str(e).lower() and "deleted" in str(e).lower():
+                return  # Client deleted during shutdown - safe to ignore
+            raise
+
+    def _do_update_simulation_view(self) -> None:
+        """Internal implementation of simulation view update."""
         # Keep TCP jog ball aligned with current robot TCP when not dragging
         self._update_jog_ball_from_robot_state()
 
