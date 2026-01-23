@@ -544,7 +544,7 @@ class UrdfScene(
                     len(self._path_objects),
                 )
             for obj in self._path_objects:
-                obj.delete()
+                self._safe_delete(obj)
             self._path_objects.clear()
             self._rendered_segment_count = 0
 
@@ -582,7 +582,7 @@ class UrdfScene(
                     len(self._path_objects),
                 )
             for obj in self._path_objects:
-                obj.delete()
+                self._safe_delete(obj)
             self._path_objects.clear()
             self._rendered_segment_count = 0
 
@@ -626,10 +626,22 @@ class UrdfScene(
                     target_data = self._target_objects[tid]
                     if self.scene:
                         self.scene.disable_transform_controls(target_data["group"].id)
-                    target_data["group"].delete()
+                    self._safe_delete(target_data["group"])
                     del self._target_objects[tid]
                     if self._editing_target_id == tid:
                         self._editing_target_id = None
+
+    def _safe_delete(self, obj: Any) -> None:
+        """Safely delete a scene object, handling cases where it's already deleted."""
+        if self.scene is None:
+            return
+        try:
+            # Check if object ID still exists in scene before deleting
+            if hasattr(obj, "id") and obj.id in self.scene.objects:
+                obj.delete()
+        except KeyError:
+            # Object was already deleted from scene
+            pass
 
     @property
     def initialized(self) -> bool:
@@ -653,7 +665,7 @@ class UrdfScene(
         Call this when switching tabs or when the path data has completely changed.
         """
         for obj in self._path_objects:
-            obj.delete()
+            self._safe_delete(obj)
         self._path_objects.clear()
         self._rendered_segment_count = 0
 
