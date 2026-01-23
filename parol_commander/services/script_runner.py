@@ -78,8 +78,8 @@ async def run_script(
     if not Path(python_exe).exists():
         raise FileNotFoundError(f"Python executable not found: {python_exe}")
 
-    # Build environment variables
-    env = {**cfg.get("env", {})}
+    # Build environment variables - inherit from parent process and add config overrides
+    env = {**os.environ, **cfg.get("env", {})}
     if session_id:
         env["PAROL_STEP_SESSION"] = session_id
 

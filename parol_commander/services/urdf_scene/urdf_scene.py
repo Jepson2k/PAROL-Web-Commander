@@ -19,6 +19,8 @@ import math
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import numpy as np
 from nicegui import ui, app  # type: ignore[no-redef]
@@ -981,7 +983,8 @@ class UrdfScene(
         """Convert STL file path to URL, preferring _simplified variants if they exist."""
         # Handle file:// URIs
         if stl_path.startswith("file://"):
-            stl_path = stl_path[7:]
+            parsed = urlparse(stl_path)
+            stl_path = url2pathname(parsed.path)
 
         # Get path relative to meshes_dir
         stl_full = Path(stl_path)
