@@ -40,6 +40,7 @@ class SettingsContent:
         self._port_select: ui.select | None = None
         self._envelope_buttons: dict[str, ui.button] = {}
         self._theme_buttons: dict[str, ui.button] = {}
+        self._refresh_timer: ui.timer | None = None
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
@@ -57,6 +58,11 @@ class SettingsContent:
             ports = get_available_serial_ports()
             self._port_select.options = ports
             self._port_select.update()
+
+    def cleanup(self) -> None:
+        """Cancel background timers during shutdown."""
+        if self._refresh_timer is not None:
+            self._refresh_timer.cancel()
 
     def _update_envelope_button_styles(self, active_mode: str) -> None:
         """Update envelope button group styling based on active mode."""
@@ -117,8 +123,8 @@ class SettingsContent:
 
             port_select_ref.on("update:model-value", lambda e: _apply_port())
 
-        # Auto-refresh serial ports every 30 seconds
-        ui.timer(10.0, self._refresh_serial_ports)
+        # Auto-refresh serial ports every 10 seconds
+        self._refresh_timer = ui.timer(10.0, self._refresh_serial_ports)
 
         ui.separator().classes("my-1")
 

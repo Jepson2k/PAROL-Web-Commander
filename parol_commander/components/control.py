@@ -103,6 +103,9 @@ class ControlPanel:
         self._hold_timers_cart: dict[str, ui.timer] = {}
         self._holding_active_cart: set[str] = set()
 
+        # Settings content for cleanup
+        self._settings_content: "SettingsContent | None" = None
+
         # Jog cadence constants
         self.JOG_TICK_S: float = config.webapp_control_interval_s
         self.CADENCE_WARN_WINDOW: int = max(1, int(config.webapp_control_rate_hz))
@@ -1477,8 +1480,8 @@ class ControlPanel:
             # Settings panel
             with ui.tab_panel(settings_tab).classes("gap-0 p-0"):
                 with ui.scroll_area().classes("w-full h-full p-0"):
-                    settings_content = SettingsContent(self.client)
-                    settings_content.build_embedded()
+                    self._settings_content = SettingsContent(self.client)
+                    self._settings_content.build_embedded()
 
     def build(self, anchor: str = "bl") -> None:
         """Render the bottom-left control panel (overlay-bl).
@@ -1725,3 +1728,15 @@ class ControlPanel:
 
             # Jog controls (tabs + grids)
             self.render_jog_content()
+
+    def cleanup(self) -> None:
+        """Cancel background timers during shutdown."""
+        if self._settings_content is not None:
+            self._settings_content.cleanup()
+        # Cancel any active hold timers
+        for tm in self._hold_timers.values():
+            tm.cancel()
+        self._hold_timers.clear()
+        for tm in self._hold_timers_cart.values():
+            tm.cancel()
+        self._hold_timers_cart.clear()

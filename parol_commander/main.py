@@ -406,7 +406,7 @@ async def start_controller(com_port: str | None) -> None:
         logging.error("Start controller failed: %s", e)
 
 
-def stop_controller() -> None:
+async def stop_controller() -> None:
     global server_manager, ping_timer, status_consumer_task
     try:
         if server_manager:
@@ -419,6 +419,8 @@ def stop_controller() -> None:
             ping_timer.active = False
         if status_consumer_task is not None and not status_consumer_task.done():
             status_consumer_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await status_consumer_task
 
         controller_state.running = False
         robot_state.connected = False
@@ -1133,7 +1135,19 @@ def _register_handlers() -> None:
         except Exception as e:
             logging.warning("Error stopping script during shutdown: %s", e)
 
-        stop_controller()
+        # Cancel all timers first
+        if ui_state._joint_jog_timer is not None:
+            ui_state._joint_jog_timer.cancel()
+        if ui_state._cart_jog_timer is not None:
+            ui_state._cart_jog_timer.cancel()
+        if ping_timer is not None:
+            ping_timer.cancel()
+
+        # Cleanup component timers
+        if control_panel is not None:
+            control_panel.cleanup()
+
+        await stop_controller()
         await client.close()
 
 

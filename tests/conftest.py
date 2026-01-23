@@ -268,7 +268,6 @@ def test_env_config() -> Generator[None, None, None]:
         "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
         "PAROL_WEBAPP_REQUIRE_READY": "1",
         "PAROL_EXCLUSIVE_START": "0",  # Allow reusing session-scoped controller
-        "PAROL_TRACE": "1",  # Enable trace logging for CI debugging
         "PAROL_LOG_LEVEL": "DEBUG",
         # Connect webapp to the session-randomized controller port
         "PAROL_CONTROLLER_PORT": str(controller_port),
