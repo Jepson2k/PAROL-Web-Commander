@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image
 
+from tests.conftest import skip_webgl_macos_ci
+
 from tests.helpers.browser_helpers import js
 from tests.helpers.wait import (
     screen_list_scene_objects,
@@ -427,6 +429,7 @@ def drag_tcp_ball(screen: "Screen", dx: int, dy: int) -> bool:
 
 
 @pytest.mark.browser
+@skip_webgl_macos_ci
 class TestTCPTransformControls:
     """TCP transform control tests sharing a browser session."""
 

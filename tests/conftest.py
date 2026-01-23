@@ -32,6 +32,15 @@ if TYPE_CHECKING:
     from parol6 import AsyncRobotClient, ServerManager
 
 # ============================================================================
+# Skip marker for WebGL-dependent tests on macOS CI
+# ============================================================================
+# SwiftShader WebGL fails with "BindToCurrentSequence failed" on macOS runners
+skip_webgl_macos_ci = pytest.mark.skipif(
+    sys.platform == "darwin" and "GITHUB_ACTIONS" in os.environ,
+    reason="WebGL context creation fails on macOS CI with SwiftShader",
+)
+
+# ============================================================================
 # Port Configuration (session-randomized to avoid conflicts)
 # ============================================================================
 # Generate unique ports per test session to avoid conflicts between test runs

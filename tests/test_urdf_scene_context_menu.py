@@ -9,6 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
 
+from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.wait import screen_wait_for_scene_ready
 
 
@@ -24,6 +25,7 @@ def _retry_find_elements(finder_func, retries: int = 3, delay: float = 0.2):
 
 
 @pytest.mark.browser
+@skip_webgl_macos_ci
 def test_right_click_shows_context_menu(screen) -> None:
     """Test that right-clicking on the 3D scene shows the context menu."""
     screen.open("/")
@@ -47,6 +49,7 @@ def test_right_click_shows_context_menu(screen) -> None:
 
 
 @pytest.mark.browser
+@skip_webgl_macos_ci
 def test_context_menu_has_options(screen) -> None:
     """Test that context menu has menu items when right-clicking."""
     screen.open("/")
@@ -72,6 +75,7 @@ def test_context_menu_has_options(screen) -> None:
 
 
 @pytest.mark.browser
+@skip_webgl_macos_ci
 def test_context_menu_closes_on_click_outside(screen) -> None:
     """Test that context menu closes when clicking outside."""
     screen.open("/")
@@ -103,6 +107,7 @@ def test_context_menu_closes_on_click_outside(screen) -> None:
 
 
 @pytest.mark.browser
+@skip_webgl_macos_ci
 def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
     """Test that envelope sphere is visible in scene when mode is 'on'.
 
