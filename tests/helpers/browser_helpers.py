@@ -20,13 +20,13 @@ def js(screen: "Screen", script: str, *args) -> Any:
     return screen.selenium.execute_script(script, *args)
 
 
-def click_tab(screen: "Screen", tab_name: str, timeout: float = 5.0) -> None:
+def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
     """Click a tab by finding it via CSS selector, wait for it to become active.
 
     Args:
         screen: Selenium screen fixture
         tab_name: One of 'program', 'io', 'gripper', 'log', 'help'
-        timeout: Max seconds to wait for tab to become active
+        timeout: Max seconds to wait for tab to become active (default 10s for CI)
     """
     # Map tab names to their icon names
     tab_icons = {
@@ -183,12 +183,12 @@ def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
         )
 
 
-def wait_for_codemirror_ready(screen: "Screen", timeout: float = 10.0) -> None:
+def wait_for_codemirror_ready(screen: "Screen", timeout: float = 20.0) -> None:
     """Wait for CodeMirror editor to be fully interactive.
 
     Args:
         screen: Selenium screen fixture
-        timeout: Max seconds to wait
+        timeout: Max seconds to wait (default 20s for CI environments with SwiftShader)
 
     Raises:
         TimeoutError: If CodeMirror not ready in time

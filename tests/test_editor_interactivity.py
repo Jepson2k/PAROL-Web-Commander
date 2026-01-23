@@ -185,6 +185,8 @@ class TestEditorInteractivity:
 
     def test_editor_opens_with_default_content(self, class_screen: "Screen") -> None:
         """Editor should open with CodeMirror and display default program."""
+        # CI with SwiftShader needs more time to initialize WebGL/3D scene
+        time.sleep(1.0)
         click_tab(class_screen, "program")
         wait_for_codemirror_ready(class_screen)
 
@@ -293,15 +295,17 @@ class TestEditorInteractivity:
         click_tab(class_screen, "io")
 
         # Wait for backend state to propagate (tab click is async via websocket)
-        time.sleep(0.3)
+        # CI environments need more time for state propagation
+        time.sleep(0.5)
 
         # Jog a joint briefly - this will record a movement command
-        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.3)
+        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.5)
 
         # Check if the tab has the flash class using WebDriverWait
+        # Use longer timeout for CI environments
         tab_flashed = False
         try:
-            WebDriverWait(class_screen.selenium, 3).until(
+            WebDriverWait(class_screen.selenium, 5).until(
                 TabFlashCondition(class_screen)
             )
             tab_flashed = True

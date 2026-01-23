@@ -135,15 +135,16 @@ def class_driver(
 
     options = _webdriver.ChromeOptions()
     if not os.environ.get("HEADED"):
-        options.add_argument("--headless")
+        options.add_argument("headless")
+    options.add_argument("disable-search-engine-choice-screen")
     # Use SwiftShader for software WebGL in CI, hardware GL locally
     if "GITHUB_ACTIONS" in os.environ:
         options.add_argument("--use-gl=angle")
         options.add_argument("--use-angle=swiftshader-webgl")
     else:
         options.add_argument("--use-gl=angle")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("no-sandbox")
+    options.add_argument("disable-dev-shm-usage")
     # Disable CSS animations for deterministic testing
     options.add_argument("--disable-animations")
 
@@ -212,7 +213,8 @@ def class_screen(
             ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
 
             # Navigate to app once for all tests in class
-            screen_instance.open("/", timeout=15.0)
+            # CI with SwiftShader needs more time for WebGL initialization
+            screen_instance.open("/", timeout=30.0)
 
             yield screen_instance
 
