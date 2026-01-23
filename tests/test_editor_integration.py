@@ -457,7 +457,8 @@ async def test_create_and_remove_tab(user: User) -> None:
     # Close the new tab using the close button
     close_btn = user.find(marker=f"editor-tab-close-{new_tab_id}")
     close_btn.click()
-    await asyncio.sleep(0)
+    # Close is deferred via ui.timer(0) to avoid modifying UI during event iteration
+    await asyncio.sleep(0.05)
 
     # Verify tab was removed
     assert len(editor_tabs_state.tabs) == initial_count, (

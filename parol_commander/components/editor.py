@@ -1286,11 +1286,20 @@ print(f"Robot status: {{status}}")
         return tab
 
     def _close_tab(self, tab: EditorTab) -> None:
-        """Close a tab, prompting to save if dirty."""
-        if tab.is_dirty:
-            self._show_save_confirmation(tab)
-        else:
-            self._do_close_tab(tab)
+        """Close a tab, prompting to save if dirty.
+
+        Uses deferred execution via ui.timer to avoid modifying UI
+        during NiceGUI's event listener iteration.
+        """
+
+        def do_close():
+            if tab.is_dirty:
+                self._show_save_confirmation(tab)
+            else:
+                self._do_close_tab(tab)
+
+        # Defer to avoid "dictionary changed size during iteration" in tests
+        ui.timer(0, do_close, once=True)
 
     def _show_save_confirmation(self, tab: EditorTab) -> None:
         """Show save confirmation dialog for dirty tab."""
