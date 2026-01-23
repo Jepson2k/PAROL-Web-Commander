@@ -1398,7 +1398,10 @@ def main():
     # else: use env var default (no override needed)
 
     # Initialize client and component instances with final controller target
-    client = AsyncRobotClient(host=config.controller_host, port=config.controller_port)
+    # Use longer timeout for CI environments where scheduling can cause delays
+    client = AsyncRobotClient(
+        host=config.controller_host, port=config.controller_port, timeout=5.0
+    )
     control_panel = ControlPanel(client)
     readout_panel = ReadoutPanel()
     editor_panel = EditorPanel(client)
