@@ -512,6 +512,11 @@ class PathVisualizer:
                     logger.error("Sync simulation also failed: %s", e2)
                     return f"Simulation failed: {e2}"
 
+            # Guard against None result (can happen during shutdown/test teardown)
+            if result is None:
+                logger.warning("Simulation returned None result (sim_id=%d)", sim_id)
+                return "Simulation returned no result"
+
             # Handle errors
             if result.get("error"):
                 logger.error(

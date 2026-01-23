@@ -639,8 +639,9 @@ class UrdfScene(
             # Check if object ID still exists in scene before deleting
             if hasattr(obj, "id") and obj.id in self.scene.objects:
                 obj.delete()
-        except KeyError:
-            # Object was already deleted from scene
+        except (KeyError, RuntimeError):
+            # KeyError: Object was already deleted from scene
+            # RuntimeError: Client was deleted (shutdown race condition)
             pass
 
     @property
