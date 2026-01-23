@@ -527,11 +527,13 @@ def session_client(
     try:
         yield client
     finally:
-        loop = asyncio.new_event_loop()
+        # Use asyncio.run() for cleaner event loop handling during teardown
+        # This avoids issues with new_event_loop() during interpreter shutdown on Python 3.14
         try:
-            loop.run_until_complete(client.close())
-        finally:
-            loop.close()
+            asyncio.run(client.close())
+        except RuntimeError:
+            # Event loop may already be closed or unavailable during shutdown
+            pass
 
 
 @pytest.fixture(autouse=True)
