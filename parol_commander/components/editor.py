@@ -1737,6 +1737,16 @@ print(f"Robot status: {{status}}")
     def _update_scrub_segments(self) -> None:
         """Update the segmented scrub bar to match path_segments.
 
+        Defers the actual update to the next event loop tick to avoid race
+        conditions with NiceGUI's background binding refresh timer.
+        """
+        if not self._scrub_container:
+            return
+        ui.timer(0, self._do_update_scrub_segments, once=True)
+
+    def _do_update_scrub_segments(self) -> None:
+        """Internal implementation of scrub segment update.
+
         Each segment is a colored div element that can be clicked to jump to that step.
         The current segment is highlighted with a lighter shade (filter: brightness).
         First and last segments have rounded corners to match the container.
