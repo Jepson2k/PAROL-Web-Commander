@@ -625,7 +625,12 @@ class UrdfScene(
                 if tid not in active_ids:
                     target_data = self._target_objects[tid]
                     if self.scene:
-                        self.scene.disable_transform_controls(target_data["group"].id)
+                        try:
+                            self.scene.disable_transform_controls(
+                                target_data["group"].id
+                            )
+                        except RuntimeError:
+                            pass  # Client deleted during shutdown
                     self._safe_delete(target_data["group"])
                     del self._target_objects[tid]
                     if self._editing_target_id == tid:
