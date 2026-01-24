@@ -280,18 +280,6 @@ def test_env_config() -> Generator[None, None, None]:
     Sets up fake serial and simulator modes so tests can run without hardware.
     These are only set if not already present in the environment.
     """
-    from pathlib import Path
-
-    # Pre-create .nicegui storage directory and file. NiceGUI's user/screen fixtures
-    # don't create this - they rely on it existing. NiceGUI persists storage
-    # asynchronously via ThreadPoolExecutor, which logs ERROR if the file is missing.
-    # This prevents spurious ERROR logs that would fail tests using the screen fixture.
-    nicegui_storage_dir = Path(".nicegui")
-    nicegui_storage_dir.mkdir(exist_ok=True)
-    storage_file = nicegui_storage_dir / "storage-general.json"
-    if not storage_file.exists():
-        storage_file.write_text("{}")
-
     controller_port, multicast_port = _get_test_ports()
     env_defaults: dict[str, str] = {
         "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
