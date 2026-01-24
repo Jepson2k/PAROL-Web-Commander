@@ -1742,7 +1742,18 @@ print(f"Robot status: {{status}}")
         """
         if not self._scrub_container:
             return
-        ui.timer(0, self._do_update_scrub_segments, once=True)
+
+        # Capture client context for deferred execution
+        try:
+            client = context.client
+        except RuntimeError:
+            return  # No client context available
+
+        def deferred():
+            with client:
+                self._do_update_scrub_segments()
+
+        ui.timer(0, deferred, once=True)
 
     def _do_update_scrub_segments(self) -> None:
         """Internal implementation of scrub segment update.
@@ -1754,7 +1765,6 @@ print(f"Robot status: {{status}}")
         if not self._scrub_container:
             return
 
-        # Clear existing segments
         self._scrub_container.clear()
         self._segment_elements.clear()
 
