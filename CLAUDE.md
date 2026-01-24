@@ -55,6 +55,12 @@ Tests automatically configure reduced rates via `conftest.py`:
 - `PAROL6_STATUS_RATE_HZ=20` (vs 50Hz default) - reduces CI load
 - `PAROL6_FAKE_SERIAL=1` - uses simulator instead of hardware
 
+### CI Red Herring Errors
+
+When debugging CI failures, this error is a **secondary symptom** that occurs after a primary failure:
+
+- **`'AppConfig' object has no attribute 'binding_refresh_interval'`** - NiceGUI's binding loop tries to run after app teardown has started. Look at the logs **before** this error to find the root cause.
+
 ### Test Markers
 
 - `@pytest.mark.integration` - Integration tests requiring full app setup
