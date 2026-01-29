@@ -1749,13 +1749,12 @@ print(f"Robot status: {{status}}")
         except RuntimeError:
             return  # No client context available
 
-        # Skip if client is deleted (during shutdown)
-        if client.is_deleted:
-            return
-
         def deferred():
-            with client:
-                self._do_update_scrub_segments()
+            try:
+                with client:
+                    self._do_update_scrub_segments()
+            except (RuntimeError, KeyError):
+                pass  # Client disconnected
 
         ui.timer(0, deferred, once=True)
 

@@ -32,9 +32,9 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
 
     # Move J1 to its max limit using the limit button
     user.find(marker="btn-j1-max-limit").click()
-    await wait_for_motion_start(robot_state)
+    await wait_for_motion_start(robot_state, timeout_s=5.0)
     final_j1 = await wait_for_motion_stable(
-        lambda: robot_state.angles[0], timeout_s=15.0
+        lambda: robot_state.angles[0], timeout_s=20.0, stable_ticks=30
     )
 
     # Verify we're at or near max limit

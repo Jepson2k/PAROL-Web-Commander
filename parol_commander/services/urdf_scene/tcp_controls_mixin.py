@@ -18,6 +18,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 from nicegui import ui
+from parol6.utils.se3_utils import arrays_equal_6
 from nicegui.helpers import is_user_simulation
 
 from parol_commander.common.theme import SceneColors
@@ -308,7 +309,7 @@ class TCPControlsMixin:
             if len(robot_state.angles) < 6:
                 return
             angles_deg = robot_state.angles.deg
-            if self._last_fk_angles_raw is not None and np.array_equal(
+            if self._last_fk_angles_raw is not None and arrays_equal_6(
                 angles_deg[:6], self._last_fk_angles_raw
             ):
                 return

@@ -1028,9 +1028,7 @@ class DryRunRobotClient:
         self,
         joint_index: int,
         speed: int,
-        duration: float | None = None,
-        distance_deg: float | None = None,
-        wait: bool = True,
+        duration: float,
     ) -> bool:
         """Jog single joint - no path visualization (interactive command)."""
         return True

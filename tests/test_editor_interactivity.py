@@ -260,8 +260,9 @@ class TestEditorInteractivity:
         # Start recording (fiber_manual_record icon)
         click_button_by_icon(class_screen, "fiber_manual_record")
 
-        # Jog a joint briefly
-        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.3)
+        # Jog a joint briefly (0.5s hold to ensure the hold threshold is exceeded
+        # and the motion recorder captures the jog on slow platforms)
+        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.5)
 
         # Verify code was added using WebDriverWait
         try:
@@ -282,30 +283,35 @@ class TestEditorInteractivity:
         wait_for_codemirror_ready(class_screen)
 
         # Ensure recording is on (start if not already from previous test)
-        try:
-            # Check if stop button is visible (means recording is on)
-            class_screen.selenium.find_element(
-                By.XPATH, "//button[.//i[text()='stop']]"
-            )
-        except Exception:
+        # Check if record button has warning color (means recording is active)
+        record_btn = class_screen.selenium.find_element(
+            By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
+        )
+        if "bg-warning" not in (record_btn.get_attribute("class") or ""):
             # Recording not on, start it
-            click_button_by_icon(class_screen, "fiber_manual_record")
+            record_btn.click()
+            # Wait for button color to change to warning (recording active)
+            WebDriverWait(class_screen.selenium, 3).until(
+                lambda d: "bg-warning" in (record_btn.get_attribute("class") or "")
+            )
 
         # Switch to a different tab to hide the program panel (but keep tab visible)
         click_tab(class_screen, "io")
 
         # Wait for backend state to propagate (tab click is async via websocket)
         # CI environments need more time for state propagation
-        time.sleep(0.5)
+        time.sleep(1.0)
 
         # Jog a joint briefly - this will record a movement command
-        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.5)
+        # Use longer duration to ensure motion is detected and recorded
+        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.8)
 
         # Check if the tab has the flash class using WebDriverWait
-        # Use longer timeout for CI environments
+        # The flash animation lasts 2s, so we have a good window to catch it
+        # Use shorter poll frequency to catch it reliably
         tab_flashed = False
         try:
-            WebDriverWait(class_screen.selenium, 5).until(
+            WebDriverWait(class_screen.selenium, 5, poll_frequency=0.1).until(
                 TabFlashCondition(class_screen)
             )
             tab_flashed = True
@@ -316,13 +322,18 @@ class TestEditorInteractivity:
 
     def test_editor_state_persists_after_refresh(self, class_screen: "Screen") -> None:
         """Editor tabs and content should persist after page refresh."""
-        # Stop recording if active from previous test
+        # Stop recording if active from previous test (check by button color)
         try:
-            stop_btn = class_screen.selenium.find_element(
-                By.XPATH, "//button[.//i[text()='stop']]"
+            record_btn = class_screen.selenium.find_element(
+                By.XPATH, "//button[.//i[text()='fiber_manual_record']]"
             )
-            if stop_btn.is_displayed():
-                click_button_by_icon(class_screen, "fiber_manual_record")
+            if "bg-warning" in (record_btn.get_attribute("class") or ""):
+                record_btn.click()
+                # Wait for recording to stop
+                WebDriverWait(class_screen.selenium, 3).until(
+                    lambda d: "bg-warning"
+                    not in (record_btn.get_attribute("class") or "")
+                )
         except Exception:
             pass
 

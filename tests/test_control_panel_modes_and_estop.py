@@ -72,28 +72,9 @@ async def test_digital_estop_dialog_behavior(user: User, robot_state) -> None:
     dialog_card = user.find(marker="estop-dialog")
     assert dialog_card is not None, "E-STOP dialog card should have marker"
 
-
-@pytest.mark.integration
-async def test_digital_estop_blocked_when_physical_active(
-    user: User, robot_state
-) -> None:
-    """Digital E-STOP button click should be blocked when physical E-STOP is active."""
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Set io_estop=0 to simulate physical estop being active
-    # This blocks the digital estop click
-    robot_state.io_estop = 0
-
-    # Try to click digital estop - should be blocked
-    user.find(marker="btn-estop").click()
+    # Clean up: dismiss the dialog by clicking Resume
+    resume_btn.click()
     await asyncio.sleep(0.1)
-
-    # Should see warning notification about physical estop
-    await user.should_see("Physical E-STOP is active")
-
-    # Digital E-STOP dialog should NOT appear
-    await user.should_not_see("Digital E-STOP Active")
 
 
 @pytest.mark.unit

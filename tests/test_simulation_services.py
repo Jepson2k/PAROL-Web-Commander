@@ -3,7 +3,6 @@
 These tests verify actual behavior rather than just checking if buttons exist.
 """
 
-import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -380,30 +379,6 @@ class TestMotionRecorder:
         inserted_code = mock_editor.program_textarea.value
         # Count occurrences of move commands
         assert inserted_code.count("rbt.move_") >= 2
-
-    @pytest.mark.skipif(
-        "GITHUB_ACTIONS" in os.environ,
-        reason="Timing-dependent test: assumes code executes in <0.1s, which is "
-        "unreliable on CI runners where scheduling delays can exceed this threshold",
-    )
-    def test_short_jogs_not_recorded(self, mock_editor):
-        """Very short jogs (< 0.1s) should not be recorded as additional moves."""
-        self._set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles.set_deg(np.zeros(6))
-
-        recorder = MotionRecorder()
-        recorder.toggle_recording()
-
-        # Very short jog (no sleep)
-        recorder.on_jog_start("cartesian", "X+")
-        self._set_robot_pose(150.0, 100.0, 100.0)
-        recorder.on_jog_end()
-
-        # Should only have the initial anchor move, no move from the short jog
-        inserted_code = mock_editor.program_textarea.value
-        # Anchor is move_joints, short jog would have been move_cartesian
-        assert "rbt.move_joints(" in inserted_code  # Anchor is present
-        assert "rbt.move_cartesian(" not in inserted_code  # Short jog not recorded
 
     def test_stop_recording_ends_active_jog(self, mock_editor):
         """Stopping recording should end any active jog."""

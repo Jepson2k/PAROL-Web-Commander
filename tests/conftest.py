@@ -68,15 +68,12 @@ def nicegui_chrome_options():
     """
     options = _webdriver.ChromeOptions()
     if not os.environ.get("HEADED"):
-        options.add_argument("--headless")
+        options.add_argument("headless=new")
     options.add_argument("disable-search-engine-choice-screen")
-    options.add_argument("headless")
+    options.add_argument("--use-gl=angle")
     # Use SwiftShader for software WebGL in CI, hardware GL locally
     if "GITHUB_ACTIONS" in os.environ:
-        options.add_argument("--use-gl=angle")
         options.add_argument("--use-angle=swiftshader-webgl")
-    else:
-        options.add_argument("--use-gl=angle")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     return options
@@ -144,14 +141,12 @@ def class_driver(
 
     options = _webdriver.ChromeOptions()
     if not os.environ.get("HEADED"):
-        options.add_argument("headless")
+        options.add_argument("headless=new")
     options.add_argument("disable-search-engine-choice-screen")
+    options.add_argument("--use-gl=angle")
     # Use SwiftShader for software WebGL in CI, hardware GL locally
     if "GITHUB_ACTIONS" in os.environ:
-        options.add_argument("--use-gl=angle")
         options.add_argument("--use-angle=swiftshader-webgl")
-    else:
-        options.add_argument("--use-gl=angle")
     options.add_argument("no-sandbox")
     options.add_argument("disable-dev-shm-usage")
     # Disable CSS animations for deterministic testing
@@ -395,6 +390,13 @@ def reset_state(request: pytest.FixtureRequest):
     state_module.editor_tabs_state.tabs = []
     state_module.editor_tabs_state.active_tab_id = None
     state_module.ui_state.urdf_scene = None
+
+    # Clear NiceGUI log handler targets to prevent deadlocks when logging
+    # triggers widget.push() on stale widgets outside a NiceGUI context
+    from parol_commander.common.logging_config import _ui_log_targets, _ui_lock
+
+    with _ui_lock:
+        _ui_log_targets.clear()
 
     yield
 

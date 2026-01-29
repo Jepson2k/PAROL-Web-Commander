@@ -9,6 +9,7 @@ Screenshot-based approach inspired by Three.js testing methodology.
 """
 
 import io
+import time
 from typing import TYPE_CHECKING
 
 import pytest
@@ -301,6 +302,21 @@ def find_gizmo_types(screen: "Screen") -> dict:
     )
 
 
+def wait_for_transform_controls(screen: "Screen", timeout_s: float = 10.0) -> bool:
+    """Wait for TransformControls to be attached to the scene.
+
+    Returns:
+        True if TransformControls found, False if timeout.
+    """
+    end_time = time.time() + timeout_s
+    while time.time() < end_time:
+        result = find_gizmo_types(screen)
+        if result.get("hasTransformControls"):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def get_tcp_screen_position(screen: "Screen") -> tuple[float, float] | None:
     """Get TCP ball screen coordinates via Three.js projection.
 
@@ -472,8 +488,11 @@ class TestTCPTransformControls:
         tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
         assert tcp_ball is not None, "TCP ball should exist for TransformControls"
 
-        result = find_gizmo_types(class_screen)
+        # Wait for TransformControls to be attached (may happen async after TCP ball)
+        found = wait_for_transform_controls(class_screen, timeout_s=10.0)
+        assert found, "TransformControls gizmo should be attached within timeout"
 
+        result = find_gizmo_types(class_screen)
         assert result is not None
         assert "error" not in result, f"Error: {result.get('error')}"
         assert result.get("hasTransformControls") is True, (
@@ -574,6 +593,10 @@ class TestTCPTransformControls:
         screen_wait_for_scene_ready(class_screen, timeout_s=30.0)
         tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=20.0)
         assert tcp_ball is not None, "TCP ball should exist"
+
+        # Wait for TransformControls (needed for camera reference in get_tcp_screen_position)
+        found = wait_for_transform_controls(class_screen, timeout_s=10.0)
+        assert found, "TransformControls needed for screen position calculation"
 
         pos = get_tcp_screen_position(class_screen)
         assert pos is not None, "Should be able to get TCP screen position"

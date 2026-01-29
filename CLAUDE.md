@@ -51,7 +51,8 @@ pytest tests/test_editor_integration.py -v
 
 ### Test Environment Configuration
 
-Tests automatically configure reduced rates via `conftest.py`:
+The following are **already configured in `conftest.py`** - do not set them manually:
+- Headless browser mode is the default (only set `HEADED=1` to see the browser)
 - `PAROL6_STATUS_RATE_HZ=20` (vs 50Hz default) - reduces CI load
 - `PAROL6_FAKE_SERIAL=1` - uses simulator instead of hardware
 

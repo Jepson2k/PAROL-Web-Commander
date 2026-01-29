@@ -38,19 +38,17 @@ class RecordingAsyncClient:
     async def jog_joint(
         self,
         index: int,
-        *,
         speed: int,
-        duration: float | None = None,
-        distance_deg: float | None = None,
-    ) -> None:
+        duration: float,
+    ) -> bool:
         """Record a joint jog command."""
         self._record(
             "jog_joint",
             index,
             speed=speed,
             duration=duration,
-            distance_deg=distance_deg,
         )
+        return True
 
     async def jog_cartesian(
         self, frame: Any, axis: Any, speed: int, duration: float

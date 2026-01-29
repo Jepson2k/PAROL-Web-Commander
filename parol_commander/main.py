@@ -218,9 +218,8 @@ async def initialize_urdf_scene() -> None:
         # Align TCP to current tool from controller
         try:
             result = await client.get_tool()
-            tool_val = result.get("tool") if isinstance(result, dict) else None
-            if tool_val:
-                ui_state.urdf_scene.update_tcp_pose_from_tool(tool_val)
+            if result and result.tool:
+                ui_state.urdf_scene.update_tcp_pose_from_tool(result.tool)
         except Exception as e:
             logging.error("Failed to sync TCP tool pose: %s", e)
 
@@ -435,7 +434,7 @@ async def check_ping() -> None:
     global last_ping_ok
     try:
         result = await client.ping()
-        last_ping_ok = result["serial_connected"] if result else False
+        last_ping_ok = result.serial_connected if result else False
     except Exception:
         last_ping_ok = False
 
@@ -627,11 +626,14 @@ def build_page_content() -> None:
                         gripper_page.build()
 
                     # Bind top panel tab changes for visibility tracking
-                    def update_top_layout():
+                    def update_top_layout(e=None):
                         # Track program panel visibility for tab flash
-                        ui_state.program_panel_visible = side_tabs.value == "program"
+                        # Use e.args (new value from event) if available; otherwise fall back to
+                        # side_tabs.value (for direct calls after setting value explicitly)
+                        new_tab = e.args if e and e.args else side_tabs.value or ""
+                        ui_state.program_panel_visible = new_tab == "program"
 
-                    side_tabs.on("update:model-value", lambda e: update_top_layout())
+                    side_tabs.on("update:model-value", update_top_layout)
 
                     # Handle tab switching via PanelResize module
                     def handle_tab_change(e):
@@ -641,7 +643,7 @@ def build_page_content() -> None:
                     side_tabs.on("update:model-value", handle_tab_change)
 
                     # Initial sync to avoid invisible overlay blocking scene
-                    update_top_layout()
+                    ui_state.program_panel_visible = side_tabs.value == "program"
 
                 # Bottom vertical tabs and panels - anchored at bottom-left
                 # Tabs positioned to match top tabs: side-tab-bar has margin: 12px
@@ -1047,7 +1049,7 @@ def _register_handlers() -> None:
                 serial_connected = False
                 try:
                     result = await client.ping()
-                    serial_connected = result["serial_connected"] if result else False
+                    serial_connected = result.serial_connected if result else False
                 except Exception:
                     serial_connected = False
 
@@ -1298,9 +1300,8 @@ async def _status_consumer() -> None:
                     robot_state.io[:] = status.io
                     robot_state.gripper[:] = status.gripper
 
-                    # Mark backend ready on first valid STATUS with non-zero angles
-                    if robot_state.angles[0] != 0.0 or robot_state.angles[5] != 0.0:
-                        readiness_state.mark_backend_done()
+                    # Mark backend ready on first valid STATUS
+                    readiness_state.mark_backend_done()
 
                     # Movement enablement arrays
                     robot_state.joint_en[:] = status.joint_en
