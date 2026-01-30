@@ -302,16 +302,16 @@ class TestEditorInteractivity:
         # CI environments need more time for state propagation
         time.sleep(1.0)
 
-        # Jog a joint briefly - this will record a movement command
-        # Use longer duration to ensure motion is detected and recorded
-        jog_joint_briefly(class_screen, joint_index=0, duration_s=0.8)
+        # Jog joint 2 (J3) instead of joint 0 (J1) - previous tests jog J1+
+        # to its limit, causing wait_motion_complete to take up to 5s
+        jog_joint_briefly(class_screen, joint_index=2, duration_s=0.8)
 
         # Check if the tab has the flash class using WebDriverWait
         # The flash animation lasts 2s, so we have a good window to catch it
-        # Use shorter poll frequency to catch it reliably
+        # Timeout must exceed wait_motion_complete's 5s timeout + processing
         tab_flashed = False
         try:
-            WebDriverWait(class_screen.selenium, 5, poll_frequency=0.1).until(
+            WebDriverWait(class_screen.selenium, 8, poll_frequency=0.1).until(
                 TabFlashCondition(class_screen)
             )
             tab_flashed = True
