@@ -36,15 +36,21 @@ def test_right_click_shows_context_menu(screen) -> None:
         EC.presence_of_element_located((By.CSS_SELECTOR, "canvas"))
     )
 
-    # Right-click on the canvas
-    actions = ActionChains(screen.selenium)
-    actions.context_click(canvas).perform()
-    time.sleep(0.3)
+    # Right-click with retries — first attempts may be swallowed by
+    # dialog dismiss animation or Three.js orbit controls initializing
+    for attempt in range(5):
+        actions = ActionChains(screen.selenium)
+        actions.context_click(canvas).perform()
+        try:
+            menu = WebDriverWait(screen.selenium, 2).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, ".q-menu"))
+            )
+            break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        raise AssertionError("Context menu not visible after 5 right-click attempts")
 
-    # Context menu should appear
-    menu = WebDriverWait(screen.selenium, 5).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".q-menu"))
-    )
     assert menu.is_displayed(), "Context menu should be visible after right-click"
 
 
@@ -59,15 +65,22 @@ def test_context_menu_has_options(screen) -> None:
         EC.presence_of_element_located((By.CSS_SELECTOR, "canvas"))
     )
 
-    actions = ActionChains(screen.selenium)
-    actions.context_click(canvas).perform()
-    time.sleep(0.3)
+    # Right-click with retries
+    for attempt in range(5):
+        actions = ActionChains(screen.selenium)
+        actions.context_click(canvas).perform()
+        try:
+            menu = WebDriverWait(screen.selenium, 2).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, ".q-menu"))
+            )
+            break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        raise AssertionError("Context menu not visible after 5 right-click attempts")
 
     # Find menu items with retry to handle stale element
     def find_menu_items():
-        menu = WebDriverWait(screen.selenium, 5).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".q-menu"))
-        )
         return menu.find_elements(By.CSS_SELECTOR, ".q-item")
 
     menu_items = _retry_find_elements(find_menu_items)
@@ -85,14 +98,20 @@ def test_context_menu_closes_on_click_outside(screen) -> None:
         EC.presence_of_element_located((By.CSS_SELECTOR, "canvas"))
     )
 
-    # Open menu
-    actions = ActionChains(screen.selenium)
-    actions.context_click(canvas).perform()
-    time.sleep(0.3)
+    # Open menu with retries
+    for attempt in range(5):
+        actions = ActionChains(screen.selenium)
+        actions.context_click(canvas).perform()
+        try:
+            menu = WebDriverWait(screen.selenium, 2).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, ".q-menu"))
+            )
+            break
+        except Exception:
+            time.sleep(0.5)
+    else:
+        raise AssertionError("Context menu not visible after 5 right-click attempts")
 
-    menu = WebDriverWait(screen.selenium, 5).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".q-menu"))
-    )
     assert menu.is_displayed(), "Menu should be visible after right-click"
 
     # Click outside the menu to close it (click on the canvas)

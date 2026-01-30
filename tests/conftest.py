@@ -122,6 +122,37 @@ def silence_noisy_logging():
     yield
 
 
+class _ProactorWriteErrorFilter(logging.Filter):
+    """Suppress Windows ProactorEventLoop 'Fatal write error' on datagram transport.
+
+    On Windows, Python's ProactorEventLoop can emit a spurious ERROR when a
+    UDP datagram transport has a pending overlapped write that fires after
+    the proactor is torn down between tests.  This is a known CPython
+    limitation and is harmless -- the transport is already being closed.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Fatal write error on datagram transport" not in record.getMessage()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def suppress_proactor_write_error(silence_noisy_logging):
+    """Filter the Windows-specific ProactorEventLoop datagram write error.
+
+    Prevents the harmless asyncio ERROR from triggering NiceGUI's
+    'unexpected ERROR logs' test failure detection.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+
+    asyncio_logger = logging.getLogger("asyncio")
+    filt = _ProactorWriteErrorFilter()
+    asyncio_logger.addFilter(filt)
+    yield
+    asyncio_logger.removeFilter(filt)
+
+
 # ============================================================================
 # Class-scoped Browser Fixture for Expensive Browser Tests
 # ============================================================================
