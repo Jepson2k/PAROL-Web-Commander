@@ -60,6 +60,7 @@ class ForwardingRecorderClient:
 
 
 @pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.module_under_test(main)
 async def test_e2e_rate_joint(user: User, headless_server, monkeypatch: MonkeyPatch):
     """
@@ -100,6 +101,7 @@ async def test_e2e_rate_joint(user: User, headless_server, monkeypatch: MonkeyPa
 
 
 @pytest.mark.integration
+@pytest.mark.browser
 @pytest.mark.module_under_test(main)
 async def test_e2e_rate_cart(user: User, headless_server, monkeypatch: MonkeyPatch):
     """

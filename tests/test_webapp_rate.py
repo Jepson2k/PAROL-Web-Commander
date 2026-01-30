@@ -65,6 +65,7 @@ class RecorderClient:
 
 
 @pytest.mark.unit
+@pytest.mark.browser
 @pytest.mark.module_under_test(main)
 async def test_webapp_rate_joint(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold J1+ with user fixture, assert ~100 Hz emission."""
@@ -107,6 +108,7 @@ async def test_webapp_rate_joint(user: User, monkeypatch: MonkeyPatch):
 
 
 @pytest.mark.unit
+@pytest.mark.browser
 @pytest.mark.module_under_test(main)
 async def test_webapp_rate_cart(user: User, monkeypatch: MonkeyPatch):
     """Drive the real page, press-and-hold X+ with user fixture, assert ~100 Hz emission."""
