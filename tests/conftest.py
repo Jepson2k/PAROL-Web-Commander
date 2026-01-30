@@ -287,6 +287,23 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Skip browser (screen) tests on Windows/macOS CI runners.
+
+    We rely on NiceGUI/Quasar/Vue to provide a consistent cross-platform
+    experience, so browser tests only need to run on Linux.
+    """
+    if sys.platform == "linux" or "GITHUB_ACTIONS" not in os.environ:
+        return
+
+    skip = pytest.mark.skip(reason="Browser tests disabled on non-Linux CI runners")
+    for item in items:
+        if "browser" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_nicegui_process_pool() -> Generator[None, None, None]:
     """Enable NiceGUI's process pool for cpu_bound() calls in tests.
