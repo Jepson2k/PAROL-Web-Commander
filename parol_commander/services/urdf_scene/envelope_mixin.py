@@ -13,7 +13,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from nicegui import app, ui, run
@@ -439,17 +439,15 @@ def _generate_hull_cpu_bound(
         grids = np.meshgrid(*joint_ranges, indexing="ij")
         q_samples = np.column_stack([g.ravel() for g in grids])
 
-        # Calculate FK for each configuration
-        robot_any = cast(Any, robot)
-        T = robot_any.fkine(q_samples)
+        # Calculate FK for each configuration using batch_fk
+        T_list = robot.batch_fk(q_samples)  # list of 4x4 matrices
 
         # Extract positions (TCP positions)
-        pos = T.t  # (samples, 3)
+        pos = np.array([T[:3, 3] for T in T_list])  # (N, 3)
 
         # Apply tool offset along Z axis of each TCP frame
         if tool_offset_z != 0:
-            # T.R is (N, 3, 3), extract Z column from all rotation matrices
-            z_axes = T.R[:, :, 2]  # shape (N, 3)
+            z_axes = np.array([T[:3, 2] for T in T_list])  # (N, 3)
             pos += z_axes * tool_offset_z
 
         # Calculate distances from origin (robot base)

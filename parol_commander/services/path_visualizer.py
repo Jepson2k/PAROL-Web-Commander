@@ -45,7 +45,7 @@ def _warm_worker() -> bool:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     # These imports take ~3 seconds but only happen once per worker process
-    import parol6.PAROL6_ROBOT  # noqa: F401 - triggers RTB/spatialmath imports
+    import parol6.PAROL6_ROBOT  # noqa: F401 - triggers pinokin imports
     from parol_commander.services.dry_run_client import DryRunRobotClient  # noqa: F401
 
     return True
@@ -64,7 +64,7 @@ async def warm_process_pool() -> None:
     """Pre-warm all process pool workers by importing heavy modules.
 
     This should be called once at app startup (after NiceGUI has initialized
-    the process pool). Each worker process will import roboticstoolbox/spatialmath
+    the process pool). Each worker process will import pinokin/parol6
     once, and subsequent simulations will be fast since workers are reused.
 
     Skipped in test environments where multiprocessing spawn doesn't work properly.

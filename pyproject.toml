@@ -37,7 +37,7 @@ ignore_missing_imports = true
 namespace_packages = false
 
 [[tool.mypy.overrides]]
-module = ["parol6", "parol6.*", "roboticstoolbox", "roboticstoolbox.*", "spatialmath", "spatialmath.*"]
+module = ["parol6", "parol6.*", "pinokin", "pinokin.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -167,12 +167,11 @@ class DryRunRobotClient:
             robot = cast(Any, PAROL6_ROBOT.robot)
             T = robot.fkine(self._current_joints)
 
-            # T is spatialmath SE3 from fkine, extract values
-            so3_rpy(T.R, self._rpy_buffer)
+            so3_rpy(T[:3, :3], self._rpy_buffer)
             self._current_pose = [
-                float(T.t[0]),
-                float(T.t[1]),
-                float(T.t[2]),
+                float(T[0, 3]),
+                float(T[1, 3]),
+                float(T[2, 3]),
                 float(np.degrees(self._rpy_buffer[0])),
                 float(np.degrees(self._rpy_buffer[1])),
                 float(np.degrees(self._rpy_buffer[2])),
