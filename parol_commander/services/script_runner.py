@@ -82,6 +82,10 @@ async def run_script(
     env = {**os.environ, **cfg.get("env", {})}
     if session_id:
         env["PAROL_STEP_SESSION"] = session_id
+    # Pass backend package to subprocess so stepping_bootstrap can patch the right module
+    from parol_commander.state import ui_state
+
+    env["PAROL_BACKEND_PACKAGE"] = ui_state.active_robot.backend_package
 
     # Determine which script to run
     if session_id:

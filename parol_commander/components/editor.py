@@ -11,8 +11,7 @@ from typing import Any, Callable
 
 import numpy as np
 from nicegui import ui, context, Client
-from parol6 import AsyncRobotClient
-from parol6.config import HOME_ANGLES_DEG
+from parol_commander.robot_interface import RobotClient
 
 from parol_commander.common.theme import get_theme, PathColors
 from parol_commander.constants import REPO_ROOT, config
@@ -37,65 +36,85 @@ from parol_commander.services.stepping_client import GUIStepController
 
 logger = logging.getLogger(__name__)
 
-# Home position in radians
-DEFAULT_HOME_JOINTS_RAD = list(np.deg2rad(HOME_ANGLES_DEG))
 
-# Cached robot commands (populated lazily)
+def _get_home_joints_rad() -> list[float]:
+    """Get home position in radians from the active profile."""
+    return list(np.deg2rad(ui_state.active_robot.joints.home.deg))
+
+
+# Cached robot commands (populated lazily, never invalidated — backend
+# switching requires an app restart).
 _robot_commands_cache: dict | None = None
 
 
 # ---- Command Discovery Functions ----
 
 
-def categorize_command(name: str, doc: str) -> str:
-    """Smart categorization based on method name patterns."""
-    name_lower = name.lower()
+_CATEGORY_RE = re.compile(r"^\s*Category:\s*(.+)", re.MULTILINE)
+_EXAMPLE_RE = re.compile(r"^\s*Examples?:\s*$", re.MULTILINE)
 
-    if "smooth_" in name_lower:
-        return "Smooth Motion"
-    elif any(x in name_lower for x in ["move", "jog"]):
-        return "Motion"
-    elif any(x in name_lower for x in ["get_", "ping", "is_", "wait_"]):
-        return "Query"
-    elif "gripper" in name_lower:
-        return "Gripper"
-    elif "gcode" in name_lower:
-        return "GCODE"
-    elif any(
-        x in name_lower
-        for x in ["enable", "disable", "home", "stop", "clear", "stream", "simulator"]
-    ):
-        return "Control & System"
-    elif any(x in name_lower for x in ["io", "set_"]):
-        return "IO"
-    else:
-        return "Other"
+
+def _parse_docstring_category(doc: str) -> str | None:
+    """Extract ``Category: Foo`` from a Google-style docstring."""
+    m = _CATEGORY_RE.search(doc)
+    return m.group(1).strip() if m else None
+
+
+def _parse_docstring_example(doc: str) -> str | None:
+    """Extract the first indented line after an ``Example:`` section."""
+    m = _EXAMPLE_RE.search(doc)
+    if not m:
+        return None
+    rest = doc[m.end() :]
+    for line in rest.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return None
 
 
 def discover_robot_commands() -> dict:
-    """Introspect AsyncRobotClient to find all available commands (cached)."""
+    """Introspect the active backend's AsyncRobotClient to find all available commands (cached).
+
+    Only methods whose docstrings contain both ``Category:`` and ``Example:``
+    sections are included.  Methods without these sections are silently excluded.
+    """
     global _robot_commands_cache
     if _robot_commands_cache is not None:
         return _robot_commands_cache
 
+    try:
+        client_cls = ui_state.active_robot.async_client_class
+    except (AttributeError, RuntimeError):
+        logger.warning("Could not get async_client_class for command discovery")
+        _robot_commands_cache = {}
+        return _robot_commands_cache
+
     commands = {}
 
-    for name in dir(AsyncRobotClient):
+    for name in dir(client_cls):
         if name.startswith("_"):
             continue
-        attr = getattr(AsyncRobotClient, name)
+        attr = getattr(client_cls, name)
         if not callable(attr):
             continue
 
+        doc = (attr.__doc__ or "").strip()
+        category = _parse_docstring_category(doc)
+        snippet = _parse_docstring_example(doc)
+
+        if category is None or snippet is None:
+            continue
+
         sig = inspect.signature(attr)
-        doc = (attr.__doc__ or "").strip().splitlines()[0] if attr.__doc__ else ""
-        category = categorize_command(name, doc)
+        first_line = doc.splitlines()[0] if doc else ""
 
         commands[name] = {
             "title": f"rbt.{name}(...)",
             "category": category,
+            "snippet": snippet,
             "signature": str(sig),
-            "docstring": doc or "No description available",
+            "docstring": first_line or "No description available",
         }
 
     _robot_commands_cache = commands
@@ -129,7 +148,7 @@ def generate_completions_from_commands() -> list[dict]:
 class EditorPanel:
     """Program editor panel with script execution and command palette."""
 
-    def __init__(self, client: AsyncRobotClient) -> None:
+    def __init__(self, client: RobotClient) -> None:
         """Initialize editor panel with state and UI references."""
         self.client = client
         self._ui_client: Client | None = None  # NiceGUI client for JS execution
@@ -202,8 +221,9 @@ class EditorPanel:
 
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
+        backend = ui_state.active_robot.backend_package
         return f"""import time
-from parol6 import RobotClient
+from {backend} import RobotClient
 
 rbt = RobotClient(host={config.controller_host!r}, port={config.controller_port})
 
@@ -232,44 +252,36 @@ print(f"Robot status: {{status}}")
 
     def _insert_python_snippet(self, key: str) -> str:
         """Get Python code snippet for the given key."""
-        snippets = {
-            "enable": "rbt.enable()",
-            "disable": "rbt.disable()",
-            "home": "rbt.home()",
-            "stop": "rbt.stop()",
-            "clear_error": "rbt.clear_error()",
+        # Non-robot utility snippets
+        utility_snippets = {
             "delay": "time.sleep(1.0)",
-            "get_status": "status = rbt.get_status()\nprint(status)",
-            "get_angles": "angles = rbt.get_angles()\nprint(f'Joint angles: {angles}')",
-            "move_joints": "rbt.move_joints([0, 0, 0, 0, 0, 0], speed=50)",
-            "jog_joint": "rbt.jog_joint(0, speed=50, duration=1.0)",
             "comment": "# Add your robot commands here",
         }
+        if key in utility_snippets:
+            return utility_snippets[key]
 
-        # If not in hardcoded snippets, generate from discovered commands
-        if key not in snippets:
-            all_commands = discover_robot_commands()
-            if key in all_commands:
-                doc = all_commands[key]["docstring"]
-                return f"rbt.{key}(...)  # {doc}"
+        # Look up auto-discovered snippet from backend docstrings
+        all_commands = discover_robot_commands()
+        if key in all_commands:
+            return all_commands[key]["snippet"]
 
-        return snippets.get(key, f"rbt.{key}(...)")
+        return f"rbt.{key}(...)"
 
     def _generate_snippet(self, method_name: str, use_current_position: bool) -> str:
         """Generate Python snippet with optional current position pre-fill."""
-        # Get user's current speed and acceleration settings
-        speed = ui_state.jog_speed
-        accel = ui_state.jog_accel
+        # Get user's current speed and acceleration settings (convert 1-100 int to 0.0-1.0 fraction)
+        speed = ui_state.jog_speed / 100.0
+        accel = ui_state.jog_accel / 100.0
 
         # Motion commands that can use current position
         if use_current_position:
-            if method_name == "move_joints":
+            if method_name == "moveJ":
                 angles = list(robot_state.angles.deg)
-                return f"rbt.move_joints({angles}, speed={speed}, accel={accel})"
-            elif method_name in ("move_pose", "move_cartesian"):
+                return f"rbt.moveJ({angles}, speed={speed}, accel={accel})"
+            elif method_name == "moveL":
                 x, y, z = robot_state.x, robot_state.y, robot_state.z
                 rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
-                return f"rbt.{method_name}([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
+                return f"rbt.moveL([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
 
         # Generic snippets - delegate to existing method
         return self._insert_python_snippet(method_name)
@@ -394,20 +406,18 @@ print(f"Robot status: {{status}}")
         # Generate unique marker ID
         marker_id = uuid.uuid4().hex[:8]
 
-        # Get user's current speed and acceleration settings
-        speed = ui_state.jog_speed
-        accel = ui_state.jog_accel
+        # Get user's current speed and acceleration settings (convert 1-100 int to 0.0-1.0 fraction)
+        speed = ui_state.jog_speed / 100.0
+        accel = ui_state.jog_accel / 100.0
 
         # Format the pose with appropriate precision
         pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
 
         # Generate appropriate code based on move_type with marker
         if move_type == "joints":
-            code_line = f"rbt.move_joints({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
-        elif move_type == "cartesian":
-            code_line = f"rbt.move_cartesian({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
-        else:  # Default to move_pose
-            code_line = f"rbt.move_pose({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
+            code_line = f"rbt.moveJ({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
+        else:
+            code_line = f"rbt.moveL({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
 
         # Get current content and add the new line
         content = self.program_textarea.value or ""
@@ -446,15 +456,15 @@ print(f"Robot status: {{status}}")
         # Generate unique marker ID
         marker_id = uuid.uuid4().hex[:8]
 
-        # Get user's current speed and acceleration settings
-        speed = ui_state.jog_speed
-        accel = ui_state.jog_accel
+        # Get user's current speed and acceleration settings (convert 1-100 int to 0.0-1.0 fraction)
+        speed = ui_state.jog_speed / 100.0
+        accel = ui_state.jog_accel / 100.0
 
         # Format the joint angles with appropriate precision
         angles_str = "[" + ", ".join(f"{v:.3f}" for v in joint_angles) + "]"
 
         # Generate code line with marker
-        code_line = f"rbt.move_joints({angles_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
+        code_line = f"rbt.moveJ({angles_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
 
         # Get current content and add the new line
         content = self.program_textarea.value or ""
@@ -701,8 +711,7 @@ print(f"Robot status: {{status}}")
                     [
                         f.name
                         for f in self.PROGRAM_DIR.iterdir()
-                        if f.is_file()
-                        and f.suffix in (".py", ".txt", ".prog", ".gcode", "")
+                        if f.is_file() and f.suffix in (".py", ".txt", ".prog", "")
                     ]
                 )
             except Exception:
@@ -791,7 +800,6 @@ print(f"Robot status: {{status}}")
             self._step_controller = GUIStepController(self._step_session_id)
             self._step_controller.initialize()
 
-            await self.client.stream_off()
             self.script_handle = await run_script(
                 config, on_stdout, on_stderr, session_id=self._step_session_id
             )
@@ -910,7 +918,6 @@ print(f"Robot status: {{status}}")
                         color="positive" if rc == 0 else "warning",
                     )
                     logger.info("Script %s finished with code %s", filename, rc)
-                    await self.client.stream_on()
         except Exception as e:
             logger.error("Error monitoring script process: %s", e)
             # Best-effort reset if still active with UI client context
@@ -960,7 +967,6 @@ print(f"Robot status: {{status}}")
 
             if handle:
                 await stop_script(handle)
-            await self.client.stream_on()
 
             ui.notify("Script stopped", color="warning")
             logger.info("Script stopped by user")
@@ -998,6 +1004,9 @@ print(f"Robot status: {{status}}")
 
         # Update scrub bar segments to match the new paths
         self._update_scrub_segments()
+
+        # Apply timing warning decorations for infeasible durations
+        self._apply_timing_decorations()
 
         # Show error in program log if any
         if error and self.program_log:
@@ -1092,7 +1101,7 @@ print(f"Robot status: {{status}}")
         tab = editor_tabs_state.find_tab_by_id(tab_id)
         if tab and self._is_default_script(tab.content):
             # Default script ends at home position - skip simulation
-            tab.final_joints_rad = list(DEFAULT_HOME_JOINTS_RAD)
+            tab.final_joints_rad = list(_get_home_joints_rad())
             tab.path_segments = []
             tab.targets = []
             # Update global state if active
@@ -1273,7 +1282,7 @@ print(f"Robot status: {{status}}")
         # Trigger simulation at tab creation (with default script optimization)
         if self._is_default_script(tab.content):
             # Default script ends at home position - set directly, skip simulation
-            tab.final_joints_rad = list(DEFAULT_HOME_JOINTS_RAD)
+            tab.final_joints_rad = list(_get_home_joints_rad())
             tab.path_segments = []
             tab.targets = []
         elif tab.content.strip():
@@ -1854,6 +1863,17 @@ print(f"Robot status: {{status}}")
         """Clear the executing line highlight decoration."""
         if self.program_textarea:
             self.program_textarea.clear_decorations("executing")
+
+    def _apply_timing_decorations(self) -> None:
+        """Apply amber line decorations for segments with infeasible timing."""
+        if not self.program_textarea:
+            return
+        warnings = [
+            {"kind": "line", "line": seg.line_number, "class": "cm-timing-warning"}
+            for seg in simulation_state.path_segments
+            if not seg.timing_feasible and seg.line_number > 0
+        ]
+        self.program_textarea.set_decorations(warnings, set_name="timing")
 
     def _build_bottom_bar(self) -> None:
         """Build the bottom playback bar with controls.

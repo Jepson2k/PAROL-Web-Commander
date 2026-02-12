@@ -29,7 +29,7 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
     user.find("HIGH").click()
 
     # Give time for handler and status propagation
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.1)
 
     # Assert that a SET_IO notification was emitted
     assert any("Sent SET_IO" in m for m in user.notify.messages), (
@@ -63,8 +63,8 @@ async def test_gripper_tab_calibrate_button_sends_notification(user: User) -> No
     # Find and click the calibrate button
     user.find("Calibrate gripper").click()
 
-    # Give time for handler
-    await asyncio.sleep(0)
+    # Give time for handler to process and notification to propagate
+    await asyncio.sleep(0.1)
 
     # At least one new notification should have been emitted
     assert len(user.notify.messages) > len(before), (
@@ -93,8 +93,8 @@ async def test_gripper_move_goto_sends_notification(user: User) -> None:
     # Find and click the Move GoTo button (uses current slider values)
     user.find("Move GoTo").click()
 
-    # Give time for handler
-    await asyncio.sleep(0)
+    # Give time for handler to process and notification to propagate
+    await asyncio.sleep(0.1)
 
     # At least one new notification should have been emitted
     assert len(user.notify.messages) > len(before), (

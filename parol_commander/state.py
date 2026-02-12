@@ -6,7 +6,7 @@ from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 from nicegui import binding
-from parol6.server.loop_timer import PhaseTimer
+from parol_commander.common.loop_timer import PhaseTimer
 from typing_extensions import dataclass_transform
 
 # Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from parol_commander.components.editor import EditorPanel
     from parol_commander.components.control import ControlPanel
     from parol_commander.components.readout import ReadoutPanel
+    from parol_commander.robot_interface import Robot
 
     @dataclass_transform(field_specifiers=(field,))
     def bindable_dataclass(cls=None, /, **kwargs):
@@ -312,8 +313,7 @@ class RobotState:
     )  # [id,pos,spd,cur,status,obj]
     # Movement enablement arrays from STATUS (12 ints each)
     joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
-    cart_en_wrf: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
-    cart_en_trf: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
+    cart_en: dict[str, np.ndarray] = field(default_factory=dict)
     connected: bool = False
     # Derived scalars for convenient, high-performance UI bindings
     x: float = 0.0
@@ -335,6 +335,9 @@ class RobotState:
     simulator_active: bool = False
     action_current: str = ""
     action_state: str = ""
+    executing_index: int = -1
+    completed_index: int = -1
+    last_checkpoint: str = ""
     last_update_ts: float = 0.0  # timestamp of last STATUS update
     action_queue: list[dict] = field(default_factory=list)
     # Editing mode - when True, x/y/z/angles are controlled by target editor
@@ -342,6 +345,10 @@ class RobotState:
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
+
+    def init_cart_en(self, frames: tuple[str, ...]) -> None:
+        """Initialize cart_en arrays for each Cartesian frame."""
+        self.cart_en = {f: np.ones(12, dtype=np.int32) for f in frames}
 
     def add_change_listener(self, callback: Callable[[], None]) -> None:
         """Register a callback to be notified when robot state changes."""
@@ -370,15 +377,17 @@ class ControllerState:
 class ProgramState:
     running: bool = False
     cancel_event_present: bool = False
-    last_speed_pct: int | None = None
 
 
 @bindable_dataclass
 class UiState:
+    # Unified robot instance (set at startup, required)
+    robot: "Robot | None" = None
+
     # URDF scene instance (holds UrdfSceneConfig)
     urdf_scene: "UrdfScene | None" = None
     urdf_joint_names: list[str] | None = None
-    urdf_index_mapping: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4, 5])
+    urdf_index_mapping: list[int] = field(default_factory=lambda: list(range(6)))
     current_tool_stls: list[Any] = field(default_factory=list)
 
     # Control panel UI state
@@ -398,6 +407,12 @@ class UiState:
 
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
+
+    @property
+    def active_robot(self) -> "Robot":
+        """Get robot, asserting it's set."""
+        assert self.robot is not None, "robot not set"
+        return self.robot
 
     @property
     def editor_panel(self) -> "EditorPanel":

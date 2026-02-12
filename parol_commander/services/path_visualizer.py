@@ -28,7 +28,6 @@ from parol_commander.state import (
     editor_tabs_state,
 )
 from parol_commander.common.logging_config import TRACE_ENABLED
-from parol_commander.common.theme import MOVE_TYPE_COLORS
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +36,18 @@ MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
 
-def _warm_worker() -> bool:
+def _warm_worker(backend_package: str = "parol6") -> bool:
     """Import heavy modules in subprocess worker. Called once per worker at startup."""
+    import importlib
     import signal
 
     # Ignore SIGINT in worker - main process handles shutdown
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    # These imports take ~3 seconds but only happen once per worker process
-    import parol6.PAROL6_ROBOT  # noqa: F401 - triggers pinokin imports
-    from parol_commander.services.dry_run_client import DryRunRobotClient  # noqa: F401
+    # Import the backend package to trigger pinokin/heavy imports.
+    # Each backend is responsible for initializing its robot model on import.
+    importlib.import_module(backend_package)
+    from parol_commander.services.path_preview_client import PathPreviewClient  # noqa: F401
 
     return True
 
@@ -60,14 +61,17 @@ def _is_test_environment() -> bool:
     )
 
 
-async def warm_process_pool() -> None:
+async def warm_process_pool(backend_package: str = "parol6") -> None:
     """Pre-warm all process pool workers by importing heavy modules.
 
     This should be called once at app startup (after NiceGUI has initialized
-    the process pool). Each worker process will import pinokin/parol6
+    the process pool). Each worker process will import the backend package
     once, and subsequent simulations will be fast since workers are reused.
 
     Skipped in test environments where multiprocessing spawn doesn't work properly.
+
+    Args:
+        backend_package: Backend package to import in workers (e.g. "parol6")
     """
     if _is_test_environment():
         logger.debug("Skipping process pool warming in test environment")
@@ -75,41 +79,30 @@ async def warm_process_pool() -> None:
 
     # ProcessPoolExecutor uses cpu_count() workers by default
     worker_count = os.cpu_count() or 4
-    logger.info("Warming %d process pool workers (importing RTB)...", worker_count)
+    logger.info(
+        "Warming %d process pool workers (importing %s)...",
+        worker_count,
+        backend_package,
+    )
 
     try:
         # Run warm-up in parallel across all workers
-        # Each worker will import RTB once and stay warm
-        futures = [run.cpu_bound(_warm_worker) for _ in range(worker_count)]
+        # Each worker will import the backend once and stay warm
+        futures = [
+            run.cpu_bound(_warm_worker, backend_package) for _ in range(worker_count)
+        ]
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
         logger.warning("Failed to warm process pool workers: %s", e)
 
 
-def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:
-    """
-    Get the visualization color for a given move type.
-
-    Args:
-        move_type: The type of move (e.g., "cartesian", "joints", "smooth")
-        is_valid: Whether the move is valid (invalid moves are always red)
-
-    Returns:
-        Hex color string for the move type
-    """
-    if not is_valid:
-        return MOVE_TYPE_COLORS["invalid"]
-
-    move_type_lower = move_type.lower() if move_type else ""
-    return MOVE_TYPE_COLORS.get(move_type_lower, MOVE_TYPE_COLORS["unknown"])
-
-
 def _run_simulation_isolated(
     program_text: str,
     initial_joints_rad: np.ndarray | None = None,
-    initial_pose_m: list[float] | None = None,
     max_segments: int = MAX_PATH_SEGMENTS,
+    backend_package: str = "parol6",
+    dry_run_client_cls: type | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -121,8 +114,9 @@ def _run_simulation_isolated(
     Args:
         program_text: The Python program to simulate
         initial_joints_rad: Initial joint angles in radians (robot's current position)
-        initial_pose_m: Initial pose [x,y,z,rx,ry,rz] in meters/degrees (more accurate than FK)
         max_segments: Maximum path segments to collect (prevents memory exhaustion)
+        backend_package: Backend package name for module shimming
+        dry_run_client_cls: Concrete DryRunRobotClient class for path preview
 
     Returns:
         Dict with keys:
@@ -140,23 +134,26 @@ def _run_simulation_isolated(
     truncated = False
     error_message: str | None = None
 
-    # Import the dry-run client classes (this happens in the subprocess)
-    # These imports are safe because we're in an isolated process
-    from parol_commander.services.dry_run_client import (
-        DryRunRobotClient,
-        AsyncDryRunRobotClient,
+    import importlib
+
+    from parol_commander.services.path_preview_client import (
+        PathPreviewClient,
+        AsyncPathPreviewClient,
     )
+
+    # Track created client instances so we can read final state after execution
+    created_clients: list[PathPreviewClient] = []
 
     try:
         # Also need types like Axis, Frame if imported
         try:
-            import parol6.protocol.types as types
+            types_mod = importlib.import_module(f"{backend_package}.protocol.types")
         except ImportError:
-            types = None
+            types_mod = None
 
-        # Create shim module for parol6 that uses our collectors
-        class Parol6Shim(ModuleType):
-            """Shim module that provides DryRunRobotClient with local collectors."""
+        # Create shim module for the backend that uses our collectors
+        class BackendShim(ModuleType):
+            """Shim module that provides PathPreviewClient with local collectors."""
 
             # Dynamic attributes set at runtime
             protocol: Any
@@ -165,98 +162,92 @@ def _run_simulation_isolated(
             client: Any
 
             def __init__(self):
-                super().__init__("parol6")
+                super().__init__(backend_package)
                 self._segments = local_segments
                 self._targets = local_targets
-                self._final_state = final_state
                 self._initial_joints = initial_joints_rad
-                self._initial_pose = initial_pose_m
+                self._cached_robot_client_cls: type | None = None
+                self._cached_async_client_cls: type | None = None
 
             @property
             def RobotClient(self):
-                """Return a DryRunRobotClient class that uses local collectors."""
+                """Return a PathPreviewClient class that uses local collectors."""
+                if self._cached_robot_client_cls is not None:
+                    return self._cached_robot_client_cls
+
                 segments = self._segments
                 targets = self._targets
-                state = self._final_state
                 init_joints = self._initial_joints
-                init_pose = self._initial_pose
+                clients = created_clients
+                dr_cls = dry_run_client_cls
 
-                class LocalDryRunRobotClient(DryRunRobotClient):
-                    # Class-level reference to final_state (set before __init__)
-                    _final_state_ref = state
-
+                class LocalPathPreviewClient(PathPreviewClient):
                     def __init__(self, *args, **kwargs):
                         # Ignore host/port args, use local collectors and initial state
                         super().__init__(
                             segment_collector=segments,
                             target_collector=targets,
                             initial_joints=init_joints,
-                            initial_pose=init_pose,
+                            dry_run_client_cls=dr_cls,
                         )
+                        clients.append(self)
 
-                    def _update_pose_from_joints(self):
-                        """Override to also update final_state."""
-                        super()._update_pose_from_joints()
-                        # Update final state whenever joints change
-                        self._final_state_ref["joints_rad"] = list(self._current_joints)
-
-                return LocalDryRunRobotClient
+                self._cached_robot_client_cls = LocalPathPreviewClient
+                return LocalPathPreviewClient
 
             @property
             def AsyncRobotClient(self):
-                """Return an AsyncDryRunRobotClient class that uses local collectors."""
+                """Return an AsyncPathPreviewClient class that uses local collectors."""
+                if self._cached_async_client_cls is not None:
+                    return self._cached_async_client_cls
+
                 segments = self._segments
                 targets = self._targets
-                state = self._final_state
                 init_joints = self._initial_joints
-                init_pose = self._initial_pose
+                clients = created_clients
+                dr_cls = dry_run_client_cls
 
-                class LocalSyncClientForAsync(DryRunRobotClient):
-                    """Sync client with final_state tracking for async wrapper."""
-
-                    _final_state_ref = state
-
-                    def _update_pose_from_joints(self):
-                        super()._update_pose_from_joints()
-                        self._final_state_ref["joints_rad"] = list(self._current_joints)
-
-                class LocalAsyncDryRunRobotClient(AsyncDryRunRobotClient):
+                class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
                     def __init__(self, *args, **kwargs):
-                        # Create sync client with final_state tracking
-                        self._sync_client = LocalSyncClientForAsync(
+                        # Create sync client with local collectors and initial state
+                        self._sync_client = PathPreviewClient(
                             segment_collector=segments,
                             target_collector=targets,
                             initial_joints=init_joints,
-                            initial_pose=init_pose,
+                            dry_run_client_cls=dr_cls,
                         )
+                        clients.append(self._sync_client)
 
-                return LocalAsyncDryRunRobotClient
+                self._cached_async_client_cls = LocalAsyncPathPreviewClient
+                return LocalAsyncPathPreviewClient
 
-        shim_parol6 = Parol6Shim()
+        shim_backend = BackendShim()
 
         # Add protocol types if available
-        if types is not None:
-            shim_parol6.protocol = MagicMock()
-            shim_parol6.protocol.types = types
-            shim_parol6.Axis = types.Axis
-            shim_parol6.Frame = types.Frame
+        if types_mod is not None:
+            shim_backend.protocol = MagicMock()
+            shim_backend.protocol.types = types_mod
+            shim_backend.Axis = types_mod.Axis
+            shim_backend.Frame = types_mod.Frame
 
         # Also mock the client submodule
-        shim_parol6.client = MagicMock()
-        shim_parol6.client.RobotClient = shim_parol6.RobotClient
-        shim_parol6.client.AsyncRobotClient = shim_parol6.AsyncRobotClient
+        shim_backend.client = MagicMock()
+        shim_backend.client.RobotClient = shim_backend.RobotClient
+        shim_backend.client.AsyncRobotClient = shim_backend.AsyncRobotClient
 
         # Save original modules
         original_modules = {}
-        parol6_module_keys = [
-            k for k in sys.modules.keys() if k == "parol6" or k.startswith("parol6.")
+        backend_module_keys = [
+            k
+            for k in sys.modules.keys()
+            if k == backend_package or k.startswith(f"{backend_package}.")
         ]
-        for key in parol6_module_keys:
+        for key in backend_module_keys:
             original_modules[key] = sys.modules[key]
 
-        # Replace parol6 in sys.modules (only affects this subprocess)
-        sys.modules["parol6"] = shim_parol6
-        sys.modules["parol6.client"] = shim_parol6.client
+        # Replace backend in sys.modules (only affects this subprocess)
+        sys.modules[backend_package] = shim_backend
+        sys.modules[f"{backend_package}.client"] = shim_backend.client
 
         # Create mock time module and insert into sys.modules
         # This ensures `import time` returns our mock instead of real time module
@@ -368,7 +359,7 @@ def _run_simulation_isolated(
             # Clean up any modules we added
             for key in list(sys.modules.keys()):
                 if (
-                    key == "parol6" or key.startswith("parol6.")
+                    key == backend_package or key.startswith(f"{backend_package}.")
                 ) and key not in original_modules:
                     del sys.modules[key]
 
@@ -380,6 +371,16 @@ def _run_simulation_isolated(
 
     except Exception as e:
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
+
+    # Flush pending blend buffers (handles scripts without context managers)
+    for c in created_clients:
+        c._flush_blend()
+
+    # Extract final joints from the last created client instance
+    if created_clients:
+        last_client = created_clients[-1]
+        if last_client.last_joints_rad is not None:
+            final_state["joints_rad"] = last_client.last_joints_rad
 
     # Enforce segment limit
     if len(local_segments) > max_segments:
@@ -455,31 +456,10 @@ class PathVisualizer:
                     robot_state.angles.deg,
                 )
 
-            # Get current robot pose for initial position (more accurate than FK)
-            # robot_state.x/y/z is in mm, convert to meters for internal use
-            initial_pose_m: list[float] | None = None
-            if (
-                robot_state.x is not None
-                and robot_state.y is not None
-                and robot_state.z is not None
-            ):
-                initial_pose_m = [
-                    robot_state.x / 1000.0,  # mm -> m
-                    robot_state.y / 1000.0,  # mm -> m
-                    robot_state.z / 1000.0,  # mm -> m
-                    robot_state.rx if robot_state.rx is not None else 0.0,
-                    robot_state.ry if robot_state.ry is not None else 0.0,
-                    robot_state.rz if robot_state.rz is not None else 0.0,
-                ]
-                logger.debug(
-                    "Using current robot pose as initial: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] (mm/deg)",
-                    robot_state.x,
-                    robot_state.y,
-                    robot_state.z,
-                    robot_state.rx or 0.0,
-                    robot_state.ry or 0.0,
-                    robot_state.rz or 0.0,
-                )
+            # Get backend info from current robot
+            backend_pkg = ui_state.active_robot.backend_package
+            dr_instance = ui_state.active_robot.create_dry_run_client()
+            dr_cls = type(dr_instance) if dr_instance is not None else None
 
             try:
                 # Run simulation in subprocess via NiceGUI's cpu_bound
@@ -488,7 +468,9 @@ class PathVisualizer:
                         _run_simulation_isolated,
                         program_text,
                         initial_joints_rad,
-                        initial_pose_m,
+                        MAX_PATH_SEGMENTS,
+                        backend_pkg,
+                        dr_cls,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -506,7 +488,11 @@ class PathVisualizer:
                 )
                 try:
                     result = _run_simulation_isolated(
-                        program_text, initial_joints_rad, initial_pose_m
+                        program_text,
+                        initial_joints_rad,
+                        MAX_PATH_SEGMENTS,
+                        backend_pkg,
+                        dr_cls,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)

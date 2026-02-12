@@ -44,7 +44,7 @@ async def test_home_command_behavior(
     robot_state.simulator_active = True
 
     user.find(marker="btn-home").click()
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.1)
 
     # Assert that success log message was emitted
     assert any("HOME sent" in r.message for r in caplog.get_records("call"))

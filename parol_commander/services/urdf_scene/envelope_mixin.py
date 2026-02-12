@@ -35,7 +35,7 @@ ENVELOPE_CAP_DEPTH = 0.08  # 80mm visible cap depth on the sphere
 ENVELOPE_PROXIMITY_THRESHOLD = 0.10  # 100mm from boundary triggers display
 
 # Cache directory and file paths
-CACHE_DIR = Path.home() / ".parol6"
+CACHE_DIR = Path.home() / ".parol-commander"
 HULL_STL_FILENAME = "workspace_hull.stl"
 HULL_STL_PATH = CACHE_DIR / HULL_STL_FILENAME
 
@@ -48,17 +48,23 @@ STORAGE_KEY = "workspace_hull_cache"
 # -----------------------------------------------------------------------------
 
 
-def _compute_cache_key(tool_offset_z: float = 0.0) -> str:
-    """Compute cache key from joint limits and tool offset."""
-    try:
-        import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+def _compute_cache_key(
+    tool_offset_z: float = 0.0,
+    joint_limits_rad: np.ndarray | None = None,
+) -> str:
+    """Compute cache key from joint limits and tool offset.
 
-        limits = getattr(PAROL6_ROBOT, "_joint_limits_radian", None)
-        if limits is None:
-            return ""
-        limits_arr = np.array(limits)
-        # Hash joint limits + tool offset
-        data = limits_arr.tobytes() + np.array([tool_offset_z]).tobytes()
+    Args:
+        tool_offset_z: Tool TCP Z offset in meters
+        joint_limits_rad: Joint limits in radians, shape (num_joints, 2).
+            If None, reads from ui_state.robot.
+    """
+    try:
+        if joint_limits_rad is None:
+            from parol_commander.state import ui_state
+
+            joint_limits_rad = ui_state.active_robot.joints.limits.position.rad
+        data = joint_limits_rad.tobytes() + np.array([tool_offset_z]).tobytes()
         return hashlib.md5(data).hexdigest()[:12]
     except Exception:
         return ""
@@ -104,6 +110,16 @@ class WorkspaceEnvelope:
         self._current_tool_offset_z: float = 0.0
         self._static_files_registered = False
 
+    def _get_hull_params(self) -> tuple[str | None, list | None]:
+        """Get URDF path and joint limits from the active robot."""
+        from parol_commander.state import ui_state
+
+        if ui_state.robot is None:
+            return None, None
+        urdf_path = ui_state.active_robot.urdf_path
+        joint_limits_rad = ui_state.active_robot.joints.limits.position.rad.tolist()
+        return urdf_path, joint_limits_rad
+
     def _ensure_static_files_registered(self) -> None:
         """Register static files directory for serving STL.
 
@@ -113,16 +129,18 @@ class WorkspaceEnvelope:
         if not CACHE_DIR.exists():
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            app.add_static_files("/parol6-cache", str(CACHE_DIR))
+            app.add_static_files("/parol-commander-cache", str(CACHE_DIR))
             self._static_files_registered = True
-            logger.debug("Registered static files: /parol6-cache -> %s", CACHE_DIR)
+            logger.debug(
+                "Registered static files: /parol-commander-cache -> %s", CACHE_DIR
+            )
         except ValueError:
             # Route already registered (NiceGUI raises ValueError for duplicates)
             self._static_files_registered = True
 
     def _get_stl_url(self) -> str:
         """Get URL for the cached STL file."""
-        return f"/parol6-cache/{HULL_STL_FILENAME}"
+        return f"/parol-commander-cache/{HULL_STL_FILENAME}"
 
     def _load_from_cache(self, tool_offset_z: float) -> bool:
         """Try to load hull from cache.
@@ -221,18 +239,33 @@ class WorkspaceEnvelope:
             "Starting background workspace hull generation with %d samples...", samples
         )
 
+        urdf_path, joint_limits_rad = self._get_hull_params()
+        if urdf_path is None or joint_limits_rad is None:
+            logger.warning("Cannot generate hull: no profile loaded")
+            self._generating = False
+            return False
+
         async def start_background_generation():
             result = None
             try:
                 result = await run.cpu_bound(
-                    _generate_hull_cpu_bound, samples, tool_offset_z
+                    _generate_hull_cpu_bound,
+                    samples,
+                    tool_offset_z,
+                    urdf_path,
+                    joint_limits_rad,
                 )
             except Exception as e:
                 # Fallback to sync in-process generation when subprocess fails
                 # (common in test environments where process pool is unavailable)
                 logger.warning("Subprocess hull generation failed (%s), using sync", e)
                 try:
-                    result = _generate_hull_cpu_bound(samples, tool_offset_z)
+                    result = _generate_hull_cpu_bound(
+                        samples,
+                        tool_offset_z,
+                        urdf_path,
+                        joint_limits_rad,
+                    )
                 except Exception as e2:
                     logger.error("Sync hull generation also failed: %s", e2)
 
@@ -298,8 +331,19 @@ class WorkspaceEnvelope:
             "Generating workspace hull synchronously with %d samples...", samples
         )
 
+        urdf_path, joint_limits_rad = self._get_hull_params()
+        if urdf_path is None or joint_limits_rad is None:
+            logger.warning("Cannot generate hull: no profile loaded")
+            self._generating = False
+            return False
+
         try:
-            result = _generate_hull_cpu_bound(samples, tool_offset_z)
+            result = _generate_hull_cpu_bound(
+                samples,
+                tool_offset_z,
+                urdf_path,
+                joint_limits_rad,
+            )
             if result is not None:
                 self.max_reach = result["max_reach"]
                 vertices = np.array(result["vertices"])
@@ -377,7 +421,10 @@ class WorkspaceEnvelope:
 
 
 def _generate_hull_cpu_bound(
-    samples: int, tool_offset_z: float
+    samples: int,
+    tool_offset_z: float,
+    urdf_path: str | None = None,
+    joint_limits_rad: list | None = None,
 ) -> Optional[Dict[str, Any]]:
     """CPU-bound function to calculate workspace convex hull.
 
@@ -386,6 +433,8 @@ def _generate_hull_cpu_bound(
     Args:
         samples: Number of random configurations to sample
         tool_offset_z: Tool TCP Z offset in meters
+        urdf_path: Path to URDF file for creating pinokin Robot
+        joint_limits_rad: Joint limits in radians, shape (num_joints, 2)
 
     Returns:
         Dict with max_reach, vertices, faces, or None if failed
@@ -408,19 +457,14 @@ def _generate_hull_cpu_bound(
 
     try:
         from scipy.spatial import ConvexHull
-        import parol6.PAROL6_ROBOT as PAROL6_ROBOT
+        from pinokin import Robot
 
-        robot = getattr(PAROL6_ROBOT, "robot", None)
-        if robot is None:
-            sub_logger.warning("Robot model attribute is None")
+        if urdf_path is None or joint_limits_rad is None:
+            sub_logger.warning("urdf_path and joint_limits_rad are required")
             return None
 
-        limits = getattr(PAROL6_ROBOT, "_joint_limits_radian", None)
-        if limits is None:
-            sub_logger.warning("Joint limits not found in PAROL6_ROBOT")
-            return None
-
-        limits_arr = np.array(limits)
+        robot = Robot(urdf_path)
+        limits_arr = np.array(joint_limits_rad)
 
         # Generate evenly spaced joint configurations using a grid
         samples_per_joint = max(2, int(round(samples ** (1 / 6))))
@@ -512,6 +556,14 @@ class EnvelopeMixin:
         self._current_tool: str = "none"
         self._current_tool_offset_z: float = 0.0
 
+    @staticmethod
+    def _is_near_boundary(x_m: float, y_m: float, z_m: float) -> bool:
+        """Check if a point (in meters) is within proximity threshold of the workspace boundary."""
+        if not workspace_envelope._generated or workspace_envelope.max_reach <= 0:
+            return False
+        dist = math.sqrt(x_m * x_m + y_m * y_m + z_m * z_m)
+        return dist >= workspace_envelope.max_reach - ENVELOPE_PROXIMITY_THRESHOLD
+
     def _create_envelope_object(self) -> bool:
         """Create the envelope hull STL object if not already created.
 
@@ -548,20 +600,12 @@ class EnvelopeMixin:
         if envelope_mode != "auto":
             return
 
-        # Check if hull is ready
-        if not workspace_envelope._generated or workspace_envelope.max_reach <= 0:
-            return
-
-        max_reach = workspace_envelope.max_reach
-        boundary_distance = max_reach - ENVELOPE_PROXIMITY_THRESHOLD
-
         # Get robot TCP position (convert mm to m)
         tcp_x = robot_state.x / 1000.0
         tcp_y = robot_state.y / 1000.0
         tcp_z = robot_state.z / 1000.0
-        tcp_dist = math.sqrt(tcp_x * tcp_x + tcp_y * tcp_y + tcp_z * tcp_z)
 
-        show_envelope = tcp_dist >= boundary_distance
+        show_envelope = self._is_near_boundary(tcp_x, tcp_y, tcp_z)
 
         if show_envelope:
             # Create envelope if needed
@@ -575,7 +619,7 @@ class EnvelopeMixin:
             if self.envelope_object:
                 approaching_positions = [(tcp_x, tcp_y, tcp_z)]
                 clipping_planes = self._calculate_envelope_clipping_planes(
-                    approaching_positions, max_reach
+                    approaching_positions, workspace_envelope.max_reach
                 )
                 if clipping_planes and self.scene:
                     envelope_id = str(self.envelope_object.id)

@@ -1,6 +1,11 @@
-"""Test URDF scene context menu and envelope visibility using screen fixture."""
+"""Test URDF scene context menu and envelope visibility.
+
+Context-menu tests share a browser session (class_screen) so the 30-second
+WebGL initialisation only happens once instead of per-test.
+"""
 
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 from selenium.webdriver.common.by import By
@@ -11,6 +16,9 @@ from selenium.common.exceptions import StaleElementReferenceException
 
 from tests.conftest import skip_webgl_macos_ci
 from tests.helpers.wait import screen_wait_for_scene_ready
+
+if TYPE_CHECKING:
+    from nicegui.testing.screen import Screen
 
 
 def _retry_find_elements(finder_func, retries: int = 3, delay: float = 0.2):
@@ -24,120 +32,74 @@ def _retry_find_elements(finder_func, retries: int = 3, delay: float = 0.2):
             time.sleep(delay)
 
 
-@pytest.mark.browser
-@skip_webgl_macos_ci
-def test_right_click_shows_context_menu(screen) -> None:
-    """Test that right-clicking on the 3D scene shows the context menu."""
-    screen.open("/")
-    screen_wait_for_scene_ready(screen)
-
-    # Find the 3D scene canvas
+def _open_context_menu(screen: "Screen"):
+    """Right-click the 3D canvas and return the visible context menu element."""
     canvas = WebDriverWait(screen.selenium, 10).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, "canvas"))
     )
 
-    # Right-click with retries — first attempts may be swallowed by
-    # dialog dismiss animation or Three.js orbit controls initializing
-    for attempt in range(5):
-        actions = ActionChains(screen.selenium)
-        actions.context_click(canvas).perform()
+    for _attempt in range(5):
+        ActionChains(screen.selenium).context_click(canvas).perform()
         try:
-            menu = WebDriverWait(screen.selenium, 2).until(
+            return WebDriverWait(screen.selenium, 2).until(
                 EC.visibility_of_element_located((By.CSS_SELECTOR, ".q-menu"))
             )
-            break
         except Exception:
             time.sleep(0.5)
-    else:
-        raise AssertionError("Context menu not visible after 5 right-click attempts")
 
-    assert menu.is_displayed(), "Context menu should be visible after right-click"
+    raise AssertionError("Context menu not visible after 5 right-click attempts")
+
+
+# ---------------------------------------------------------------------------
+# Context-menu tests — share one browser session via class_screen
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.browser
 @skip_webgl_macos_ci
-def test_context_menu_has_options(screen) -> None:
-    """Test that context menu has menu items when right-clicking."""
-    screen.open("/")
-    screen_wait_for_scene_ready(screen)
+class TestContextMenu:
+    """Context menu behaviour on the 3D scene canvas."""
 
-    canvas = WebDriverWait(screen.selenium, 10).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "canvas"))
-    )
+    def test_right_click_shows_context_menu(self, class_screen: "Screen") -> None:
+        """Right-clicking on the 3D scene shows the context menu."""
+        screen_wait_for_scene_ready(class_screen)
+        menu = _open_context_menu(class_screen)
+        assert menu.is_displayed()
 
-    # Right-click with retries
-    for attempt in range(5):
-        actions = ActionChains(screen.selenium)
-        actions.context_click(canvas).perform()
-        try:
-            menu = WebDriverWait(screen.selenium, 2).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, ".q-menu"))
-            )
-            break
-        except Exception:
-            time.sleep(0.5)
-    else:
-        raise AssertionError("Context menu not visible after 5 right-click attempts")
+    def test_context_menu_has_options(self, class_screen: "Screen") -> None:
+        """Context menu contains at least one item."""
+        menu = _open_context_menu(class_screen)
+        items = _retry_find_elements(
+            lambda: menu.find_elements(By.CSS_SELECTOR, ".q-item")
+        )
+        assert len(items) > 0, "Context menu should have options"
 
-    # Find menu items with retry to handle stale element
-    def find_menu_items():
-        return menu.find_elements(By.CSS_SELECTOR, ".q-item")
+    def test_context_menu_closes_on_click_outside(self, class_screen: "Screen") -> None:
+        """Context menu closes when clicking outside."""
+        menu = _open_context_menu(class_screen)
+        assert menu.is_displayed()
 
-    menu_items = _retry_find_elements(find_menu_items)
-    assert len(menu_items) > 0, "Context menu should have options"
+        canvas = class_screen.selenium.find_element(By.CSS_SELECTOR, "canvas")
+        ActionChains(class_screen.selenium).move_to_element(canvas).click().perform()
+        time.sleep(0.3)
+
+        menus = class_screen.selenium.find_elements(By.CSS_SELECTOR, ".q-menu")
+        visible = [m for m in menus if m.is_displayed()]
+        assert len(visible) == 0, "Context menu should close when clicking outside"
 
 
-@pytest.mark.browser
-@skip_webgl_macos_ci
-def test_context_menu_closes_on_click_outside(screen) -> None:
-    """Test that context menu closes when clicking outside."""
-    screen.open("/")
-    screen_wait_for_scene_ready(screen)
-
-    canvas = WebDriverWait(screen.selenium, 10).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, "canvas"))
-    )
-
-    # Open menu with retries
-    for attempt in range(5):
-        actions = ActionChains(screen.selenium)
-        actions.context_click(canvas).perform()
-        try:
-            menu = WebDriverWait(screen.selenium, 2).until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, ".q-menu"))
-            )
-            break
-        except Exception:
-            time.sleep(0.5)
-    else:
-        raise AssertionError("Context menu not visible after 5 right-click attempts")
-
-    assert menu.is_displayed(), "Menu should be visible after right-click"
-
-    # Click outside the menu to close it (click on the canvas)
-    actions = ActionChains(screen.selenium)
-    actions.move_to_element(canvas).click().perform()
-    time.sleep(0.3)
-
-    # Menu should be gone or hidden
-    menus = screen.selenium.find_elements(By.CSS_SELECTOR, ".q-menu")
-    visible_menus = [m for m in menus if m.is_displayed()]
-    assert len(visible_menus) == 0, "Context menu should close when clicking outside"
+# ---------------------------------------------------------------------------
+# Envelope test — needs enable_envelope before app startup, own session
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.browser
 @skip_webgl_macos_ci
 def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
-    """Test that envelope sphere is visible in scene when mode is 'on'.
-
-    Uses the Settings UI to change envelope mode, then verifies the envelope
-    object exists in the Three.js scene.
-    """
+    """Envelope sphere is visible in scene when mode is 'on'."""
     screen.open("/")
     screen_wait_for_scene_ready(screen)
 
-    # Wait for envelope generation to complete (polling instead of fixed sleep)
-    # Hull generation with 500k samples takes ~3-5s plus process pool overhead
     from parol_commander.services.urdf_scene.envelope_mixin import workspace_envelope
 
     for _ in range(150):  # Up to 15 seconds
@@ -149,7 +111,6 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
         "Envelope should be generated before testing visibility"
     )
 
-    # Click Settings tab (find by text content)
     settings_tab = WebDriverWait(screen.selenium, 5).until(
         EC.element_to_be_clickable(
             (By.XPATH, "//*[contains(@class, 'q-tab')]//*[text()='Settings']")
@@ -158,15 +119,12 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
     settings_tab.click()
     time.sleep(0.3)
 
-    # Find and click the envelope mode select using JavaScript
-    # This is more reliable than complex XPath
     screen.selenium.execute_script(
         """
         const labels = document.querySelectorAll('*');
         for (const label of labels) {
             if (label.textContent.includes('Workspace Envelope') &&
                 !label.textContent.includes('Show reachable')) {
-                // Find the select in the same row
                 const row = label.closest('.row');
                 if (row) {
                     const select = row.querySelector('.q-select');
@@ -179,16 +137,14 @@ def test_envelope_visible_when_mode_on(screen, enable_envelope) -> None:
     )
     time.sleep(0.3)
 
-    # Select "On" from the dropdown
     on_option = WebDriverWait(screen.selenium, 5).until(
         EC.element_to_be_clickable(
             (By.XPATH, "//*[contains(@class, 'q-item')]//*[text()='On']")
         )
     )
     on_option.click()
-    time.sleep(1.0)  # Wait for envelope to be added to scene
+    time.sleep(1.0)
 
-    # Check for envelope object in the three.js scene
     result = screen.selenium.execute_script(
         """
         const sceneDiv = document.querySelector('.nicegui-scene');

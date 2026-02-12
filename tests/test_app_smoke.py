@@ -3,6 +3,26 @@
 import pytest
 from nicegui.testing import User
 
+from tests.helpers.wait import wait_for_app_ready
+
+
+@pytest.mark.integration
+async def test_status_consumer_starts(user: User) -> None:
+    """Status consumer must start and receive data from the controller.
+
+    Regression test: the server readiness check used loop.sock_sendto()
+    which is not implemented by uvloop (NiceGUI's event loop).  This caused
+    start_controller() to fail silently, leaving the status consumer
+    uncreated and the UI frozen with stale position data.
+    """
+    from parol_commander.state import readiness_state
+
+    await user.open("/")
+    await wait_for_app_ready(timeout_s=15.0)
+    assert readiness_state._backend_done, (
+        "status consumer never received a STATUS update"
+    )
+
 
 @pytest.mark.integration
 async def test_root_page_loads(user: User) -> None:

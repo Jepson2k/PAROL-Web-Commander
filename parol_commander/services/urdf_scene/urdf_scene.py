@@ -26,9 +26,8 @@ import numpy as np
 from nicegui import ui, app  # type: ignore[no-redef]
 
 from parol_commander.common.logging_config import TRACE_ENABLED
-from parol_commander.common.theme import SceneColors
+from parol_commander.common.theme import SceneColors, get_color_for_move_type
 from parol_commander.state import simulation_state, robot_state, ui_state
-from parol_commander.services.path_visualizer import get_color_for_move_type
 
 from .envelope_mixin import workspace_envelope
 
@@ -43,7 +42,7 @@ from .loader import (
 )
 from .editing_mixin import EditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
-from .envelope_mixin import EnvelopeMixin, ENVELOPE_PROXIMITY_THRESHOLD
+from .envelope_mixin import EnvelopeMixin
 from .path_renderer_mixin import PathRendererMixin
 
 logger = logging.getLogger(__name__)
@@ -499,26 +498,19 @@ class UrdfScene(
         approaching_positions: List[Tuple[float, float, float]] = []
 
         if envelope_mode == "auto":
-            if workspace_envelope._generated and workspace_envelope.max_reach > 0:
-                max_reach = workspace_envelope.max_reach
-                boundary_distance = max_reach - ENVELOPE_PROXIMITY_THRESHOLD
+            # Check robot TCP position (convert mm to m)
+            tcp_x = robot_state.x / 1000.0
+            tcp_y = robot_state.y / 1000.0
+            tcp_z = robot_state.z / 1000.0
+            if self._is_near_boundary(tcp_x, tcp_y, tcp_z):
+                approaching_positions.append((tcp_x, tcp_y, tcp_z))
 
-                # Check robot TCP position (convert mm to m)
-                tcp_x = robot_state.x / 1000.0
-                tcp_y = robot_state.y / 1000.0
-                tcp_z = robot_state.z / 1000.0
-                tcp_dist = math.hypot(tcp_x, tcp_y, tcp_z)
-
-                if tcp_dist >= boundary_distance:
-                    approaching_positions.append((tcp_x, tcp_y, tcp_z))
-
-                # Check each target position
-                for target in simulation_state.targets:
-                    if len(target.pose) >= 3:
-                        tx, ty, tz = target.pose[0], target.pose[1], target.pose[2]
-                        target_dist = math.hypot(tx, ty, tz)
-                        if target_dist >= boundary_distance:
-                            approaching_positions.append((tx, ty, tz))
+            # Check each target position
+            for target in simulation_state.targets:
+                if len(target.pose) >= 3:
+                    tx, ty, tz = target.pose[0], target.pose[1], target.pose[2]
+                    if self._is_near_boundary(tx, ty, tz):
+                        approaching_positions.append((tx, ty, tz))
 
         # Update envelope using mixin method
         self._update_envelope_in_simulation_view(approaching_positions)

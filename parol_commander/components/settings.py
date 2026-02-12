@@ -9,9 +9,7 @@ from nicegui import ui
 
 from parol_commander.common.theme import set_theme
 from parol_commander.state import simulation_state, ui_state
-from parol6 import AsyncRobotClient
-from parol6.motion.trajectory import ProfileType
-from parol6.tools import TOOL_CONFIGS
+from parol_commander.robot_interface import RobotClient
 
 
 def get_available_serial_ports() -> list[str]:
@@ -36,7 +34,7 @@ def get_available_serial_ports() -> list[str]:
 class SettingsContent:
     """Settings content that can be embedded in the control panel."""
 
-    def __init__(self, client: AsyncRobotClient) -> None:
+    def __init__(self, client: RobotClient) -> None:
         self.client = client
         self._port_select: ui.select | None = None
         self._envelope_buttons: dict[str, ui.button] = {}
@@ -205,14 +203,15 @@ class SettingsContent:
 
             ui.notify(f"Tool: {tool}", color="primary")
 
-        # Build tool options from TOOL_CONFIGS
-        tool_options = {"none": "None"}
-        for tool_name in TOOL_CONFIGS.keys():
-            # Format tool name for display (capitalize, replace underscores)
-            display_name = tool_name.replace("_", " ").title()
-            tool_options[tool_name] = display_name
+        # Build tool options from robot tools
+        tool_options = {}
+        for tool in ui_state.active_robot.tools.available:
+            tool_options[tool.key] = tool.display_name
 
-        stored_tool = ng_app.storage.general.get("selected_tool", "none")
+        default_tool = next(iter(tool_options), "NONE")
+        stored_tool = ng_app.storage.general.get("selected_tool", default_tool)
+        if stored_tool not in tool_options:
+            stored_tool = default_tool
 
         with ui.row().classes("items-center justify-between w-full overflow-hidden"):
             with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
@@ -227,7 +226,7 @@ class SettingsContent:
             ).classes("w-32").props("dense").mark("select-tool")
 
         # Sync initial tool state
-        if stored_tool and stored_tool != "none":
+        if stored_tool and stored_tool != default_tool:
             if ui_state.urdf_scene and hasattr(
                 ui_state.urdf_scene, "update_tcp_pose_from_tool"
             ):
@@ -241,8 +240,10 @@ class SettingsContent:
             ng_app.storage.general["motion_profile"] = profile
             await self.client.set_profile(profile)
 
-        # Build profile options from ProfileType enum
-        motion_profile_options = {p.value.upper(): p.name.title() for p in ProfileType}
+        # Build profile options from the robot profile
+        motion_profile_options = {}
+        for p in ui_state.active_robot.motion_profiles:
+            motion_profile_options[p] = p.replace("_", " ").title()
 
         with ui.row().classes("items-center justify-between w-full overflow-hidden"):
             with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
@@ -255,6 +256,23 @@ class SettingsContent:
                 value=prefs["motion_profile"],
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
+
+        ui.separator().classes("my-1")
+
+        # Robot Backend Selection
+        backend_options = {"parol6": "PAROL6"}
+        stored_backend = ui_state.active_robot.backend_package
+
+        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
+            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
+                ui.label("Robot Backend").classes("text-sm font-medium truncate")
+                ui.label("Robot control library").classes(
+                    "text-xs text-gray-500 dark:text-gray-400 truncate"
+                )
+            ui.select(
+                options=backend_options,
+                value=stored_backend,
+            ).classes("w-32").props("dense disable").mark("select-robot-backend")
 
         ui.separator().classes("my-1")
 

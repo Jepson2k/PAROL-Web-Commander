@@ -76,31 +76,43 @@ class PathColors:
     TIMING_WARNING = "#f59e0b"  # amber-500 - needs more time than requested
 
 
-# Move type to color mapping (for path_visualizer and dry_run_client)
+# Move type to color mapping (for path_visualizer and path_preview_client)
 MOVE_TYPE_COLORS: dict[str, str] = {
     # Cartesian moves (green)
     "cartesian": PathColors.CARTESIAN,
-    "move_cartesian": PathColors.CARTESIAN,
-    "move_pose": PathColors.CARTESIAN,
-    "pose": PathColors.CARTESIAN,
     # Joint moves (blue)
     "joints": PathColors.JOINTS,
-    "move_joints": PathColors.JOINTS,
-    # Smooth moves (purple)
+    # Curved/smooth moves (purple)
     "smooth": PathColors.SMOOTH,
-    "smooth_move": PathColors.SMOOTH,
-    "smooth_cartesian": PathColors.SMOOTH,
-    "smooth_joints": PathColors.SMOOTH,
-    "smooth_waypoints": PathColors.SMOOTH,
-    "smooth_spline": PathColors.SMOOTH,
-    "smooth_circle": PathColors.SMOOTH,
     "smooth_arc": PathColors.SMOOTH,
-    "smooth_helix": PathColors.SMOOTH,
+    "smooth_spline": PathColors.SMOOTH,
+    # Jog (use cartesian color)
+    "jog": PathColors.CARTESIAN,
     # Status colors
     "invalid": PathColors.INVALID,
     "timing_warning": PathColors.TIMING_WARNING,
     "unknown": PathColors.CARTESIAN,
 }
+
+
+def get_color_for_move_type(move_type: str, is_valid: bool = True) -> str:
+    """Get the visualization color for a move type."""
+    if not is_valid:
+        return MOVE_TYPE_COLORS["invalid"]
+
+    move_type_lower = move_type.lower() if move_type else "unknown"
+
+    if move_type_lower in MOVE_TYPE_COLORS:
+        return MOVE_TYPE_COLORS[move_type_lower]
+
+    if "smooth" in move_type_lower:
+        return MOVE_TYPE_COLORS["smooth"]
+    if "joint" in move_type_lower:
+        return MOVE_TYPE_COLORS["joints"]
+    if "cartesian" in move_type_lower or "pose" in move_type_lower:
+        return MOVE_TYPE_COLORS["cartesian"]
+
+    return MOVE_TYPE_COLORS["unknown"]
 
 
 def get_palette(mode: ThemeMode) -> dict[str, str]:
@@ -901,6 +913,9 @@ html, body {
 }
 .cm-line.cm-line-flash {
   animation: cm-line-flash 1.5s ease-out forwards;
+}
+.cm-line.cm-timing-warning {
+  background-color: color-mix(in srgb, var(--sem-warning) 20%, transparent);
 }
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */

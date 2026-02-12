@@ -24,12 +24,12 @@ from nicegui.testing.screen_plugin import (
     pytest_runtest_makereport,  # noqa: F401
     screen,  # noqa: F401 - default screen fixture (creates browser per test)
 )
-from parol6.client.manager import is_server_running
+from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
 
 if TYPE_CHECKING:
-    from parol6 import AsyncRobotClient, ServerManager
+    from parol6 import AsyncRobotClient
 
 # ============================================================================
 # Skip marker for WebGL-dependent tests on macOS CI
@@ -413,8 +413,10 @@ def reset_state(request: pytest.FixtureRequest):
     state_module.robot_state.io_out2 = 0
     state_module.robot_state.io_estop = 1
     state_module.robot_state.joint_en = np.ones(12, dtype=np.int32)
-    state_module.robot_state.cart_en_wrf = np.ones(12, dtype=np.int32)
-    state_module.robot_state.cart_en_trf = np.ones(12, dtype=np.int32)
+    state_module.robot_state.cart_en = {
+        "WRF": np.ones(12, dtype=np.int32),
+        "TRF": np.ones(12, dtype=np.int32),
+    }
     state_module.robot_state.last_update_ts = 0.0
     state_module.robot_state.action_state = ""
     state_module.robot_state.action_current = ""
@@ -481,10 +483,8 @@ def kill_stale_controllers() -> Generator[None, None, None]:
         try:
             from parol_commander.constants import config
 
-            running = is_server_running(
-                host=config.controller_host, port=controller_port, timeout=0.5
-            )
-            if running:
+            probe = Robot(host=config.controller_host, port=controller_port)
+            if probe.is_available():
                 _kill()
         except Exception:
             pass
@@ -495,30 +495,28 @@ def session_controller(
     test_env_config: None,
     kill_stale_controllers: None,
     warmup_jit_cache: None,
-) -> Generator["ServerManager", None, None]:
+) -> Generator["Robot", None, None]:
     """Session-scoped controller shared by all tests.
 
     Starts the controller once per test session and keeps it running.
     The app's start_controller() will detect it and reuse it (via PAROL_EXCLUSIVE_START=0).
     This saves ~4 seconds per test (2s start + 2s stop).
     """
-    from parol6 import manage_server
-
     controller_port, multicast_port = _get_test_ports()
 
-    # Start controller once for entire session
-    server_manager = manage_server(
+    robot = Robot(
         host="127.0.0.1",
         port=controller_port,
-        com_port=None,
         normalize_logs=True,
+    )
+    robot.start(
         extra_env={"PAROL6_STATUS_MULTICAST_PORT": str(multicast_port)},
     )
 
     try:
-        yield server_manager
+        yield robot
     finally:
-        server_manager.stop_controller()
+        robot.stop()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -536,11 +534,11 @@ def warmup_jit_cache(silence_noisy_logging: None) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def session_client(
-    session_controller: "ServerManager",
+    session_controller: "Robot",
 ) -> Generator["AsyncRobotClient", None, None]:
     """Session-scoped async client connected to the session controller.
 
-    Performs initial setup (simulator_on, stream_on, enable) once per session.
+    Performs initial setup (simulator_on, enable) once per session.
     The controller_reset fixture can be used for per-test reset if needed.
     """
     from parol6 import AsyncRobotClient
@@ -551,10 +549,9 @@ def session_client(
 
     # Initial setup - wait for controller and enable simulator
     async def setup():
-        await client.wait_for_server_ready(timeout=10.0)
+        await client.wait_ready(timeout=10.0)
         await client.simulator_on()
-        await client.stream_on()
-        await client.enable()
+        await client.resume()
 
     loop = asyncio.new_event_loop()
     try:
@@ -577,7 +574,7 @@ def session_client(
 @pytest.fixture(autouse=True)
 async def controller_reset(
     request: pytest.FixtureRequest,
-    session_controller: "ServerManager",
+    session_controller: "Robot",
 ):
     """Per-test fixture that resets the shared controller state.
 
@@ -604,7 +601,7 @@ async def controller_reset(
             host="127.0.0.1", port=controller_port, timeout=5.0
         ) as client:
             await client.reset()
-            await client.enable()
+            await client.resume()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
             await client.home(

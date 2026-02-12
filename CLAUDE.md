@@ -56,6 +56,8 @@ The following are **already configured in `conftest.py`** - do not set them manu
 - `PAROL6_STATUS_RATE_HZ=20` (vs 50Hz default) - reduces CI load
 - `PAROL6_FAKE_SERIAL=1` - uses simulator instead of hardware
 
+**IMPORTANT: Do NOT prefix `pytest` commands with environment variables like `PAROL6_FAKE_SERIAL=1 pytest ...`. Everything is already set in conftest.py. Just run `pytest` directly.**
+
 ### CI Red Herring Errors
 
 When debugging CI failures, this error is a **secondary symptom** that occurs after a primary failure:
@@ -89,6 +91,10 @@ Prefer fewer, comprehensive integration tests that mimic manual testing over a l
 - A single comprehensive test that exercises a complete workflow is better than many shallow tests
 - **Merge into one function** - When tests are variations of the same thing (e.g., positive/negative jog), combine into one test with multiple assertions
 - **Class-level fixture sharing** - When tests are logically separate but don't need isolation, group them in a class with class-scoped fixtures to avoid per-test startup/teardown (especially important for expensive browser tests)
+- **NEVER** run long test suites and only capture a few lines of output (e.g. `| tail -5` or `| grep passed`). This wastes time when you have to re-run to see failures.
+- Always capture enough output to see BOTH the summary line AND any failure tracebacks in a single run. Use `tail -40` or similar.
+- For background test runs, just let the full output come through.
+- **NEVER run parol6 and web commander test suites in parallel** — no proper isolation, they share resources and have timing issues when resource-constrained. Always run sequentially.
 
 ## Code Patterns
 

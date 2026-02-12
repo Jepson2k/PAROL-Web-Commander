@@ -1,7 +1,8 @@
 """
-IK Solver for editing mode using pinokin.
+IK Solver for editing mode.
 
-Uses pinokin (Pinocchio) for URDF-based forward and inverse kinematics.
+Uses the Robot protocol for forward and inverse kinematics,
+eliminating direct backend imports.
 """
 
 import time
@@ -10,13 +11,11 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 import numpy as np
 
-from pinokin import Robot
-from parol6.utils.ik import solve_ik as parol6_solve_ik
-from parol6.utils.se3_utils import se3_from_rpy, so3_rpy
+from parol_commander.robot_interface import Robot
 
 
 @dataclass
-class IKResult:
+class EditingIKResult:
     """Result of an IK solve operation."""
 
     success: bool
@@ -34,10 +33,9 @@ class IKResult:
 
 class EditingIKSolver:
     """
-    IK solver for editing mode manipulation using pinokin.
+    IK solver for editing mode manipulation.
 
-    Uses pinokin's URDF parser and numerical IK solvers for
-    accurate forward and inverse kinematics.
+    Uses the Robot protocol for forward and inverse kinematics.
     """
 
     def __init__(self, robot: Robot, num_joints: int = 6):
@@ -45,25 +43,22 @@ class EditingIKSolver:
         Initialize the IK solver.
 
         Args:
-            robot: pinokin Robot instance loaded from URDF
+            robot: Robot providing FK/IK
             num_joints: Number of joints to solve for (default 6)
         """
         self.robot = robot
         self.num_joints = num_joints
 
-        # Pre-allocated buffers to avoid per-call allocations
-        self._q_buffer = np.zeros(robot.nq, dtype=float)
-        self._fk_result_buffer = np.zeros(6, dtype=float)
-        self._rpy_buffer = np.zeros(3, dtype=np.float64)
-        self._T_fk_buffer = np.asfortranarray(np.zeros((4, 4), dtype=np.float64))
-        self._T_target_buffer = np.zeros((4, 4), dtype=np.float64)
+        # Pre-allocated buffers
+        self._fk_result_buffer = np.zeros(6, dtype=np.float64)
+        self._pose_buf = np.zeros(6, dtype=np.float64)
 
         # Throttling
         self._last_solve_time = 0.0
         self._min_solve_interval = 0.033  # ~30Hz
 
         logging.debug(
-            "EditingIKSolver initialized with pinokin: %d joints",
+            "EditingIKSolver initialized: %d joints",
             self.num_joints,
         )
 
@@ -72,25 +67,18 @@ class EditingIKSolver:
         """
         Create an IK solver from a UrdfScene instance.
 
+        Uses the Robot from ui_state (set at startup).
+
         Args:
             urdf_scene: UrdfScene instance with loaded URDF
 
         Returns:
             Configured EditingIKSolver instance
         """
-        # Get the URDF file path from urdf_scene
-        urdf_path = urdf_scene.urdf_path
+        from parol_commander.state import ui_state
 
-        try:
-            robot = Robot(str(urdf_path))
-            logging.info("Loaded robot from URDF: %s", robot.name or urdf_path)
-        except Exception as e:
-            logging.error("Failed to load robot from URDF: %s", e)
-            raise
-
-        num_joints = min(6, robot.nq)
-
-        return cls(robot=robot, num_joints=num_joints)
+        robot = ui_state.active_robot
+        return cls(robot=robot, num_joints=robot.joints.count)
 
     def forward_kinematics(self, angles: List[float]) -> np.ndarray:
         """
@@ -101,31 +89,10 @@ class EditingIKSolver:
 
         Returns:
             End effector pose [x, y, z, rx, ry, rz] in meters and radians (world frame)
-            Position is in meters, rotation is Euler angles (XYZ) in radians.
         """
-        # Use pre-allocated buffer - zero and fill to avoid allocation
-        n_input = min(len(angles), self.num_joints)
-        self._q_buffer[:n_input] = angles[:n_input]
-        self._q_buffer[n_input:] = 0.0
-
-        # Compute forward kinematics into pre-allocated buffer
-        self.robot.fkine_into(self._q_buffer, self._T_fk_buffer)
-        T = self._T_fk_buffer
-
-        try:
-            so3_rpy(T[:3, :3], self._rpy_buffer)
-        except Exception:
-            self._rpy_buffer[0] = 0.0
-            self._rpy_buffer[1] = 0.0
-            self._rpy_buffer[2] = 0.0
-
-        # Fill pre-allocated result buffer
-        self._fk_result_buffer[0] = T[0, 3]
-        self._fk_result_buffer[1] = T[1, 3]
-        self._fk_result_buffer[2] = T[2, 3]
-        self._fk_result_buffer[3] = self._rpy_buffer[0]
-        self._fk_result_buffer[4] = self._rpy_buffer[1]
-        self._fk_result_buffer[5] = self._rpy_buffer[2]
+        q = np.asarray(angles[: self.num_joints], dtype=np.float64)
+        result = self.robot.fk(q)
+        self._fk_result_buffer[:] = result
         return self._fk_result_buffer
 
     def solve(
@@ -134,7 +101,7 @@ class EditingIKSolver:
         current_angles: List[float],
         throttle: bool = True,
         target_orientation: Optional[np.ndarray] = None,
-    ) -> Optional[IKResult]:
+    ) -> Optional[EditingIKResult]:
         """
         Solve IK for the target position and optionally orientation.
 
@@ -146,64 +113,45 @@ class EditingIKSolver:
                                If None, maintains current orientation.
 
         Returns:
-            IKResult with computed angles, or None if throttled
+            EditingIKResult with computed angles, or None if throttled
         """
-        # Throttle check
         if throttle:
             now = time.time()
             if now - self._last_solve_time < self._min_solve_interval:
                 return None
             self._last_solve_time = now
 
-        # Use pre-allocated buffer for q0
-        n_input = min(len(current_angles), self.num_joints)
-        self._q_buffer[:n_input] = current_angles[:n_input]
-        self._q_buffer[n_input:] = 0.0
-        q0 = self._q_buffer
+        q_current = np.asarray(current_angles[: self.num_joints], dtype=np.float64)
 
-        # Extract target position (avoid allocation if already ndarray)
-        if isinstance(target_pos, np.ndarray):
-            target = target_pos
-        else:
-            target = np.asarray(target_pos, dtype=float)
-
-        # Create target pose with specified or current orientation
         if target_orientation is not None:
-            # Build 4x4 SE3 from position and XYZ Euler angles
-            se3_from_rpy(
-                target[0],
-                target[1],
-                target[2],
-                target_orientation[0],
-                target_orientation[1],
-                target_orientation[2],
-                self._T_target_buffer,
-            )
+            self._pose_buf[0] = target_pos[0]
+            self._pose_buf[1] = target_pos[1]
+            self._pose_buf[2] = target_pos[2]
+            self._pose_buf[3] = target_orientation[0]
+            self._pose_buf[4] = target_orientation[1]
+            self._pose_buf[5] = target_orientation[2]
         else:
-            self.robot.fkine_into(q0, self._T_fk_buffer)
-            self._T_target_buffer[:] = self._T_fk_buffer
-            self._T_target_buffer[0, 3] = target[0]
-            self._T_target_buffer[1, 3] = target[1]
-            self._T_target_buffer[2, 3] = target[2]
+            current_fk = self.robot.fk(q_current)
+            self._pose_buf[0] = target_pos[0]
+            self._pose_buf[1] = target_pos[1]
+            self._pose_buf[2] = target_pos[2]
+            self._pose_buf[3] = current_fk[3]
+            self._pose_buf[4] = current_fk[4]
+            self._pose_buf[5] = current_fk[5]
 
-        result = parol6_solve_ik(
-            robot=self.robot,
-            target_pose=self._T_target_buffer,
-            current_q=q0,
-            quiet_logging=True,
-        )
+        result = self.robot.ik(self._pose_buf, q_current)
 
         if result.success:
-            return IKResult(
+            return EditingIKResult(
                 success=True,
                 angles=result.q[: self.num_joints].tolist(),
-                error=result.residual,
-                iterations=result.iterations,
+                error=getattr(result, "residual", 0.0),
+                iterations=getattr(result, "iterations", 0),
             )
 
-        return IKResult(
+        return EditingIKResult(
             success=False,
-            angles=q0[: self.num_joints].tolist(),
+            angles=current_angles[: self.num_joints],
             error=float("inf"),
-            iterations=result.iterations,
+            iterations=getattr(result, "iterations", 0),
         )

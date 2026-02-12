@@ -18,7 +18,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 from nicegui import ui
-from parol6.utils.se3_utils import arrays_equal_6
+from pinokin import arrays_equal_6
 from nicegui.helpers import is_user_simulation
 
 from parol_commander.common.theme import SceneColors

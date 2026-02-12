@@ -7,7 +7,7 @@ class RecordedCall(TypedDict):
     """Record of a single client method call for test assertions."""
 
     name: str
-    """Method name on the client (e.g. 'jog_joint', 'home', 'simulator_on')."""
+    """Method name on the client (e.g. 'jogJ', 'home', 'simulator_on')."""
 
     args: tuple[Any, ...]
     """Positional arguments passed to the method."""

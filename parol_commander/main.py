@@ -9,16 +9,16 @@ import sys
 import time
 import contextlib
 import argparse
-from typing import cast, Callable
+from typing import Callable
 import numpy as np
 
 from nicegui import app as ng_app
 from nicegui import ui
 from nicegui.elements.tooltip import Tooltip
-from parol6 import AsyncRobotClient, ServerManager, is_server_running, manage_server
-from parol6.server.loop_timer import LoopMetrics, format_hz_summary
-from parol6.tools import TOOL_CONFIGS
-from importlib.resources import as_file
+from parol_commander.common.loop_timer import LoopMetrics, format_hz_summary
+
+from pathlib import Path
+from parol_commander.robot_interface import RobotClient
 
 from parol_commander.common.logging_config import (
     attach_ui_log,
@@ -58,6 +58,8 @@ from parol_commander.services.urdf_scene import (
 )
 from parol_commander.services.keybindings import keybindings_manager, Keybinding
 from parol_commander.services.path_visualizer import warm_process_pool
+from parol_commander.profiles import get_robot
+from parol_commander.robot_interface import ToolType
 from parol_commander.numba_pipelines import (
     angle_pipeline,
     pose_extraction_pipeline,
@@ -71,7 +73,7 @@ ng_app.add_static_files("/static", str(STATIC_DIR))
 # ------------------------ Global UI/state ------------------------
 
 # Global client instance - initialized in main() after CLI parsing
-client: AsyncRobotClient
+client: RobotClient
 
 controller_status_label: ui.label | None = None
 robot_status_label: ui.label | None = None
@@ -100,9 +102,6 @@ joint_jog_timer: ui.timer | None = None
 cart_jog_timer: ui.timer | None = None
 bottom_log_drawer: ui.element | None = None
 
-# Main tabs reference for tab_panels
-server_manager: ServerManager | None = None
-
 # Persistent connection warning notification
 _connection_notification: ui.notification | None = None
 
@@ -119,6 +118,18 @@ _angle_offsets_array: np.ndarray = np.zeros(6, dtype=np.float64)
 _index_mapping_array: np.ndarray = np.arange(6, dtype=np.int32)
 _urdf_reorder_array: np.ndarray = np.arange(6, dtype=np.int32)
 _angle_pipeline_config_valid: bool = False
+
+
+def _init_pipeline_buffers(num_joints: int) -> None:
+    """Resize pipeline buffers to match the robot's joint count."""
+    global _angles_ordered_buffer, _angle_signs_array, _angle_offsets_array
+    global _index_mapping_array, _urdf_reorder_array
+    _angles_ordered_buffer = np.zeros(num_joints, dtype=np.float64)
+    _angle_signs_array = np.ones(num_joints, dtype=np.float64)
+    _angle_offsets_array = np.zeros(num_joints, dtype=np.float64)
+    _index_mapping_array = np.arange(num_joints, dtype=np.int32)
+    _urdf_reorder_array = np.arange(num_joints, dtype=np.int32)
+
 
 # Frontend timing metrics (unified via LoopMetrics)
 _ui_metrics = LoopMetrics()
@@ -152,105 +163,93 @@ def _update_connection_notification() -> None:
 # --------------- URDF Scene Functions ---------------
 async def initialize_urdf_scene() -> None:
     """Initialize the URDF scene with error handling."""
-    # Resolve URDF from installed parol6 package and clear container if provided
-    urdf_res = pkg_files("parol6") / "urdf_model" / "urdf" / "PAROL6.urdf"
+    robot = ui_state.active_robot
+    urdf_path = Path(robot.urdf_path)
+    mesh_dir = Path(robot.mesh_dir)
 
-    with as_file(urdf_res) as urdf_path:
-        assert urdf_path
-        # Detect theme and set appropriate colors
-        mode = get_theme()
-        is_dark = mode != "light"
-        bg_color = (
-            SceneColors.BACKGROUND_DARK_HEX
-            if is_dark
-            else SceneColors.BACKGROUND_LIGHT_HEX
-        )
-        material_color = (
-            SceneColors.MATERIAL_DARK_HEX if is_dark else SceneColors.MATERIAL_LIGHT_HEX
-        )
+    # Detect theme and set appropriate colors
+    mode = get_theme()
+    is_dark = mode != "light"
+    bg_color = (
+        SceneColors.BACKGROUND_DARK_HEX if is_dark else SceneColors.BACKGROUND_LIGHT_HEX
+    )
+    material_color = (
+        SceneColors.MATERIAL_DARK_HEX if is_dark else SceneColors.MATERIAL_LIGHT_HEX
+    )
 
-        # Create tool pose resolver to bridge PAROL6 TOOL_CONFIGS
-        def tool_pose_resolver(tool: str) -> ToolPose | None:
-            """Convert PAROL6 tool config to ToolPose format."""
-            if not tool or tool.upper() == "NONE":
-                return None
-            cfg = TOOL_CONFIGS.get(tool, {})
-            if not isinstance(cfg, dict):
-                return None
-            # Prefer nested 'tcp' dict if available
-            origin = [0.0, 0.0, 0.0]
-            rpy = [0.0, 0.0, 0.0]
-            if isinstance(cfg.get("tcp"), dict):
-                o_val = cfg["tcp"].get("origin", origin)
-                r_val = cfg["tcp"].get("rpy", rpy)
-                origin = cast(list[float], o_val)
-                rpy = cast(list[float], r_val)
-            else:
-                # Fallback to top-level keys if present
-                origin = cast(
-                    list[float], cfg.get("tcp_origin", cfg.get("origin", origin))
-                )
-                rpy = cast(list[float], cfg.get("tcp_rpy", cfg.get("rpy", rpy)))
-            return ToolPose(origin=origin, rpy=rpy)
-
-        # Create UrdfScene config with all settings
-        scene_config = UrdfSceneConfig(
-            tool_pose_resolver=tool_pose_resolver,
-            gizmo_scale=1.35,  # Make gizmo larger (1.0 = default STL scale)
-            package_map={"parol6": urdf_path.parent.parent},
-            # Appearance settings
-            material=material_color,
-            background_color=bg_color,
-            sim_color=SceneColors.SIM_AMBER_HEX,
-            sim_opacity=0.9,
-            # Kinematic mapping settings (defaults are fine for PAROL6)
-        )
-
-        # Create new scene with config
-        ui_state.urdf_scene = UrdfScene(urdf_path, config=scene_config)
-        ui_state.urdf_scene.show(
-            material=scene_config.material,
-            background_color=scene_config.background_color,
-        )
-
-        ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
-
-        # Align TCP to current tool from controller
+    # Create tool pose resolver from robot tools
+    def tool_pose_resolver(tool_key: str) -> ToolPose | None:
+        """Look up tool TCP from robot.tools and return as ToolPose."""
+        if not tool_key or tool_key.upper() == "NONE":
+            return None
+        r = ui_state.active_robot
         try:
-            result = await client.get_tool()
-            if result and result.tool:
-                ui_state.urdf_scene.update_tcp_pose_from_tool(result.tool)
-        except Exception as e:
-            logging.error("Failed to sync TCP tool pose: %s", e)
+            tool = r.tools[tool_key]
+        except KeyError:
+            return None
+        return ToolPose(
+            origin=list(tool.tcp_origin),
+            rpy=list(tool.tcp_rpy),
+        )
 
-        # Override the scene height and set closer camera position
-        if ui_state.urdf_scene.scene:
-            scene: ui.scene = ui_state.urdf_scene.scene
-            scene._props["grid"] = (10, 100)
-            # Fill parent container (absolute canvas): width/height 100%
-            scene.classes(remove="h-[66vh]").style(
-                "width: 100%; height: 100%; margin: 0; display: block;"
-            )
-            # Set camera closer to the robot arm with proper look-at positioning
-            scene.move_camera(
-                x=0.3,
-                y=0.3,
-                z=0.22,  # Camera position
-                look_at_z=0.22,
-                duration=0.0,  # Instant movement
-            )
+    # Create UrdfScene config with all settings
+    scene_config = UrdfSceneConfig(
+        tool_pose_resolver=tool_pose_resolver,
+        gizmo_scale=1.35,  # Make gizmo larger (1.0 = default STL scale)
+        package_map={robot.backend_package: mesh_dir},
+        # Appearance settings
+        material=material_color,
+        background_color=bg_color,
+        sim_color=SceneColors.SIM_AMBER_HEX,
+        sim_opacity=0.9,
+        # Kinematic mapping settings (defaults are fine for PAROL6)
+    )
 
-            # Add large world coordinate frame at origin (fixed)
-            world_axes_size = 0.30
-            scene.line([0, 0, 0], [world_axes_size, 0, 0]).material(
-                SceneColors.AXIS_X_HEX
-            )  # X
-            scene.line([0, 0, 0], [0, world_axes_size, 0]).material(
-                SceneColors.AXIS_Y_HEX
-            )  # Y
-            scene.line([0, 0, 0], [0, 0, world_axes_size]).material(
-                SceneColors.AXIS_Z_HEX
-            )  # Z
+    # Create new scene with config
+    ui_state.urdf_scene = UrdfScene(urdf_path, config=scene_config)
+    ui_state.urdf_scene.show(
+        material=scene_config.material,
+        background_color=scene_config.background_color,
+    )
+
+    ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
+
+    # Align TCP to current tool from controller
+    try:
+        result = await client.get_tool()
+        if result and result.tool:
+            ui_state.urdf_scene.update_tcp_pose_from_tool(result.tool)
+    except Exception as e:
+        logging.error("Failed to sync TCP tool pose: %s", e)
+
+    # Override the scene height and set closer camera position
+    if ui_state.urdf_scene.scene:
+        scene: ui.scene = ui_state.urdf_scene.scene
+        scene._props["grid"] = (10, 100)
+        # Fill parent container (absolute canvas): width/height 100%
+        scene.classes(remove="h-[66vh]").style(
+            "width: 100%; height: 100%; margin: 0; display: block;"
+        )
+        # Set camera closer to the robot arm with proper look-at positioning
+        scene.move_camera(
+            x=0.3,
+            y=0.3,
+            z=0.22,  # Camera position
+            look_at_z=0.22,
+            duration=0.0,  # Instant movement
+        )
+
+        # Add large world coordinate frame at origin (fixed)
+        world_axes_size = 0.30
+        scene.line([0, 0, 0], [world_axes_size, 0, 0]).material(
+            SceneColors.AXIS_X_HEX
+        )  # X
+        scene.line([0, 0, 0], [0, world_axes_size, 0]).material(
+            SceneColors.AXIS_Y_HEX
+        )  # Y
+        scene.line([0, 0, 0], [0, 0, world_axes_size]).material(
+            SceneColors.AXIS_Z_HEX
+        )  # Z
 
     # Cache joint names for mapping
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
@@ -286,10 +285,12 @@ def _init_angle_pipeline_config() -> None:
         joint_name_order = config.joint_name_order
         urdf_joint_names = ui_state.urdf_scene.joint_names
 
+        num_joints = ui_state.active_robot.joints.count
+
         # Build combined mapping: for each output position, which input index to use
         # and what sign/offset to apply
-        for i in range(6):
-            if i < len(index_mapping) and index_mapping[i] < 6:
+        for i in range(num_joints):
+            if i < len(index_mapping) and index_mapping[i] < num_joints:
                 controller_idx = index_mapping[i]
                 _index_mapping_array[i] = controller_idx
 
@@ -312,10 +313,10 @@ def _init_angle_pipeline_config() -> None:
                 _angle_offsets_array[i] = 0.0
 
         # Build URDF reorder mapping
-        for i, joint_name in enumerate(urdf_joint_names[:6]):
+        for i, joint_name in enumerate(urdf_joint_names[:num_joints]):
             try:
                 urdf_idx = joint_name_order.index(joint_name)
-                _urdf_reorder_array[i] = urdf_idx if urdf_idx < 6 else i
+                _urdf_reorder_array[i] = urdf_idx if urdf_idx < num_joints else i
             except ValueError:
                 _urdf_reorder_array[i] = i
 
@@ -331,7 +332,7 @@ def update_urdf_angles(angles_deg: np.ndarray) -> None:
     """Update URDF scene with new joint angles (degrees -> radians)."""
     global _angle_pipeline_config_valid
 
-    if not ui_state.urdf_scene or len(angles_deg) < 6:
+    if not ui_state.urdf_scene or len(angles_deg) < ui_state.active_robot.joints.count:
         return
 
     # Initialize config on first call
@@ -356,25 +357,25 @@ def update_urdf_angles(angles_deg: np.ndarray) -> None:
 
 
 async def start_controller(com_port: str | None) -> None:
-    """Start the PAROL6 controller or attach to an existing one.
+    """Start the robot controller or attach to an existing one.
 
     In EXCLUSIVE_START mode this will *fail hard* if a controller is already
     running at the configured host/port instead of silently reusing it.
     """
-    global server_manager
+    robot = ui_state.active_robot
     try:
         # If AUTO_START requested, ensure a server is running at the target tuple
         if config.exclusive_start:
-            server_manager = manage_server(
+            await asyncio.to_thread(
+                robot.start,
                 host=config.controller_host,
                 port=config.controller_port,
                 com_port=com_port,
-                extra_env=None,
-                normalize_logs=True,
             )
         else:
-            # If a controller is already running, reuse it; otherwise start our own
-            if is_server_running(
+            # If a controller is already running, reuse it
+            if await asyncio.to_thread(
+                robot.is_available,
                 host=config.controller_host,
                 port=config.controller_port,
             ):
@@ -383,7 +384,6 @@ async def start_controller(com_port: str | None) -> None:
                     config.controller_host,
                     config.controller_port,
                 )
-                server_manager = None
 
         # enable ping timer now that we are connected
         global ping_timer, status_consumer_task
@@ -406,12 +406,12 @@ async def start_controller(com_port: str | None) -> None:
 
 
 async def stop_controller() -> None:
-    global server_manager, ping_timer, status_consumer_task
+    global ping_timer, status_consumer_task
     try:
-        if server_manager:
+        robot = ui_state.robot
+        if robot is not None:
             logging.info("Stopping controller...")
-            server_manager.stop_controller()
-        server_manager = None
+            robot.stop()
 
         # Disable ping timer and stop multicast consumer on disconnect
         if ping_timer is not None:
@@ -570,6 +570,8 @@ def build_page_content() -> None:
                         ).style(
                             "width: 24px; height: 24px; transform: rotate(180deg); filter: brightness(0) invert(1) opacity(0.8);"
                         )
+                    if ToolType.GRIPPER not in ui_state.active_robot.tools:
+                        gripper_tab.props("disable")
                     gripper_tab.mark("tab-gripper")
 
                 # Top panels container - absolute positioned, anchored to top
@@ -1023,12 +1025,11 @@ def _register_handlers() -> None:
         Any failure to start the controller (including "server already running")
         is treated as a hard error so tests cannot silently proceed in a bad state.
         """
-        global server_manager
-
         try:
             # Pre-warm process pool workers with RTB imports (runs in background)
             # This makes subsequent path visualizations fast since workers are reused
-            asyncio.create_task(warm_process_pool())
+            backend_pkg = ui_state.active_robot.backend_package
+            asyncio.create_task(warm_process_pool(backend_pkg))
 
             # Start controller and streaming on server startup
             try:
@@ -1041,9 +1042,7 @@ def _register_handlers() -> None:
 
                 # Ensure controller is responsive before deciding initial mode
                 with contextlib.suppress(Exception):
-                    await client.wait_for_server_ready(timeout=5.0)
-
-                await client.stream_on()
+                    await client.wait_ready(timeout=5.0)
 
                 # Determine initial mode based on persisted port and serial connectivity
                 serial_connected = False
@@ -1071,16 +1070,16 @@ def _register_handlers() -> None:
                     robot_state.simulator_active = True
                     # Controller now waits for first frame, so no extra delay needed
                     try:
-                        await client.enable()
+                        await client.resume()
                     except Exception as e:
-                        logging.warning("startup: enable failed (may retry): %s", e)
+                        logging.warning("startup: resume failed (may retry): %s", e)
                 else:
                     # Robot mode (physical serial connected)
                     robot_state.simulator_active = False
                     try:
-                        await client.enable()
+                        await client.resume()
                     except Exception as e:
-                        logging.warning("startup: enable failed (may retry): %s", e)
+                        logging.warning("startup: resume failed (may retry): %s", e)
 
                 # Set saved motion profile
                 try:
@@ -1094,10 +1093,10 @@ def _register_handlers() -> None:
 
             except Exception as e:
                 logging.error("App startup init failed: %s", e)
-                # Clean up server_manager if startup failed
-                if server_manager:
-                    server_manager.stop_controller()
-                    server_manager = None
+                # Clean up robot backend if startup failed
+                robot = ui_state.robot
+                if robot is not None:
+                    robot.stop()
                 # Re-raise so tests and callers see a hard failure
                 raise
         finally:
@@ -1268,7 +1267,7 @@ async def _status_consumer() -> None:
     """Consume multicast status and update shared robot_state."""
     try:
         # Wait for server to be responsive before subscribing to multicast
-        await client.wait_for_server_ready(timeout=5.0)
+        await client.wait_ready(timeout=5.0)
         async for status in client.status_stream_shared():
             try:
                 # Track loop timing via LoopMetrics
@@ -1305,11 +1304,15 @@ async def _status_consumer() -> None:
 
                     # Movement enablement arrays
                     robot_state.joint_en[:] = status.joint_en
-                    robot_state.cart_en_wrf[:] = status.cart_en_wrf
-                    robot_state.cart_en_trf[:] = status.cart_en_trf
+                    for frame, arr in status.cart_en.items():
+                        if frame in robot_state.cart_en:
+                            robot_state.cart_en[frame][:] = arr
 
                     robot_state.action_current = status.action_current
                     robot_state.action_state = status.action_state or "IDLE"
+                    robot_state.executing_index = status.executing_index
+                    robot_state.completed_index = status.completed_index
+                    robot_state.last_checkpoint = status.last_checkpoint
                     robot_state.last_update_ts = time.time()
 
                     # Update UI from status
@@ -1398,9 +1401,15 @@ def main():
         config.set("log_level", logging.WARNING)
     # else: use env var default (no override needed)
 
-    # Initialize client and component instances with final controller target
+    # Initialize robot, client, and component instances
+    robot = get_robot()
+    ui_state.robot = robot
+    # Initialize cart_en buffers from robot's cartesian frames
+    robot_state.init_cart_en(robot.cartesian_frames)
+    # Resize pipeline buffers to match this robot's joint count
+    _init_pipeline_buffers(robot.joints.count)
     # Use longer timeout for CI environments where scheduling can cause delays
-    client = AsyncRobotClient(
+    client = robot.create_client(
         host=config.controller_host, port=config.controller_port, timeout=5.0
     )
     control_panel = ControlPanel(client)

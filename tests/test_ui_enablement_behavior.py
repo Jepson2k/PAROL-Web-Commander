@@ -20,7 +20,9 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
     When a joint is at or near its maximum limit, the positive direction
     button should be disabled to prevent motion beyond the limit.
     """
-    from parol_commander.constants import JOINT_LIMITS_DEG
+    from parol_commander.state import ui_state
+
+    JOINT_LIMITS_DEG = ui_state.active_robot.joints.limits.position.deg
 
     await user.open("/")
     await wait_for_app_ready()
@@ -79,12 +81,13 @@ async def test_cartesian_at_workspace_limit_disables_axis(
     await asyncio.sleep(0.2)
 
     # At extended position, some cartesian directions should be disabled
-    # The cart_en_wrf array contains enable flags for each axis
-    # Check that at least one direction is disabled (value 0)
-    disabled_count = sum(1 for v in robot_state.cart_en_wrf if v == 0)
+    # The cart_en dict contains enable flags for each axis per frame
+    wrf_en = robot_state.cart_en.get("WRF")
+    assert wrf_en is not None, "cart_en should have WRF frame"
+    disabled_count = sum(1 for v in wrf_en if v == 0)
     assert disabled_count > 0, (
         f"At extended arm position, some cartesian directions should be disabled. "
-        f"cart_en_wrf={list(robot_state.cart_en_wrf)}"
+        f"cart_en[WRF]={list(wrf_en)}"
     )
 
 

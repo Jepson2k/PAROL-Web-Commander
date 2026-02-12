@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 
 import numpy as np
-from parol6.utils.se3_utils import so3_rpy
+from pinokin import so3_rpy
 
 from parol_commander.state import (
     editor_tabs_state,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Only actions with editable position parameters (list literals) benefit from markers.
 # Related: MOVE_TYPE_COLORS in theme.py maps move types to path colors.
 # TODO: Consolidate action metadata into a central registry (actions.py)
-_MOTION_ACTIONS = ("move_joints", "move_cartesian")
+_MOTION_ACTIONS = ("moveJ", "moveL")
 
 
 @dataclass
@@ -106,7 +106,7 @@ class MotionRecorder:
             self._start_recording()
 
     def _should_insert_anchor(self) -> bool:
-        """Check if anchor move_joints is needed using cached simulation results.
+        """Check if anchor moveJ is needed using cached simulation results.
 
         Uses the pre-computed final_joints_rad from the active tab's simulation
         instead of running a blocking subprocess. This makes recording start instant.
@@ -182,13 +182,13 @@ class MotionRecorder:
                 robot_state.rz or 0.0,
             )
 
-        # Insert anchor move_joints command only if current position differs from
+        # Insert anchor moveJ command only if current position differs from
         # where the script would end (simulated using dry run client)
         if len(robot_state.angles) >= 6 and self._should_insert_anchor():
             angles = self._get_current_angles()
             args = ", ".join(f"{a:.2f}" for a in angles)
             anchor_snippet = (
-                f"rbt.move_joints([{args}], duration=0.50)  # Recording start position"
+                f"rbt.moveJ([{args}], duration=0.50)  # Recording start position"
             )
             self._insert_snippet(anchor_snippet)
             logger.info(
@@ -210,7 +210,7 @@ class MotionRecorder:
         """Record any robot action when recording is active.
 
         Args:
-            action_type: One of "move_joints", "move_cartesian", "home",
+            action_type: One of "moveJ", "moveL", "home",
                         "gripper", "io", "delay"
             **params: Action-specific parameters
         """
@@ -269,21 +269,21 @@ class MotionRecorder:
         """
         marker = f"  # TARGET:{marker_id}" if marker_id else ""
 
-        if action_type == "move_joints":
+        if action_type == "moveJ":
             angles = params.get("angles", [0.0] * 6)
             dur = params.get("duration", 1.0)
             # Ensure minimum duration for safety
             dur = max(0.5, dur)
             args = ", ".join(f"{a:.2f}" for a in angles)
-            return f"rbt.move_joints([{args}], duration={dur:.2f}){marker}"
+            return f"rbt.moveJ([{args}], duration={dur:.2f}){marker}"
 
-        elif action_type == "move_cartesian":
+        elif action_type == "moveL":
             pose = params.get("pose", [0.0] * 6)
             dur = params.get("duration", 1.0)
             # Ensure minimum duration for safety
             dur = max(0.5, dur)
             args = ", ".join(f"{p:.3f}" for p in pose)
-            return f"rbt.move_cartesian([{args}], duration={dur:.2f}){marker}"
+            return f"rbt.moveL([{args}], duration={dur:.2f}){marker}"
 
         elif action_type == "home":
             return "rbt.home()"
@@ -339,11 +339,11 @@ class MotionRecorder:
         if duration > 0.1:
             if self._active_jog.move_type == "joint":
                 self.record_action(
-                    "move_joints", angles=self._get_current_angles(), duration=duration
+                    "moveJ", angles=self._get_current_angles(), duration=duration
                 )
             else:
                 self.record_action(
-                    "move_cartesian", pose=self._get_wrf_pose(), duration=duration
+                    "moveL", pose=self._get_wrf_pose(), duration=duration
                 )
 
             logger.debug(
@@ -371,13 +371,9 @@ class MotionRecorder:
         recording_state.is_recording = True
 
         if move_type == "joints":
-            self.record_action(
-                "move_joints", angles=self._get_current_angles(), duration=1.0
-            )
+            self.record_action("moveJ", angles=self._get_current_angles(), duration=1.0)
         else:
-            self.record_action(
-                "move_cartesian", pose=self._get_wrf_pose(), duration=1.0
-            )
+            self.record_action("moveL", pose=self._get_wrf_pose(), duration=1.0)
 
         # Restore recording state
         recording_state.is_recording = was_recording

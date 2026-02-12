@@ -2,14 +2,14 @@
 
 These functions combine multiple operations into single @njit functions
 to eliminate Python interpreter overhead between steps. They call existing
-numba functions from parol6.utils.se3_utils which get inlined by numba.
+numba functions from pinokin.numba_se3 which get inlined by numba.
 """
 
 import numpy as np
 from numba import njit  # type: ignore[import-untyped]
 
-# so3_rpy used in local njit functions; se3_from_rpy/se3_rpy imported for warmup only
-from parol6.utils.se3_utils import se3_from_rpy, se3_rpy, so3_rpy
+# so3_rpy used in local njit functions
+from pinokin import so3_rpy, warmup_numba_se3
 
 
 @njit(cache=True)
@@ -24,25 +24,26 @@ def angle_pipeline(
     """Validate + Map + Sign + Offset + Deg2Rad + Reorder in ONE pass.
 
     Args:
-        angles_in: Input angles in degrees (6 elements, float64)
-        index_mapping: Controller index mapping (6 elements, int32)
-        signs: Sign corrections per joint (6 elements, float64)
-        offsets: Angle offsets per joint in degrees (6 elements, float64)
-        urdf_reorder: URDF joint reorder mapping (6 elements, int32)
-        angles_out: Output buffer for angles in radians (6 elements, float64)
+        angles_in: Input angles in degrees (N elements, float64)
+        index_mapping: Controller index mapping (N elements, int32)
+        signs: Sign corrections per joint (N elements, float64)
+        offsets: Angle offsets per joint in degrees (N elements, float64)
+        urdf_reorder: URDF joint reorder mapping (N elements, int32)
+        angles_out: Output buffer for angles in radians (N elements, float64)
 
     Returns:
         True if valid, False if any angle is non-finite
     """
     deg_to_rad = 0.017453292519943295
+    n = len(angles_in)
 
     # Validate all inputs first
-    for i in range(6):
+    for i in range(n):
         if not np.isfinite(angles_in[i]):
             return False
 
     # Combined transform: map -> sign -> offset -> rad -> reorder
-    for i in range(6):
+    for i in range(n):
         src_idx = index_mapping[i]
         val = (angles_in[src_idx] * signs[src_idx] + offsets[src_idx]) * deg_to_rad
         dst_idx = urdf_reorder[i]
@@ -93,57 +94,6 @@ def pose_extraction_pipeline(
     result[5] = rpy_buf[2] * rad_to_deg
 
 
-@njit(cache=True)
-def fk_postprocess_pipeline(
-    translation: np.ndarray,
-    rotation: np.ndarray,
-    rpy_buf: np.ndarray,
-    result_out: np.ndarray,
-) -> None:
-    """FK result extraction: translation + so3_rpy into result buffer.
-
-    Args:
-        translation: FK translation result (3 elements, float64)
-        rotation: FK rotation matrix (3x3, float64)
-        rpy_buf: Scratch buffer for RPY radians (3 elements, float64)
-        result_out: Output buffer [x, y, z, rx, ry, rz] in meters/radians (6 elements, float64)
-    """
-    # Copy translation
-    result_out[0] = translation[0]
-    result_out[1] = translation[1]
-    result_out[2] = translation[2]
-
-    # SO3 to RPY (calls existing numba function)
-    so3_rpy(rotation, rpy_buf)
-
-    # Copy RPY
-    result_out[3] = rpy_buf[0]
-    result_out[4] = rpy_buf[1]
-    result_out[5] = rpy_buf[2]
-
-
-@njit(cache=True)
-def pose_changed_check(
-    latest: np.ndarray,
-    last_sent: np.ndarray,
-    eps: float,
-) -> bool:
-    """Fast 6-element pose comparison.
-
-    Args:
-        latest: Current pose values (6 elements, float64)
-        last_sent: Previously sent pose values (6 elements, float64)
-        eps: Tolerance for change detection
-
-    Returns:
-        True if any element differs by more than eps
-    """
-    for i in range(6):
-        if abs(latest[i] - last_sent[i]) > eps:
-            return True
-    return False
-
-
 def warmup_pipelines() -> None:
     """Pre-compile all numba functions with dummy data.
 
@@ -159,8 +109,6 @@ def warmup_pipelines() -> None:
     dummy_signs = np.ones(6, dtype=np.float64)
     dummy_offsets = np.zeros(6, dtype=np.float64)
 
-    dummy_se3 = np.zeros((4, 4), dtype=np.float64)
-
     # Trigger JIT compilation for each function
     angle_pipeline(
         dummy_angles,
@@ -171,7 +119,6 @@ def warmup_pipelines() -> None:
         dummy_result,
     )
     pose_extraction_pipeline(dummy_pose, dummy_rot, dummy_rpy, dummy_result)
-    fk_postprocess_pipeline(dummy_rpy, dummy_rot, dummy_rpy, dummy_result)
-    pose_changed_check(dummy_result, dummy_result, 0.01)
-    se3_from_rpy(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, dummy_se3)
-    se3_rpy(dummy_se3, dummy_rpy)
+
+    # Warm up pinokin's zero-allocation SE3/SO3 functions
+    warmup_numba_se3()

@@ -4,13 +4,13 @@ from nicegui import ui
 
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.state import robot_state
-from parol6 import AsyncRobotClient
+from parol_commander.robot_interface import RobotClient
 
 
 class GripperPage:
     """Gripper tab page."""
 
-    def __init__(self, client: AsyncRobotClient) -> None:
+    def __init__(self, client: RobotClient) -> None:
         self.client = client
         # Status labels
         self.grip_id_label: ui.label | None = None
@@ -43,9 +43,15 @@ class GripperPage:
 
     async def _grip_move(self) -> None:
         try:
-            pos = int(self.grip_pos_slider.value or 0) if self.grip_pos_slider else 0
+            pos = (
+                float(self.grip_pos_slider.value or 0) / 100.0
+                if self.grip_pos_slider
+                else 0.0
+            )
             spd = (
-                int(self.grip_speed_slider.value or 0) if self.grip_speed_slider else 0
+                float(self.grip_speed_slider.value or 0) / 100.0
+                if self.grip_speed_slider
+                else 0.0
             )
             cur = (
                 int(self.grip_current_slider.value or 100)
@@ -59,7 +65,7 @@ class GripperPage:
                 "gripper", position=pos, speed=spd, current=cur
             )
             ui.notify(resp, color="primary")
-            logging.info("ELECTRIC MOVE pos=%s spd=%s cur=%s", pos, spd, cur)
+            logging.info("ELECTRIC MOVE pos=%.2f spd=%.2f cur=%s", pos, spd, cur)
         except Exception as e:
             logging.error("Gripper move failed: %s", e)
 
@@ -101,15 +107,15 @@ class GripperPage:
         # Command parameters
         ui.label("Command parameters").classes("text-sm mt-2")
         with ui.row().classes("items-center gap-2"):
-            self.grip_pos_slider = ui.slider(min=0, max=255, value=10, step=1).classes(
+            self.grip_pos_slider = ui.slider(min=0, max=100, value=4, step=1).classes(
                 "w-64"
             )
-            ui.label("Position").classes("text-xs text-[var(--ctk-muted)]")
+            ui.label("Position (%)").classes("text-xs text-[var(--ctk-muted)]")
         with ui.row().classes("items-center gap-2"):
             self.grip_speed_slider = ui.slider(
-                min=0, max=255, value=50, step=1
+                min=0, max=100, value=20, step=1
             ).classes("w-64")
-            ui.label("Speed").classes("text-xs text-[var(--ctk-muted)]")
+            ui.label("Speed (%)").classes("text-xs text-[var(--ctk-muted)]")
         with ui.row().classes("items-center gap-2"):
             self.grip_current_slider = ui.slider(
                 min=100, max=1000, value=180, step=10

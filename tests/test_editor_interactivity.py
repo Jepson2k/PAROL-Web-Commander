@@ -107,26 +107,36 @@ class LineFlashCondition:
             return False
 
 
-class TabFlashCondition:
-    """Custom expected condition for tab flash detection."""
+def setup_tab_flash_observer(screen: "Screen") -> None:
+    """Install a MutationObserver that sets a flag when tab-flash is added."""
+    screen.selenium.execute_script("""
+        window.__tabFlashDetected = false;
+        const tabs = document.querySelectorAll('.q-tab');
+        for (const tab of tabs) {
+            const icon = tab.querySelector('i');
+            if (icon && icon.innerText === 'code') {
+                const obs = new MutationObserver(mutations => {
+                    for (const m of mutations) {
+                        if (tab.classList.contains('tab-flash')) {
+                            window.__tabFlashDetected = true;
+                            obs.disconnect();
+                            return;
+                        }
+                    }
+                });
+                obs.observe(tab, {attributes: true, attributeFilter: ['class']});
+                break;
+            }
+        }
+    """)
 
-    def __init__(self, screen: "Screen"):
-        self.screen = screen
+
+class TabFlashCondition:
+    """Check if the MutationObserver recorded a tab-flash event."""
 
     def __call__(self, driver):
         try:
-            # Find the program tab by its icon
-            tabs = driver.find_elements(By.CSS_SELECTOR, ".q-tab")
-            for tab in tabs:
-                try:
-                    icon = tab.find_element(By.CSS_SELECTOR, ".q-icon")
-                    if icon.text == "code":
-                        if "tab-flash" in (tab.get_attribute("class") or ""):
-                            return True
-                        break
-                except Exception:
-                    continue
-            return False
+            return driver.execute_script("return window.__tabFlashDetected === true")
         except Exception:
             return False
 
@@ -298,21 +308,23 @@ class TestEditorInteractivity:
         # Switch to a different tab to hide the program panel (but keep tab visible)
         click_tab(class_screen, "io")
 
+        # Install MutationObserver on the program tab before jogging
+        # This catches the tab-flash class even if it's added and removed quickly
+        setup_tab_flash_observer(class_screen)
+
         # Wait for backend state to propagate (tab click is async via websocket)
-        # CI environments need more time for state propagation
-        time.sleep(1.0)
+        time.sleep(0.5)
 
         # Jog joint 2 (J3) instead of joint 0 (J1) - previous tests jog J1+
         # to its limit, causing wait_motion_complete to take up to 5s
         jog_joint_briefly(class_screen, joint_index=2, duration_s=0.8)
 
-        # Check if the tab has the flash class using WebDriverWait
-        # The flash animation lasts 2s, so we have a good window to catch it
+        # Check if the MutationObserver recorded a tab-flash event
         # Timeout must exceed wait_motion_complete's 5s timeout + processing
         tab_flashed = False
         try:
-            WebDriverWait(class_screen.selenium, 8, poll_frequency=0.1).until(
-                TabFlashCondition(class_screen)
+            WebDriverWait(class_screen.selenium, 8, poll_frequency=0.2).until(
+                TabFlashCondition()
             )
             tab_flashed = True
         except Exception:

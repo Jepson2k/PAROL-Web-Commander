@@ -54,7 +54,7 @@ class TestStepIO:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         step_io = StepIO("test_emit")
-        step_io.emit_event("start", "move_joints", extra_data="test")
+        step_io.emit_event("start", "moveJ", extra_data="test")
 
         event_file = tmp_path / ".parol_events_test_emit"
         assert event_file.exists()
@@ -63,7 +63,7 @@ class TestStepIO:
         assert "events" in data
         assert len(data["events"]) == 1
         assert data["events"][0]["event"] == "start"
-        assert data["events"][0]["method"] == "move_joints"
+        assert data["events"][0]["method"] == "moveJ"
         assert data["events"][0]["extra_data"] == "test"
 
     def test_check_should_pause_behavior(self, tmp_path, monkeypatch):
@@ -155,8 +155,8 @@ class TestGUIStepController:
             json.dumps(
                 {
                     "events": [
-                        {"event": "start", "method": "move_joints", "step": 0},
-                        {"event": "complete", "method": "move_joints", "step": 0},
+                        {"event": "start", "method": "moveJ", "step": 0},
+                        {"event": "complete", "method": "moveJ", "step": 0},
                     ]
                 }
             )
@@ -203,7 +203,7 @@ class TestSteppingClientWrapper:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         mock_client = MagicMock()
-        mock_client.move_joints = MagicMock(return_value="result")
+        mock_client.moveJ = MagicMock(return_value="result")
         mock_client.wait_motion_complete = MagicMock()
 
         step_io = StepIO("test_wrapper")
@@ -213,9 +213,9 @@ class TestSteppingClientWrapper:
 
         wrapper = SteppingClientWrapper(mock_client, step_io)
 
-        result = wrapper.move_joints([0, 0, 0, 0, 0, 0])
+        result = wrapper.moveJ([0, 0, 0, 0, 0, 0])
 
-        mock_client.move_joints.assert_called_once_with([0, 0, 0, 0, 0, 0])
+        mock_client.moveJ.assert_called_once_with([0, 0, 0, 0, 0, 0])
         mock_client.wait_motion_complete.assert_called_once()
         assert result == "result"
 
@@ -258,10 +258,9 @@ class TestSteppingClientWrapper:
 
         expected = {
             "home",
-            "move_joints",
-            "move_pose",
-            "move_cartesian",
-            "jog_joint",
-            "jog_cartesian",
+            "moveJ",
+            "moveL",
+            "jogJ",
+            "jogL",
         }
         assert expected.issubset(MOTION_METHODS)

@@ -1,0 +1,309 @@
+"""
+Path preview client for offline simulation and visualization.
+
+Wraps a backend's DryRunRobotClient with visualization
+metadata collection (path segments, TARGET markers, colors).
+"""
+
+import inspect
+import linecache
+import logging
+import re
+from typing import Any
+
+import numpy as np
+
+from parol_commander.robot_interface import DryRunResult
+
+from parol_commander.common.theme import get_color_for_move_type
+
+logger = logging.getLogger(__name__)
+
+# Pre-compiled regex patterns for performance
+_TARGET_MARKER_RE = re.compile(r"#\s*TARGET:(\w+)")
+_LITERAL_LIST_RE = re.compile(
+    r"(?:moveJ|moveL|moveC|moveS|moveP)\s*\(\s*\["
+    r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+    r"(?:\s*,\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)*\s*\]"
+)
+_DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
+
+# Methods that produce trajectory segments for visualization.
+_MOTION_METHODS: dict[str, str] = {
+    "moveJ": "joints",
+    "moveL": "cartesian",
+    "moveC": "smooth_arc",
+    "moveS": "smooth_spline",
+    "moveP": "cartesian",
+    "jogJ": "jog",
+    "jogL": "jog",
+    "servoJ": "jog",
+    "servoL": "jog",
+}
+
+# Valid method names on the real RobotClient. Anything not in this set
+# raises AttributeError so typos in user scripts fail during dry-run
+# the same way they would on real hardware.
+
+
+class PathPreviewClient:
+    """Wraps DryRunRobotClient with visualization metadata collection.
+
+    Delegates all commands to the parol6 DryRunRobotClient (which runs
+    through the real command pipeline with ControllerState). After each
+    motion, collects path segment dicts for 3D visualization.
+
+    Methods are resolved via __getattr__:
+    - Motion methods: dispatch through _client + collect visualization
+    - All other methods: delegate to _client (which raises AttributeError
+      for unknown names, catching typos in user scripts)
+    """
+
+    def __init__(
+        self,
+        dry_run_client_cls: type,
+        segment_collector: list[dict] | None = None,
+        target_collector: list[dict] | None = None,
+        initial_joints: list[float] | np.ndarray | None = None,
+        host: str = "127.0.0.1",
+        port: int = 5001,
+    ):
+        self.segment_collector: list[dict] = (
+            [] if segment_collector is None else segment_collector
+        )
+        self.target_collector: list[dict] = (
+            [] if target_collector is None else target_collector
+        )
+
+        init_deg: list[float] | None = None
+        if initial_joints is not None:
+            init_deg = np.degrees(np.asarray(initial_joints, dtype=np.float64)).tolist()
+
+        self._client = dry_run_client_cls(initial_joints_deg=init_deg)
+        self.last_joints_rad: list[float] | None = None
+        self._blend_move_type: str = ""
+
+        logger.debug("PathPreviewClient initialized")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._flush_blend()
+
+    def close(self):
+        self._flush_blend()
+
+    def _flush_blend(self) -> None:
+        """Flush pending blend buffer from the underlying dry-run client."""
+        results = self._client.flush()
+        for result in results:
+            self._collect_from_result(result, self._blend_move_type or "joints")
+        self._blend_move_type = ""
+
+    # ---- Source introspection ----
+
+    def _get_caller_line_number(self) -> int:
+        try:
+            frame = inspect.currentframe()
+            while frame:
+                if frame.f_code.co_filename == "simulation_script.py":
+                    return frame.f_lineno
+                frame = frame.f_back
+        except Exception:
+            pass
+        return 0
+
+    def _get_source_line(self, line_no: int) -> str:
+        try:
+            line = linecache.getline("simulation_script.py", line_no)
+            if line:
+                return line.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _extract_target_marker(self, line: str) -> str | None:
+        match = _TARGET_MARKER_RE.search(line)
+        return match.group(1) if match else None
+
+    def _has_literal_list_args(self, line: str) -> bool:
+        return bool(_LITERAL_LIST_RE.search(line))
+
+    @staticmethod
+    def _extract_requested_duration(line: str) -> float | None:
+        """Extract duration=<value> from a source line. Returns None if not found or <= 0."""
+        match = _DURATION_RE.search(line)
+        if match:
+            val = float(match.group(1))
+            return val if val > 0 else None
+        return None
+
+    # ---- Segment collection ----
+
+    def _collect_from_result(self, result: DryRunResult | None, move_type: str):
+        if result is None:
+            return
+
+        if result.end_joints_rad.size > 0:
+            self.last_joints_rad = result.end_joints_rad.tolist()
+
+        has_error = result.error is not None
+
+        if result.tcp_poses.shape[0] == 0:
+            return
+
+        line_no = self._get_caller_line_number()
+        source_line = self._get_source_line(line_no)
+        is_valid = not has_error
+
+        points = result.tcp_poses[:, :3].tolist()
+        end_joints = (
+            result.end_joints_rad.tolist() if result.end_joints_rad.size > 0 else []
+        )
+
+        estimated = result.duration if result.duration else None
+        requested = self._extract_requested_duration(source_line)
+        if estimated is not None and requested is not None:
+            timing_feasible = estimated <= requested * 1.05
+        else:
+            timing_feasible = True
+
+        segment = {
+            "points": points,
+            "color": get_color_for_move_type(move_type, is_valid),
+            "is_valid": is_valid,
+            "line_number": line_no,
+            "joints": end_joints,
+            "move_type": move_type,
+            "is_dashed": len(points) <= 2,
+            "show_arrows": True,
+            "estimated_duration": estimated,
+            "requested_duration": requested,
+            "timing_feasible": timing_feasible,
+        }
+        self.segment_collector.append(segment)
+
+        marker_id = self._extract_target_marker(source_line)
+        has_literal_args = self._has_literal_list_args(source_line)
+
+        if has_literal_args:
+            end_pose_m = result.tcp_poses[-1].copy()
+
+            target_id = marker_id or f"auto_{line_no}"
+            target = {
+                "id": target_id,
+                "line_number": line_no,
+                "pose": end_pose_m.tolist(),
+                "move_type": move_type,
+                "scene_object_id": "",
+            }
+            self.target_collector.append(target)
+            if marker_id:
+                logger.debug("Created target %s at line %d", target_id, line_no)
+            else:
+                logger.debug("Auto-generated target %s at line %d", target_id, line_no)
+        elif marker_id:
+            logger.debug(
+                "Skipped target %s - line has variable args (not editable)", marker_id
+            )
+
+    # ---- Explicit: home (special first-move logic) ----
+
+    def home(self, **kw: Any) -> bool:
+        self._flush_blend()
+        has_prior_segments = len(self.segment_collector) > 0
+        try:
+            result = self._client.home(**kw)
+        except Exception as e:
+            logger.warning("home failed: %s", e)
+            return True
+        if has_prior_segments:
+            self._collect_from_result(result, "joints")
+        elif result is not None and result.end_joints_rad.size > 0:
+            self.last_joints_rad = result.end_joints_rad.tolist()
+        return True
+
+    # ---- Dynamic dispatch ----
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        # Motion methods: dispatch through _client + collect visualization
+        move_type = _MOTION_METHODS.get(name)
+        if move_type is not None:
+
+            def motion_method(*args: Any, **kwargs: Any) -> bool:
+                try:
+                    method = getattr(self._client, name)
+                    result = method(*args, **kwargs)
+                    if result is None:
+                        # Buffered for blending — track move_type of first buffered cmd
+                        if not self._blend_move_type:
+                            self._blend_move_type = move_type
+                    else:
+                        # Result returned (single dispatch or flushed composite)
+                        mt = self._blend_move_type or move_type
+                        self._blend_move_type = ""
+                        self._collect_from_result(result, mt)
+                    return True
+                except Exception as e:
+                    logger.warning("%s failed: %s", name, e)
+                    return False
+
+            return motion_method
+
+        # All other methods: flush blend first, then delegate to backend.
+        # It raises AttributeError for unknown names, catching typos.
+        self._flush_blend()
+        return getattr(self._client, name)
+
+
+class AsyncPathPreviewClient:
+    """Async wrapper around PathPreviewClient."""
+
+    def __init__(
+        self,
+        dry_run_client_cls: type,
+        segment_collector: list[dict] | None = None,
+        target_collector: list[dict] | None = None,
+        initial_joints: list[float] | np.ndarray | None = None,
+        host: str = "127.0.0.1",
+        port: int = 5001,
+    ):
+        self._sync_client = PathPreviewClient(
+            dry_run_client_cls=dry_run_client_cls,
+            segment_collector=[] if segment_collector is None else segment_collector,
+            target_collector=[] if target_collector is None else target_collector,
+            initial_joints=initial_joints,
+            host=host,
+            port=port,
+        )
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._sync_client._flush_blend()
+
+    async def close(self):
+        self._sync_client._flush_blend()
+
+    @property
+    def segment_collector(self) -> list[dict]:
+        return self._sync_client.segment_collector
+
+    @property
+    def target_collector(self) -> list[dict]:
+        return self._sync_client.target_collector
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._sync_client, name)
+        if callable(attr) and name != "close":
+
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                return attr(*args, **kwargs)
+
+            return wrapper
+        return attr

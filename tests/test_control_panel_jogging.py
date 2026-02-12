@@ -22,7 +22,7 @@ from tests.helpers.wait import (
 
 
 @pytest.mark.integration
-async def test_joint_jog_button_sends_jog_joint(user: User, robot_state) -> None:
+async def test_joint_jog_button_sends_jogJ(user: User, robot_state) -> None:
     """Clicking a joint jog button should result in joint motion.
 
     Ensures that when simulator mode is active, clicking the J1 + jog
@@ -78,7 +78,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     """Verify joint jog buttons move by step amount in both directions.
 
     When a joint jog button is clicked briefly (not held), it should move
-    the joint by approximately the configured step size using move_joints.
+    the joint by approximately the configured step size using moveJ.
     Tests both positive and negative directions.
     """
     from parol_commander.state import ui_state
@@ -121,7 +121,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
     Tests Z+, Z-, and RZ+ to cover translation and rotation.
     When a cartesian jog button is clicked briefly (not held), it should move
-    the TCP by approximately the configured step size using move_cartesian.
+    the TCP by approximately the configured step size using moveL.
     """
     from parol_commander.state import ui_state
 
@@ -389,7 +389,9 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
     Clicking a joint limit button should result in the joint reaching
     or being very close to its defined min/max limit value.
     """
-    from parol_commander.constants import JOINT_LIMITS_DEG
+    from parol_commander.state import ui_state
+
+    JOINT_LIMITS_DEG = ui_state.active_robot.joints.limits.position.deg
 
     await user.open("/")
     await wait_for_app_ready()

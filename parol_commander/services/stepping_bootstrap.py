@@ -37,6 +37,8 @@ def main() -> None:
         sys.exit(1)
 
     # Import and set up the stepping wrapper
+    import importlib
+
     from parol_commander.services.stepping_client import (
         SteppingClientWrapper,
         StepIO,
@@ -44,10 +46,13 @@ def main() -> None:
 
     step_io = StepIO(session_id)
 
-    # Import parol6 and patch RobotClient
+    # Read backend package from environment (set by the GUI process)
+    backend_package = os.environ.get("PAROL_BACKEND_PACKAGE", "parol6")
+
+    # Import the backend and patch RobotClient
     try:
-        import parol6
-        from parol6 import RobotClient as OriginalRobotClient
+        backend = importlib.import_module(backend_package)
+        OriginalRobotClient = backend.RobotClient
 
         # Store original for reference
         _original_robot_client = OriginalRobotClient
@@ -62,19 +67,20 @@ def main() -> None:
                 # Wrap it with stepping wrapper
                 return SteppingClientWrapper(original, step_io)
 
-        # Patch parol6 module
-        parol6.RobotClient = WrappedRobotClient
-        if hasattr(parol6, "client"):
-            parol6.client.RobotClient = WrappedRobotClient
+        # Patch backend module
+        setattr(backend, "RobotClient", WrappedRobotClient)
+        if hasattr(backend, "client"):
+            setattr(backend.client, "RobotClient", WrappedRobotClient)
 
         # Also patch sys.modules entries
-        if "parol6" in sys.modules:
-            sys.modules["parol6"].RobotClient = WrappedRobotClient  # type: ignore[attr-defined]
-        if "parol6.client" in sys.modules:
-            sys.modules["parol6.client"].RobotClient = WrappedRobotClient  # type: ignore[attr-defined]
+        if backend_package in sys.modules:
+            setattr(sys.modules[backend_package], "RobotClient", WrappedRobotClient)
+        client_mod_name = f"{backend_package}.client"
+        if client_mod_name in sys.modules:
+            setattr(sys.modules[client_mod_name], "RobotClient", WrappedRobotClient)
 
     except ImportError as e:
-        print(f"Failed to import parol6: {e}", file=sys.stderr)
+        print(f"Failed to import {backend_package}: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Prepare execution environment for the user script

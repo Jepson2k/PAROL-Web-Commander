@@ -2,7 +2,7 @@ import logging
 from functools import partial
 
 from nicegui import ui
-from parol6 import AsyncRobotClient
+from parol_commander.robot_interface import RobotClient
 
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.state import robot_state
@@ -11,7 +11,7 @@ from parol_commander.state import robot_state
 class IoPage:
     """I/O tab page."""
 
-    def __init__(self, client: AsyncRobotClient) -> None:
+    def __init__(self, client: RobotClient) -> None:
         self.client = client
 
         # Labels updated by status polling

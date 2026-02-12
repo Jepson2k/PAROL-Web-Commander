@@ -8,16 +8,15 @@ import os
 import re
 import math
 from functools import partial
-from typing import Any, List, cast
+from typing import Any, List
 import importlib.resources as pkg_resources
 
-from nicegui import ui, app
-from parol6 import AsyncRobotClient
+import numpy as np
 
-from parol_commander.constants import (
-    JOINT_LIMITS_DEG,
-    config,
-)
+from nicegui import ui, app
+from parol_commander.robot_interface import RobotClient
+
+from parol_commander.constants import config
 from parol_commander.state import (
     robot_state,
     ui_state,
@@ -25,8 +24,6 @@ from parol_commander.state import (
 )
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.components.settings import SettingsContent
-from parol6.protocol.types import Axis, Frame
-from parol6.config import HOME_ANGLES_DEG
 
 # Module-level constants (avoid recreation every frame)
 _AXIS_ORDER = (
@@ -45,11 +42,51 @@ _AXIS_ORDER = (
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
 
+_CART_AXIS_LOOKUP: dict[str, tuple[str, float, str]] | None = None
+
+
+def _get_cart_axis_lookup() -> dict[str, tuple[str, float, str]]:
+    """Build cartesian axis lookup from the active profile's frame names.
+
+    Translation axes (X, Y, Z) use the first frame (world),
+    rotation axes (RX, RY, RZ) use the second frame (tool).
+    """
+    global _CART_AXIS_LOOKUP
+    if _CART_AXIS_LOOKUP is not None:
+        return _CART_AXIS_LOOKUP
+    frames = ui_state.active_robot.cartesian_frames
+    wrf, trf = frames[0], frames[1]
+    _CART_AXIS_LOOKUP = {
+        "X+": ("X", 1.0, wrf),
+        "X-": ("X", -1.0, wrf),
+        "Y+": ("Y", 1.0, wrf),
+        "Y-": ("Y", -1.0, wrf),
+        "Z+": ("Z", 1.0, wrf),
+        "Z-": ("Z", -1.0, wrf),
+        "RX+": ("RX", 1.0, trf),
+        "RX-": ("RX", -1.0, trf),
+        "RY+": ("RY", 1.0, trf),
+        "RY-": ("RY", -1.0, trf),
+        "RZ+": ("RZ", 1.0, trf),
+        "RZ-": ("RZ", -1.0, trf),
+    }
+    return _CART_AXIS_LOOKUP
+
+
+def _norm_speed() -> float:
+    """Normalize jog_speed (0-100 slider) to 0.01..1.0 range."""
+    return max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+
+
+def _norm_accel() -> float:
+    """Normalize jog_accel (0-100 slider) to 0.0..1.0 range."""
+    return ui_state.jog_accel / 100.0
+
 
 class ControlPanel:
     """Bottom-left control panel for jog settings and robot control."""
 
-    def __init__(self, client: AsyncRobotClient) -> None:
+    def __init__(self, client: RobotClient) -> None:
         """Initialize control panel with jog state and required robot client."""
         self.client = client
         self._ui_client: Any = None  # NiceGUI client for background task UI ops
@@ -63,8 +100,9 @@ class ControlPanel:
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
         # Jog state tracking
-        self._jog_pressed_pos: list[bool] = [False] * 6
-        self._jog_pressed_neg: list[bool] = [False] * 6
+        n_joints = ui_state.active_robot.joints.count
+        self._jog_pressed_pos: list[bool] = [False] * n_joints
+        self._jog_pressed_neg: list[bool] = [False] * n_joints
         self._cart_pressed_axes: dict[str, bool] = {
             "X+": False,
             "X-": False,
@@ -180,7 +218,7 @@ class ControlPanel:
 
     def _get_first_pressed_joint(self) -> tuple[int, str] | None:
         """Return (index, 'pos'|'neg') for the first pressed joint, else None."""
-        for j in range(6):
+        for j in range(len(self._jog_pressed_pos)):
             if self._jog_pressed_pos[j]:
                 return (j, "pos")
             if self._jog_pressed_neg[j]:
@@ -197,10 +235,10 @@ class ControlPanel:
     def _get_joint_limits(self, i: int) -> tuple[float, float]:
         """Return (lo, hi) for joint i with safe defaults."""
         try:
-            limits = JOINT_LIMITS_DEG[i]
-            lo = float(limits[0])
-            hi = float(limits[1])
-            return lo, hi
+            pos_deg = ui_state.active_robot.joints.limits.position.deg
+            if i < pos_deg.shape[0]:
+                return float(pos_deg[i, 0]), float(pos_deg[i, 1])
+            return (-360.0, 360.0)
         except Exception:
             return (-360.0, 360.0)
 
@@ -382,7 +420,8 @@ class ControlPanel:
         if current_tuple is None:
             return
 
-        for j in range(6):
+        n_joints = ui_state.active_robot.joints.count
+        for j in range(n_joints):
             plus_allowed = bool(en[2 * j])
             minus_allowed = bool(en[2 * j + 1])
             self._set_strong_disabled(self._joint_right_btns.get(j), not plus_allowed)
@@ -395,8 +434,9 @@ class ControlPanel:
         """Apply stronger disabled visuals to axis icons using CART_EN for current frame and mirror to 3D gizmo."""
         # Get current state for dirty checking
         editing_mode = robot_state.editing_mode
-        frame = str(ui_state.frame).upper() if ui_state.frame else "WRF"
-        en = robot_state.cart_en_trf if frame == "TRF" else robot_state.cart_en_wrf
+        frames = ui_state.active_robot.cartesian_frames
+        frame = str(ui_state.frame).upper() if ui_state.frame else frames[0]
+        en = robot_state.cart_en.get(frame, np.ones(12, dtype=np.int32))
         current_tuple = tuple(en) if len(en) == 12 else None
 
         # Skip if state unchanged
@@ -530,8 +570,8 @@ class ControlPanel:
         was_holding = key in self._holding_active
         if tm and tm.active:
             tm.active = False
-            # CLICK => one incremental step using move_joints for precision
-            speed = max(1, min(100, int(ui_state.jog_speed)))
+            # CLICK => one incremental step using moveJ for precision
+            speed = _norm_speed()
             step = abs(float(ui_state.joint_step_deg))
             try:
                 # Get current angles and calculate target
@@ -543,7 +583,7 @@ class ControlPanel:
                         target_angles[j] = min(hi, target_angles[j] + step)
                     else:
                         target_angles[j] = max(lo, target_angles[j] - step)
-                    await self.client.move_joints(target_angles, speed=speed)
+                    await self.client.moveJ(target_angles, speed=speed)
             except Exception as e:
                 logging.error("Incremental joint move failed: %s", e)
             if direction == "pos":
@@ -573,13 +613,13 @@ class ControlPanel:
             if not robot_state.simulator_active and not robot_state.connected:
                 return
 
-            speed = max(1, min(100, int(ui_state.jog_speed)))
+            speed = _norm_speed()
             intent = self._get_first_pressed_joint()
             if intent is not None:
                 j, d = intent
-                idx = j if d == "pos" else (j + 6)
-                await self.client.jog_joint(
-                    idx, speed=speed, duration=self.STREAM_TIMEOUT_S
+                signed_speed = speed if d == "pos" else -speed
+                await self.client.jogJ(
+                    j, speed=signed_speed, duration=self.STREAM_TIMEOUT_S
                 )
             self._cadence_tick(time.time(), self._tick_stats, "joint")
 
@@ -608,11 +648,8 @@ class ControlPanel:
             self._schedule_jog_end_wait()
 
         # Check backend-reported enablement for this axis in current frame
-        en_list = (
-            robot_state.cart_en_trf
-            if str(getattr(ui_state, "frame", "WRF")).upper() == "TRF"
-            else robot_state.cart_en_wrf
-        )
+        frame = str(getattr(ui_state, "frame", "")).upper()
+        en_list = robot_state.cart_en.get(frame, np.ones(12, dtype=np.int32))
         allowed = True
         if len(en_list) == 12 and axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
@@ -654,8 +691,8 @@ class ControlPanel:
         was_holding = key in self._holding_active_cart
         if tm and tm.active:
             tm.active = False
-            # CLICK => one incremental step using move_cartesian for precision
-            speed = max(1, min(100, int(ui_state.jog_speed)))
+            # CLICK => one incremental step using moveL for precision
+            speed = _norm_speed()
             step = max(0.1, min(100.0, float(ui_state.joint_step_deg)))
             try:
                 # Get current position and calculate target
@@ -675,10 +712,10 @@ class ControlPanel:
                 if axis_letter in _AXIS_MAP:
                     idx = _AXIS_MAP[axis_letter]
                     self._cart_target_buffer[idx] += direction * step
-                    await self.client.move_cartesian(
+                    await self.client.moveL(
                         self._cart_target_buffer,
-                        speed=float(speed),
-                        accel=float(ui_state.jog_accel),
+                        speed=speed,
+                        accel=_norm_accel(),
                     )
             except Exception as e:
                 logging.error("Incremental cart move failed: %s", e)
@@ -707,7 +744,7 @@ class ControlPanel:
             if not robot_state.simulator_active and not robot_state.connected:
                 return
 
-            speed = max(1, min(100, int(ui_state.jog_speed)))
+            speed = _norm_speed()
 
             # Priority 1: TransformControls drag actively providing absolute poses
             if self._tcp_drag_active and self._tcp_latest_pose:
@@ -734,10 +771,10 @@ class ControlPanel:
                     # Use speed for stream blending. The server enforces a
                     # minimum 200ms duration to keep commands alive long enough for
                     # subsequent updates to blend in, creating a "mouse trail" effect.
-                    await self.client.move_cartesian(
+                    await self.client.servoL(
                         list(self._tcp_latest_pose[:6]),
                         speed=float(speed),
-                        accel=float(ui_state.jog_accel),
+                        accel=_norm_accel(),
                     )
                     # Track what we sent to avoid duplicates
                     self._tcp_last_sent_pose = list(self._tcp_latest_pose[:6])
@@ -747,13 +784,11 @@ class ControlPanel:
                 return
 
             # Priority 2: legacy cart jog buttons (streamed)
-            # Use WRF for translation (X,Y,Z) and TRF for rotation (Rx,Ry,Rz)
             axis = self._get_first_pressed_axis()
             if axis is not None:
-                axis_str = str(axis).upper()
-                frame: Frame = "TRF" if axis_str.startswith("R") else "WRF"
-                await self.client.jog_cartesian(
-                    frame, cast(Axis, axis), speed, self.STREAM_TIMEOUT_S
+                axis_name, direction, frame = _get_cart_axis_lookup()[axis]
+                await self.client.jogL(
+                    frame, axis_name, speed * direction, self.STREAM_TIMEOUT_S
                 )
             self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
 
@@ -827,10 +862,9 @@ class ControlPanel:
             t.active = bool(any_pressed)
 
     def _schedule_jog_end_wait(self) -> None:
-        """Schedule a jog end wait task if one isn't already running."""
-        # Skip if a wait task is already pending
+        """Schedule a jog end wait task, cancelling any stale one."""
         if self._jog_end_wait_task is not None and not self._jog_end_wait_task.done():
-            return
+            self._jog_end_wait_task.cancel()
         self._jog_end_wait_task = asyncio.create_task(self._wait_and_record_jog_end())
 
     async def _wait_and_record_jog_end(self) -> None:
@@ -838,6 +872,9 @@ class ControlPanel:
         try:
             await self.client.wait_motion_complete(timeout=5.0, settle_window=0.2)
             logging.debug("Jog: Motion stopped, recording position")
+        except asyncio.CancelledError:
+            logging.debug("Jog: wait task cancelled (superseded by new jog)")
+            return
         except Exception as e:
             logging.warning("Jog: wait_motion_complete failed: %s", e)
         finally:
@@ -861,9 +898,9 @@ class ControlPanel:
             tgt = max(lo, min(hi, float(target_deg)))
             pose = angles[:6]
             pose[joint_index] = tgt
-            spd = max(1, min(100, int(ui_state.jog_speed)))
+            spd = _norm_speed()
 
-            await self.client.move_joints(pose, speed=spd)
+            await self.client.moveJ(pose, speed=spd)
             ui.notify(f"Joint J{joint_index + 1} \u2192 {tgt:.2f}°", color="primary")
         except Exception as e:
             logging.error("Go to joint angle failed: %s", e)
@@ -886,14 +923,13 @@ class ControlPanel:
 
         try:
             angles = list(robot_state.angles.deg)
-            limits = JOINT_LIMITS_DEG[joint_index]
-            lo, hi = float(limits[0]), float(limits[1])
+            lo, hi = self._get_joint_limits(joint_index)
 
             target = angles[:6]
             target[joint_index] = float(lo if which == "min" else hi)
-            spd = max(1, min(100, int(ui_state.jog_speed)))
+            spd = _norm_speed()
 
-            await self.client.move_joints(target, speed=spd)
+            await self.client.moveJ(target, speed=spd)
         except Exception as e:
             logging.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
@@ -1018,7 +1054,7 @@ class ControlPanel:
 
                     async def resume():
                         try:
-                            await self.client.start()
+                            await self.client.resume()
                             self._digital_estop_active = (
                                 False  # Clear digital estop state
                             )
@@ -1078,8 +1114,7 @@ class ControlPanel:
         # In editing mode, move the editing robot to home position
         if robot_state.editing_mode:
             if ui_state.urdf_scene:
-                # Home position from PAROL6 config (degrees -> radians)
-                home_angles_rad = [math.radians(deg) for deg in HOME_ANGLES_DEG]
+                home_angles_rad = ui_state.active_robot.joints.home.rad.tolist()
                 ui_state.urdf_scene.set_editing_angles(home_angles_rad)
                 # Sync robot_state with new editing values
                 if hasattr(ui_state.urdf_scene, "_sync_robot_state_from_editing"):
@@ -1149,20 +1184,20 @@ class ControlPanel:
                 # Enable after switching to simulator
                 # (no delay needed - controller waits for first frame before responding OK)
                 try:
-                    await self.client.enable()
+                    await self.client.resume()
                 except Exception as e:
-                    logging.warning("Enable after simulator on failed: %s", e)
+                    logging.warning("Resume after simulator on failed: %s", e)
             else:
                 await self.client.simulator_off()
                 robot_state.simulator_active = False
                 # Restore default URDF appearance (remove simulator ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:
                     ui_state.urdf_scene.set_simulator_appearance(False)
-                # Enable after switching back to robot mode
+                # Resume after switching back to robot mode
                 try:
-                    await self.client.enable()
+                    await self.client.resume()
                 except Exception as e:
-                    logging.warning("Enable after simulator off failed: %s", e)
+                    logging.warning("Resume after simulator off failed: %s", e)
 
             # Update any visual toggle state if present
             if callable(getattr(self, "_update_robot_btn_visual", None)):
@@ -1179,7 +1214,7 @@ class ControlPanel:
             return
 
         # Stop robot immediately
-        await self.client.stop()
+        await self.client.halt()
         self._digital_estop_active = True
 
         # Show E-STOP dialog with Resume button (needs UI context)
