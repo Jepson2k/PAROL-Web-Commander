@@ -604,12 +604,7 @@ async def controller_reset(
             await client.resume()
             # Home the robot to ensure valid joint angles (0.0 is invalid for some joints)
             # Use short timeouts since simulator homing is instant
-            await client.home(
-                wait=True,
-                timeout=10.0,
-                motion_start_timeout=0.5,  # Allow more time for motion to start on slow CI
-                settle_window=0.05,  # Robot settles instantly in simulator
-            )
+            await client.home(wait=True, timeout=10.0)
 
     yield
 
