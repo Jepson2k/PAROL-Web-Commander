@@ -109,7 +109,7 @@ class TestDryRunClient:
 
     @pytest.mark.asyncio
     async def test_unreachable_cartesian_creates_error_result(self):
-        """Unreachable cartesian target should either fail gracefully or create no segment."""
+        """Unreachable cartesian target produces per-pose valid/invalid segments."""
         segments: list[dict] = []
         targets: list[dict] = []
         client = PathPreviewClient(
@@ -118,13 +118,15 @@ class TestDryRunClient:
             target_collector=targets,
         )
 
-        # Extremely far target — likely unreachable
+        # Extremely far target — mostly unreachable
         client.moveL([9999, 9999, 9999, 0, 0, 0], speed=1.0)
 
-        # With real command pipeline, unreachable targets produce empty trajectories
-        # so no segment is created (the error is in the DryRunResult)
-        # This is acceptable — the simulation error message will inform the user
-        assert len(segments) <= 1  # 0 or 1 depending on IK behavior
+        # Per-pose IK diagnostic produces green (valid) + red (invalid) segments
+        assert len(segments) >= 1
+        has_invalid = any(not s["is_valid"] for s in segments)
+        assert has_invalid, (
+            "Expected at least one invalid segment for unreachable target"
+        )
 
 
 # ============================================================================
@@ -546,8 +548,7 @@ class TestEditorAutoSimulation:
 
         panel = EditorPanel(mock_client)
 
-        # Default delay is 375ms
-        assert panel._debounce_delay == 0.375
+        assert panel._debounce_delay == 1.0
         # Timer starts as None
         assert panel._simulation_debounce_timer is None
 
@@ -569,7 +570,7 @@ class TestEditorAutoSimulation:
             # Verify timer was created with correct parameters
             mock_ui.timer.assert_called_once()
             call_args = mock_ui.timer.call_args
-            assert call_args[0][0] == 0.375  # debounce delay
+            assert call_args[0][0] == 1.0  # debounce delay
             assert call_args[1]["once"] is True
 
     def test_schedule_debounced_simulation_cancels_previous_timer(self, mock_client):
@@ -591,9 +592,9 @@ class TestEditorAutoSimulation:
             panel._schedule_debounced_simulation()
             assert panel._simulation_debounce_timer == mock_timer1
 
-            # Second call should cancel timer1 and create timer2
+            # Second call should cancel timer1 (including running callback) and create timer2
             panel._schedule_debounced_simulation()
-            mock_timer1.cancel.assert_called_once()
+            mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
             assert panel._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio

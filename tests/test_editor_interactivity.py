@@ -363,8 +363,14 @@ class TestEditorInteractivity:
             "Marker should be in content before refresh"
         )
 
-        # Refresh the page
+        # Refresh the page — set a marker so we can detect the actual reload
+        class_screen.selenium.execute_script("window.__pre_refresh = true")
         class_screen.selenium.refresh()
+
+        # Wait for the OLD page to unload (marker disappears)
+        WebDriverWait(class_screen.selenium, 10).until(
+            lambda d: not d.execute_script("return window.__pre_refresh")
+        )
 
         # Wait for PanelResize to be configured and app to be ready
         WebDriverWait(class_screen.selenium, 15).until(
