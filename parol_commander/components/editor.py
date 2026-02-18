@@ -208,9 +208,11 @@ class EditorPanel:
         # Drawer element reference
         self.drawer: ui.element | None = None
 
-        # Debounce timer for auto-simulation on code change
+        # Debounce timer for auto-simulation on code change.
+        # The timer reference is kept alive while the callback runs so that
+        # cancel(with_current_invocation=True) can abort a running simulation.
         self._simulation_debounce_timer: ui.timer | None = None
-        self._debounce_delay: float = 0.375  # 375ms delay before running simulation
+        self._debounce_delay: float = 1.0  # seconds of idle before running simulation
 
         # Recording notification
         self._recording_notification: ui.notification | None = None
@@ -1085,8 +1087,10 @@ print(f"Robot status: {{status}}")
     def _schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
         """Schedule a debounced simulation run when code changes.
 
-        Cancels any pending simulation and schedules a new one after the debounce delay.
-        This avoids running simulation on every keystroke.
+        Cancels any pending *or running* simulation and schedules a new one after
+        the debounce delay.  ``cancel(with_current_invocation=True)`` aborts both the
+        debounce sleep and an in-progress simulation subprocess, so edits never
+        pile up stale simulations behind the simulation lock.
 
         Args:
             tab_id: The tab to run simulation for. If None, uses active tab.
@@ -1113,45 +1117,35 @@ print(f"Robot status: {{status}}")
                 self._update_scrub_segments()
             return
 
-        schedule_time = time.time()
-        # Cancel any pending simulation timer
+        # Cancel any pending debounce wait *and* any running simulation callback
         if self._simulation_debounce_timer is not None:
-            logger.debug(
-                "DEBOUNCE: Cancelling pending timer (had timer=%s)",
-                self._simulation_debounce_timer,
-            )
-            self._simulation_debounce_timer.cancel()
+            logger.debug("DEBOUNCE: Cancelling pending/running simulation")
+            self._simulation_debounce_timer.cancel(with_current_invocation=True)
             self._simulation_debounce_timer = None
-
-        # Capture tab_id for the closure
-        target_tab_id = tab_id
 
         async def run_simulation_quietly():
             """Run simulation without notifications (silent auto-update)."""
-            fire_time = time.time()
-            logger.debug(
-                "DEBOUNCE: Timer fired after %.3fs (scheduled at %.3f, fired at %.3f)",
-                fire_time - schedule_time,
-                schedule_time,
-                fire_time,
-            )
-            self._simulation_debounce_timer = None
             try:
                 logger.debug("DEBOUNCE: Starting simulation...")
-                await self._run_simulation(notify=False, tab_id=target_tab_id)
+                await self._run_simulation(notify=False, tab_id=tab_id)
                 logger.debug("DEBOUNCE: Simulation completed successfully")
+            except asyncio.CancelledError:
+                logger.debug("DEBOUNCE: Simulation cancelled by newer edit")
             except Exception as e:
-                # Log error but don't crash the UI - show subtle notification
                 logger.error("Auto-simulation failed: %s", e, exc_info=True)
                 ui.notify(f"Simulation error: {e}", color="negative", timeout=3000)
+            finally:
+                # Only clear if we are still the active timer — a newer
+                # scheduling may have already replaced the reference.
+                if self._simulation_debounce_timer is my_timer:
+                    self._simulation_debounce_timer = None
 
         # Schedule new simulation after debounce delay
         logger.debug(
             "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
         )
-        self._simulation_debounce_timer = ui.timer(
-            self._debounce_delay, run_simulation_quietly, once=True
-        )
+        my_timer = ui.timer(self._debounce_delay, run_simulation_quietly, once=True)
+        self._simulation_debounce_timer = my_timer
 
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off."""
@@ -1413,6 +1407,7 @@ print(f"Robot status: {{status}}")
 
         # Update active tab
         editor_tabs_state.active_tab_id = tab_id
+        simulation_state.active_cursor_line = 0
 
         # Update tab panels value
         if self.tab_panels_container:
@@ -1526,6 +1521,7 @@ print(f"Robot status: {{status}}")
                         on_change=lambda e, t=tab: self._on_tab_content_change(
                             t, e.value
                         ),
+                        on_cursor_line=lambda e, t=tab: self._on_cursor_line(t, e),
                         custom_completions=completions,
                     )
                     .classes("w-full h-full")
@@ -1537,7 +1533,7 @@ print(f"Robot status: {{status}}")
                     mode = get_theme()
                     effective = "light" if mode == "light" else "dark"
                     textarea.theme = "basicLight" if effective == "light" else "oneDark"
-                except Exception:
+                except (KeyError, ValueError):
                     textarea.theme = "oneDark"
 
             # Store references
@@ -1545,6 +1541,14 @@ print(f"Robot status: {{status}}")
             self._tab_widgets[tab.id]["textarea"] = textarea
 
         return panel
+
+    def _on_cursor_line(self, tab: EditorTab, e) -> None:
+        """Handle cursor line change from CodeMirror."""
+        if tab.id != editor_tabs_state.active_tab_id:
+            return
+        simulation_state.active_cursor_line = e.args.get("line", 0)
+        if ui_state.urdf_scene and simulation_state.paths_visible:
+            ui_state.urdf_scene.update_cursor_line_highlight()
 
     def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1864,16 +1868,59 @@ print(f"Robot status: {{status}}")
         if self.program_textarea:
             self.program_textarea.clear_decorations("executing")
 
+    _DURATION_PARAM_RE = re.compile(r"duration\s*=\s*[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
     def _apply_timing_decorations(self) -> None:
-        """Apply amber line decorations for segments with infeasible timing."""
+        """Highlight the duration=XXX span and show min time for infeasible timing."""
         if not self.program_textarea:
             return
-        warnings = [
-            {"kind": "line", "line": seg.line_number, "class": "cm-timing-warning"}
-            for seg in simulation_state.path_segments
-            if not seg.timing_feasible and seg.line_number > 0
-        ]
-        self.program_textarea.set_decorations(warnings, set_name="timing")
+        source = self.program_textarea.value or ""
+        lines = source.split("\n")
+        # Pre-compute line start offsets (0-indexed char positions)
+        line_starts: list[int] = []
+        offset = 0
+        for ln in lines:
+            line_starts.append(offset)
+            offset += len(ln) + 1  # +1 for '\n'
+
+        decorations: list[dict] = []
+        marked_lines: set[int] = set()
+        for seg in simulation_state.path_segments:
+            if seg.timing_feasible or seg.line_number <= 0:
+                continue
+            line_idx = seg.line_number - 1  # 0-indexed
+            if line_idx >= len(lines):
+                continue
+
+            # Mark decoration on the "duration=XXX" span (once per line)
+            if seg.line_number not in marked_lines:
+                marked_lines.add(seg.line_number)
+                line_text = lines[line_idx]
+                line_start = line_starts[line_idx]
+                m = self._DURATION_PARAM_RE.search(line_text)
+                if m:
+                    decorations.append(
+                        {
+                            "kind": "mark",
+                            "from": line_start + m.start(),
+                            "to": line_start + m.end(),
+                            "class": "cm-timing-warning-mark",
+                        }
+                    )
+
+            # Line decoration for the ::after annotation text
+            if seg.estimated_duration is not None:
+                decorations.append(
+                    {
+                        "kind": "line",
+                        "line": seg.line_number,
+                        "class": "cm-timing-warning",
+                        "attributes": {
+                            "data-timing": f"min: {seg.estimated_duration:.2f}s",
+                        },
+                    }
+                )
+        self.program_textarea.set_decorations(decorations, set_name="timing")
 
     def _build_bottom_bar(self) -> None:
         """Build the bottom playback bar with controls.
@@ -2112,9 +2159,19 @@ print(f"Robot status: {{status}}")
                 self._create_tab_widget(tab)
                 self._create_tab_panel(tab)
 
-            # Switch to the previously active tab (or first tab if none active)
+            # Activate the previously active tab (or first tab if none active).
+            # Set references directly instead of calling _switch_to_tab() which
+            # blocks during recording/playback — those guards are for user-initiated
+            # switches, not page-load restoration.
             active_id = editor_tabs_state.active_tab_id or editor_tabs_state.tabs[0].id
-            self._switch_to_tab(active_id)
+            editor_tabs_state.active_tab_id = active_id
+            if self.tab_panels_container:
+                self.tab_panels_container.set_value(active_id)
+            if self.tabs_container:
+                self.tabs_container.set_value(active_id)
+            widgets = self._tab_widgets.get(active_id, {})
+            self.program_textarea = widgets.get("textarea")
+            self.program_filename_input = widgets.get("filename_input")
 
             # Restore simulation state from active tab
             active_tab = editor_tabs_state.get_active_tab()

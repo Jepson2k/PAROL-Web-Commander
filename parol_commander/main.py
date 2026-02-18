@@ -1077,6 +1077,10 @@ def _register_handlers() -> None:
                     # Robot mode (physical serial connected)
                     robot_state.simulator_active = False
                     try:
+                        # Explicit simulator_off ensures transport is fully
+                        # initialized and _wait_for_first_frame runs, so
+                        # Position_in is valid before we accept commands.
+                        await client.simulator_off()
                         await client.resume()
                     except Exception as e:
                         logging.warning("startup: resume failed (may retry): %s", e)
@@ -1200,37 +1204,24 @@ async def index_page():
     # Build UI
     build_page_content()
 
-    # Determine initial mode based on connectivity
+    # Reflect startup-determined mode in UI; update connectivity only upward
+    # (don't downgrade connected→disconnected from a transient ping failure;
+    # the 1 Hz check_ping handles that with retries).
     try:
-        # Quick ping to check if robot is connected
         result = await client.ping()
         serial = result.serial_connected if result else False
-
-        robot_state.connected = bool(serial)
-
-        # Reflect current simulator appearance only (authoritative mode was chosen at startup)
-        # Guard against client-deleted errors during test teardown
-        with contextlib.suppress(RuntimeError):
-            if ui_state.urdf_scene:
-                ui_state.urdf_scene.set_simulator_appearance(
-                    bool(robot_state.simulator_active)
-                )
-
-            # Update button visuals to match current mode
-            if callable(getattr(control_panel, "_update_robot_btn_visual", None)):
-                control_panel._update_robot_btn_visual()
+        if serial:
+            robot_state.connected = True
     except Exception as e:
         logging.warning("Connectivity check failed: %s", e)
-        robot_state.connected = False
-        # Reflect current simulator appearance only (do not toggle mode here)
-        # Guard against client-deleted errors during test teardown
-        with contextlib.suppress(RuntimeError):
-            if ui_state.urdf_scene:
-                ui_state.urdf_scene.set_simulator_appearance(
-                    bool(robot_state.simulator_active)
-                )
-            if callable(getattr(control_panel, "_update_robot_btn_visual", None)):
-                control_panel._update_robot_btn_visual()
+
+    with contextlib.suppress(RuntimeError):
+        if ui_state.urdf_scene:
+            ui_state.urdf_scene.set_simulator_appearance(
+                bool(robot_state.simulator_active)
+            )
+        if callable(getattr(control_panel, "_update_robot_btn_visual", None)):
+            control_panel._update_robot_btn_visual()
 
     # Create jog timers
     joint_jog_timer = ui.timer(

@@ -326,9 +326,13 @@ def _run_simulation_isolated(
                     # Async main - need to run the coroutine
                     # Try asyncio.run() first (subprocess context)
                     try:
-                        asyncio.run(main_func())
+                        coro = main_func()
+                        asyncio.run(coro)
                     except RuntimeError as e:
                         if "cannot be called from a running event loop" in str(e):
+                            # The coroutine from asyncio.run() was never awaited;
+                            # close it explicitly to suppress the RuntimeWarning.
+                            coro.close()
                             # We're in a running loop (fallback in-process mode)
                             # Create a new event loop in a thread
                             import concurrent.futures

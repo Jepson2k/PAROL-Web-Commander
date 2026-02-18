@@ -235,6 +235,7 @@ class SimulationState:
     paths_visible: bool = True
     envelope_visible: bool = False
     envelope_mode: str = "auto"  # "auto" | "on" | "off"
+    active_cursor_line: int = 0  # 1-indexed editor cursor line, 0 = none
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )

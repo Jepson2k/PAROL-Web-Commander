@@ -148,16 +148,15 @@ class PathPreviewClient:
         if result.end_joints_rad.size > 0:
             self.last_joints_rad = result.end_joints_rad.tolist()
 
-        has_error = result.error is not None
-
         if result.tcp_poses.shape[0] == 0:
             return
 
         line_no = self._get_caller_line_number()
         source_line = self._get_source_line(line_no)
-        is_valid = not has_error
 
-        points = result.tcp_poses[:, :3].tolist()
+        valid = result.valid
+        has_error = result.error is not None
+
         end_joints = (
             result.end_joints_rad.tolist() if result.end_joints_rad.size > 0 else []
         )
@@ -169,20 +168,36 @@ class PathPreviewClient:
         else:
             timing_feasible = True
 
-        segment = {
-            "points": points,
-            "color": get_color_for_move_type(move_type, is_valid),
-            "is_valid": is_valid,
-            "line_number": line_no,
-            "joints": end_joints,
-            "move_type": move_type,
-            "is_dashed": len(points) <= 2,
-            "show_arrows": True,
-            "estimated_duration": estimated,
-            "requested_duration": requested,
-            "timing_feasible": timing_feasible,
-        }
-        self.segment_collector.append(segment)
+        if valid is not None:
+            # Per-pose validity: split into runs of consecutive valid/invalid
+            self._collect_validity_segments(
+                result,
+                valid,
+                move_type,
+                line_no,
+                end_joints,
+                estimated,
+                requested,
+                timing_feasible,
+            )
+        else:
+            # All valid or all invalid (legacy path)
+            is_valid = not has_error
+            points = result.tcp_poses[:, :3].tolist()
+            segment = {
+                "points": points,
+                "color": get_color_for_move_type(move_type, is_valid),
+                "is_valid": is_valid,
+                "line_number": line_no,
+                "joints": end_joints,
+                "move_type": move_type,
+                "is_dashed": len(points) <= 2,
+                "show_arrows": True,
+                "estimated_duration": estimated,
+                "requested_duration": requested,
+                "timing_feasible": timing_feasible,
+            }
+            self.segment_collector.append(segment)
 
         marker_id = self._extract_target_marker(source_line)
         has_literal_args = self._has_literal_list_args(source_line)
@@ -207,6 +222,52 @@ class PathPreviewClient:
             logger.debug(
                 "Skipped target %s - line has variable args (not editable)", marker_id
             )
+
+    def _collect_validity_segments(
+        self,
+        result: DryRunResult,
+        valid: np.ndarray,
+        move_type: str,
+        line_no: int,
+        end_joints: list[float],
+        estimated: float | None,
+        requested: float | None,
+        timing_feasible: bool,
+    ) -> None:
+        """Split a result with per-pose validity into green/red segments."""
+        poses = result.tcp_poses
+        n = len(valid)
+
+        # Find runs of consecutive same-validity poses
+        i = 0
+        while i < n:
+            run_valid = bool(valid[i])
+            j = i + 1
+            while j < n and bool(valid[j]) == run_valid:
+                j += 1
+
+            # Include one overlapping point at boundaries for visual continuity
+            end = min(j + 1, n) if j < n else j
+            start = max(i - 1, 0) if i > 0 else i
+            run_poses = poses[start:end, :3].tolist()
+
+            if len(run_poses) >= 2:
+                segment = {
+                    "points": run_poses,
+                    "color": get_color_for_move_type(move_type, run_valid),
+                    "is_valid": run_valid,
+                    "line_number": line_no,
+                    "joints": end_joints if j >= n else [],
+                    "move_type": move_type,
+                    "is_dashed": False,
+                    "show_arrows": run_valid,
+                    "estimated_duration": estimated if j >= n else None,
+                    "requested_duration": requested if j >= n else None,
+                    "timing_feasible": timing_feasible,
+                }
+                self.segment_collector.append(segment)
+
+            i = j
 
     # ---- Explicit: home (special first-move logic) ----
 

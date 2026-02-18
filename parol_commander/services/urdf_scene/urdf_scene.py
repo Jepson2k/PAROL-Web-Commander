@@ -140,7 +140,9 @@ class UrdfScene(
         self.path_group: Any | None = None
         self.targets_group: Any | None = None
         self._path_objects: List[Any] = []
+        self._segment_object_ranges: List[Tuple[int, int]] = []
         self._rendered_segment_count: int = 0
+        self._highlighted_line: int = 0
 
         # Track robot mesh objects for material changes
         self._robot_meshes: List[ui.scene.stl] = []
@@ -547,10 +549,7 @@ class UrdfScene(
                     "SCENE: Clearing %d path objects (segments went to 0)",
                     len(self._path_objects),
                 )
-            for obj in self._path_objects:
-                self._safe_delete(obj)
-            self._path_objects.clear()
-            self._rendered_segment_count = 0
+            self._clear_path_state()
 
         elif current_count > self._rendered_segment_count:
             if TRACE_ENABLED:
@@ -564,8 +563,12 @@ class UrdfScene(
                     with self.path_group:
                         for i in range(self._rendered_segment_count, current_count):
                             segment = simulation_state.path_segments[i]
+                            start_idx = len(self._path_objects)
                             objs = self._render_path_segment(segment)
                             self._path_objects.extend(objs)
+                            self._segment_object_ranges.append(
+                                (start_idx, len(self._path_objects))
+                            )
                             if TRACE_ENABLED:
                                 logger.trace(  # type: ignore[attr-defined]
                                     "SCENE: Rendered segment %d -> %d objects, "
@@ -574,7 +577,7 @@ class UrdfScene(
                                     len(objs),
                                     len(self._path_objects),
                                 )
-            self._rendered_segment_count = current_count
+                self._rendered_segment_count = current_count
 
         elif current_count < self._rendered_segment_count:
             if TRACE_ENABLED:
@@ -585,10 +588,11 @@ class UrdfScene(
                     self._rendered_segment_count,
                     len(self._path_objects),
                 )
-            for obj in self._path_objects:
-                self._safe_delete(obj)
-            self._path_objects.clear()
-            self._rendered_segment_count = 0
+            self._clear_path_state()
+
+        # Highlight path segments matching active cursor line
+        if simulation_state.paths_visible and self._segment_object_ranges:
+            self.update_cursor_line_highlight()
 
         # Update targets - preserve existing targets to maintain TransformControls
         if self.targets_group and self.scene:
@@ -669,15 +673,52 @@ class UrdfScene(
         last_joint = self.last_actuated_joint_name
         return self.joint_groups.get(last_joint) if last_joint else None
 
+    _HIGHLIGHT_COLOR = "#ffffff"
+
+    def update_cursor_line_highlight(self) -> None:
+        """Highlight path objects for the segment matching the editor cursor line."""
+        cursor_line = simulation_state.active_cursor_line
+        if cursor_line == self._highlighted_line:
+            return
+        prev_line = self._highlighted_line
+        self._highlighted_line = cursor_line
+        segments = simulation_state.path_segments
+
+        # Restore previously highlighted segments to their original color
+        if prev_line > 0:
+            for i, seg in enumerate(segments):
+                if seg.line_number == prev_line and i < len(
+                    self._segment_object_ranges
+                ):
+                    start, end = self._segment_object_ranges[i]
+                    for j in range(start, min(end, len(self._path_objects))):
+                        self._path_objects[j].material(seg.color)
+
+        # Apply highlight to segments matching the new cursor line
+        if cursor_line > 0:
+            for i, seg in enumerate(segments):
+                if seg.line_number == cursor_line and i < len(
+                    self._segment_object_ranges
+                ):
+                    start, end = self._segment_object_ranges[i]
+                    for j in range(start, min(end, len(self._path_objects))):
+                        self._path_objects[j].material(self._HIGHLIGHT_COLOR)
+
+    def _clear_path_state(self) -> None:
+        """Delete all rendered path objects and reset bookkeeping."""
+        for obj in self._path_objects:
+            self._safe_delete(obj)
+        self._path_objects.clear()
+        self._segment_object_ranges.clear()
+        self._highlighted_line = 0
+        self._rendered_segment_count = 0
+
     def invalidate_paths(self) -> None:
         """Clear rendered paths and reset cache, forcing a full re-render on next update.
 
         Call this when switching tabs or when the path data has completely changed.
         """
-        for obj in self._path_objects:
-            self._safe_delete(obj)
-        self._path_objects.clear()
-        self._rendered_segment_count = 0
+        self._clear_path_state()
 
     # --------- Public API ---------
 
