@@ -298,7 +298,7 @@ class TCPControlsMixin:
             # EDITING mode: _editing_angles is already in radians
             if len(self._editing_angles) < 6:
                 return
-            angles_rad = self._editing_angles
+            angles_rad: list[float] | np.ndarray = self._editing_angles
             # Use tuple for cache comparison (editing angles are a list)
             angles_tuple = tuple(angles_rad[:6])
             if angles_tuple == self._last_fk_angles_tuple:

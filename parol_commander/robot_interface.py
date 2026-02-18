@@ -58,8 +58,10 @@ class DryRunResult(Protocol):
     """(num_joints,) — final joint angles in radians."""
     duration: float
     """Trajectory duration in seconds."""
-    error: str | None
-    """Error message (IK failure, etc.), or None on success."""
+    error: object | None
+    """Structured error (e.g. RobotError), or None on success."""
+    valid: NDArray[np.bool_] | None
+    """(N,) per-pose IK validity; None means all poses are valid."""
 
 
 @dataclass
@@ -78,7 +80,8 @@ class DryRunResultData:
     tcp_poses: NDArray[np.float64]
     end_joints_rad: NDArray[np.float64]
     duration: float
-    error: str | None = None
+    error: object | None = None
+    valid: NDArray[np.bool_] | None = None
 
 
 # ===========================================================================
@@ -199,7 +202,7 @@ class JointsSpec(Protocol):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SimplePositionLimits:
     """Concrete PositionLimits backed by numpy arrays."""
 
@@ -209,7 +212,7 @@ class SimplePositionLimits:
     """``(N, 2)`` — position limits in radians."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SimpleKinodynamicLimits:
     """Concrete KinodynamicLimits backed by numpy arrays."""
 
@@ -221,7 +224,7 @@ class SimpleKinodynamicLimits:
     """``(N,)`` — max jerks in rad/s³, or None."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SimpleJointLimits:
     """Concrete JointLimitsSpec."""
 
@@ -230,7 +233,7 @@ class SimpleJointLimits:
     jog: SimpleKinodynamicLimits
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SimpleHomePosition:
     """Concrete HomePosition backed by numpy arrays."""
 
@@ -240,7 +243,7 @@ class SimpleHomePosition:
     """``(N,)`` — home position in radians."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SimpleJointsSpec:
     """Concrete JointsSpec backed by numpy arrays."""
 

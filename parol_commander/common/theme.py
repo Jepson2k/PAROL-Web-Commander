@@ -1,7 +1,7 @@
 import logging
 from typing import Literal, cast, get_args
 
-from nicegui import app, ui
+from nicegui import app, ui  # type: ignore[no-redef]
 
 ThemeMode = Literal["light", "dark", "system"]
 
@@ -71,7 +71,7 @@ class PathColors:
 
     CARTESIAN = "#10b981"  # emerald-500 - cartesian/linear moves
     JOINTS = "#2563eb"  # blue-600 - joint space moves
-    SMOOTH = "#a855f7"  # purple-500 - smooth/blended moves
+    SMOOTH = "#a855f7"  # purple-500 - smooth moves (moveC, moveS)
     INVALID = "#ef4444"  # red-500 - IK failure / unreachable
     TIMING_WARNING = "#f59e0b"  # amber-500 - needs more time than requested
 
@@ -82,7 +82,7 @@ MOVE_TYPE_COLORS: dict[str, str] = {
     "cartesian": PathColors.CARTESIAN,
     # Joint moves (blue)
     "joints": PathColors.JOINTS,
-    # Curved/smooth moves (purple)
+    # Curved/smooth moves: moveC, moveS (purple)
     "smooth": PathColors.SMOOTH,
     "smooth_arc": PathColors.SMOOTH,
     "smooth_spline": PathColors.SMOOTH,
@@ -406,14 +406,14 @@ def apply_theme(mode: ThemeMode) -> None:
 def set_theme(mode: ThemeMode) -> ThemeMode:
     """Persist, set and apply theme mode."""
     # persist selection
-    app.storage.general["theme_mode"] = mode
+    app.storage.general["theme_mode"] = mode  # type: ignore[attr-defined]
     apply_theme(mode)
     return mode
 
 
 def get_theme() -> ThemeMode:
     """Return current requested mode ('light'/'dark'/'system')."""
-    mode = app.storage.general.get("theme_mode", "system")
+    mode = app.storage.general.get("theme_mode", "system")  # type: ignore[attr-defined]
     if isinstance(mode, str) and mode in get_args(ThemeMode):
         return cast("ThemeMode", mode)
     return cast("ThemeMode", "system")
@@ -914,8 +914,19 @@ html, body {
 .cm-line.cm-line-flash {
   animation: cm-line-flash 1.5s ease-out forwards;
 }
-.cm-line.cm-timing-warning {
-  background-color: color-mix(in srgb, var(--sem-warning) 20%, transparent);
+.cm-timing-warning-mark {
+  background-color: color-mix(in srgb, var(--sem-warning) 25%, transparent);
+  border-radius: 2px;
+}
+.cm-line.cm-timing-warning::after {
+  content: attr(data-timing);
+  float: right;
+  color: #ffab40;
+  opacity: 0.8;
+  font-size: 0.85em;
+  font-style: italic;
+  padding-left: 2em;
+  pointer-events: none;
 }
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */

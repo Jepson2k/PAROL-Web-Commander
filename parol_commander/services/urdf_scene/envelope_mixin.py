@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from nicegui import app, ui, run
+from nicegui import app, ui, run  # type: ignore[no-redef]
 from nicegui.events import SceneClipPlane
 
 from parol_commander.common.theme import SceneColors
@@ -129,7 +129,7 @@ class WorkspaceEnvelope:
         if not CACHE_DIR.exists():
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            app.add_static_files("/parol-commander-cache", str(CACHE_DIR))
+            app.add_static_files("/parol-commander-cache", str(CACHE_DIR))  # type: ignore[attr-defined]
             self._static_files_registered = True
             logger.debug(
                 "Registered static files: /parol-commander-cache -> %s", CACHE_DIR
@@ -152,7 +152,7 @@ class WorkspaceEnvelope:
             True if cache was valid and loaded
         """
         try:
-            cache = app.storage.general.get(STORAGE_KEY)
+            cache = app.storage.general.get(STORAGE_KEY)  # type: ignore[attr-defined]
             if not cache:
                 logger.debug("No hull cache found")
                 return False
@@ -191,7 +191,7 @@ class WorkspaceEnvelope:
         """Save hull metadata to cache."""
         try:
             cache_key = _compute_cache_key(tool_offset_z)
-            app.storage.general[STORAGE_KEY] = {
+            app.storage.general[STORAGE_KEY] = {  # type: ignore[attr-defined]
                 "cache_key": cache_key,
                 "max_reach": max_reach,
                 "tool_offset_z": tool_offset_z,
@@ -381,8 +381,8 @@ class WorkspaceEnvelope:
     def invalidate_cache(self) -> None:
         """Invalidate cache and delete STL file."""
         try:
-            if STORAGE_KEY in app.storage.general:
-                del app.storage.general[STORAGE_KEY]
+            if STORAGE_KEY in app.storage.general:  # type: ignore[attr-defined]
+                del app.storage.general[STORAGE_KEY]  # type: ignore[attr-defined]
             if HULL_STL_PATH.exists():
                 HULL_STL_PATH.unlink()
             logger.info("Invalidated workspace hull cache")
@@ -416,7 +416,7 @@ class WorkspaceEnvelope:
         if not self._generated:
             return True
         current_key = _compute_cache_key(tool_offset_z)
-        cache = app.storage.general.get(STORAGE_KEY, {})
+        cache = app.storage.general.get(STORAGE_KEY, {})  # type: ignore[attr-defined]
         return cache.get("cache_key") != current_key
 
 

@@ -8,7 +8,7 @@ eliminating direct backend imports.
 import time
 import logging
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 import numpy as np
 
 from parol_commander.robot_interface import Robot
@@ -80,7 +80,7 @@ class EditingIKSolver:
         robot = ui_state.active_robot
         return cls(robot=robot, num_joints=robot.joints.count)
 
-    def forward_kinematics(self, angles: List[float]) -> np.ndarray:
+    def forward_kinematics(self, angles: Union[List[float], np.ndarray]) -> np.ndarray:
         """
         Compute end effector pose from joint angles.
 

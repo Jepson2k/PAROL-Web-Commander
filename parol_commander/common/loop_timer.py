@@ -7,6 +7,7 @@ for human-readable rate display.
 Copied from parol6.server.loop_timer with parol6 dependencies removed.
 """
 
+import math
 import time
 from typing import TYPE_CHECKING
 
@@ -119,7 +120,7 @@ def _compute_loop_stats(
         if x > max_val:
             max_val = x
 
-    std = np.sqrt(m2 / n) if n > 0 else 0.0
+    std = math.sqrt(m2 / n) if n > 0 else 0.0
 
     # p95 and p99 via quickselect with single copy
     if n >= 20:

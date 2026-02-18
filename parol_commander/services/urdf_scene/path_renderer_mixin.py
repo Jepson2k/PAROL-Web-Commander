@@ -43,7 +43,7 @@ class PathRendererMixin:
         dash_length = 0.008  # 8mm dash
         gap_length = 0.004  # 4mm gap
         arrow_spacing = 0.05  # Arrow every 50mm
-        arrow_scale = 0.006  # Arrow cone size
+        arrow_scale = 0.003  # Arrow cone size
 
         accumulated_distance = 0.0
         last_arrow_distance = 0.0
@@ -147,10 +147,10 @@ class PathRendererMixin:
             else:
                 rpy = _PI_ROTATION_RPY
         else:
-            angle = float(math.acos(np.clip(dot, -1.0, 1.0)))
+            angle = math.acos(max(-1.0, min(1.0, float(dot))))
             axis = cross / np.linalg.norm(cross)
             rot = ScipyRotation.from_rotvec(angle * axis)
-            rpy = rot.as_euler("xyz", degrees=False).tolist()
+            rpy = rot.as_euler("xyz", degrees=False).tolist()  # type: ignore[assignment]
 
         cone = ui.scene.cylinder(
             top_radius=0.0,

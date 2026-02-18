@@ -314,7 +314,7 @@ class EditingMixin:
 
         current_angles = self._get_robot_angles_rad()
         result = self._tcp_fk_solver.solve(
-            target_pos=target_pos,
+            target_pos=np.array(target_pos, dtype=np.float64),
             current_angles=current_angles,
             throttle=False,
         )
@@ -526,7 +526,7 @@ class EditingMixin:
             return
 
         if not self._edit_bar_container:
-            parent = self._scene_wrapper if self._scene_wrapper else ui
+            parent: Any = self._scene_wrapper if self._scene_wrapper else ui
             with parent:
                 self._edit_bar_container = ui.element("div").classes(
                     "absolute bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto"
