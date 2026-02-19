@@ -8,7 +8,6 @@ version = "1.0.0"
 description = "Web interface for PAROL robot control"
 requires-python = ">=3.12"
 dependencies = [
-  "parol6>=0.1.0",
   "nicegui @ git+https://github.com/Jepson2k/nicegui.git@feature/additional_scene_features",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
@@ -19,7 +18,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
+parol6 = ["parol6>=0.1.0"]
+dev = ["parol6>=0.1.0", "ruff", "mypy", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
 
 [project.scripts]
 parol-commander = "parol_commander.main:main"

@@ -143,15 +143,12 @@ async def test_script_can_import_parol6_libraries(tmp_path: Path) -> None:
     script_path = tmp_path / "test_imports.py"
     script_path.write_text(
         """
-# Test that all key parol6 imports are available
+# Test that key backend imports are available
 from parol6 import RobotClient, AsyncRobotClient
-from parol6.protocol.types import Axis, Frame
 
 # Verify classes are actually importable (not just module stubs)
 assert RobotClient is not None
 assert AsyncRobotClient is not None
-assert Axis is not None
-assert Frame is not None
 
 print("All parol6 imports successful")
 """

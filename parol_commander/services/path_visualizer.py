@@ -14,7 +14,6 @@ import sys
 import traceback
 from types import ModuleType
 from typing import Any
-from unittest.mock import MagicMock
 import numpy as np
 
 from nicegui import run
@@ -145,109 +144,38 @@ def _run_simulation_isolated(
     created_clients: list[PathPreviewClient] = []
 
     try:
-        # Also need types like Axis, Frame if imported
-        try:
-            types_mod = importlib.import_module(f"{backend_package}.protocol.types")
-        except ImportError:
-            types_mod = None
+        # Import the real backend and monkeypatch RobotClient/AsyncRobotClient
+        # with preview clients. This runs in a subprocess so patching is safe.
+        backend = importlib.import_module(backend_package)
+        assert dry_run_client_cls is not None
+        _dr_cls: type = dry_run_client_cls
 
-        # Create shim module for the backend that uses our collectors
-        class BackendShim(ModuleType):
-            """Shim module that provides PathPreviewClient with local collectors."""
+        class LocalPathPreviewClient(PathPreviewClient):
+            def __init__(self, *args: Any, **kwargs: Any):
+                super().__init__(
+                    segment_collector=local_segments,
+                    target_collector=local_targets,
+                    initial_joints=initial_joints_rad,
+                    dry_run_client_cls=_dr_cls,
+                )
+                created_clients.append(self)
 
-            # Dynamic attributes set at runtime
-            protocol: Any
-            Axis: Any
-            Frame: Any
-            client: Any
+        class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
+            def __init__(self, *args: Any, **kwargs: Any):
+                self._sync_client = PathPreviewClient(
+                    segment_collector=local_segments,
+                    target_collector=local_targets,
+                    initial_joints=initial_joints_rad,
+                    dry_run_client_cls=_dr_cls,
+                )
+                created_clients.append(self._sync_client)
 
-            def __init__(self):
-                super().__init__(backend_package)
-                self._segments = local_segments
-                self._targets = local_targets
-                self._initial_joints = initial_joints_rad
-                self._cached_robot_client_cls: type | None = None
-                self._cached_async_client_cls: type | None = None
-
-            @property
-            def RobotClient(self):
-                """Return a PathPreviewClient class that uses local collectors."""
-                if self._cached_robot_client_cls is not None:
-                    return self._cached_robot_client_cls
-
-                segments = self._segments
-                targets = self._targets
-                init_joints = self._initial_joints
-                clients = created_clients
-                dr_cls = dry_run_client_cls
-
-                class LocalPathPreviewClient(PathPreviewClient):
-                    def __init__(self, *args, **kwargs):
-                        # Ignore host/port args, use local collectors and initial state
-                        super().__init__(
-                            segment_collector=segments,
-                            target_collector=targets,
-                            initial_joints=init_joints,
-                            dry_run_client_cls=dr_cls,
-                        )
-                        clients.append(self)
-
-                self._cached_robot_client_cls = LocalPathPreviewClient
-                return LocalPathPreviewClient
-
-            @property
-            def AsyncRobotClient(self):
-                """Return an AsyncPathPreviewClient class that uses local collectors."""
-                if self._cached_async_client_cls is not None:
-                    return self._cached_async_client_cls
-
-                segments = self._segments
-                targets = self._targets
-                init_joints = self._initial_joints
-                clients = created_clients
-                dr_cls = dry_run_client_cls
-
-                class LocalAsyncPathPreviewClient(AsyncPathPreviewClient):
-                    def __init__(self, *args, **kwargs):
-                        # Create sync client with local collectors and initial state
-                        self._sync_client = PathPreviewClient(
-                            segment_collector=segments,
-                            target_collector=targets,
-                            initial_joints=init_joints,
-                            dry_run_client_cls=dr_cls,
-                        )
-                        clients.append(self._sync_client)
-
-                self._cached_async_client_cls = LocalAsyncPathPreviewClient
-                return LocalAsyncPathPreviewClient
-
-        shim_backend = BackendShim()
-
-        # Add protocol types if available
-        if types_mod is not None:
-            shim_backend.protocol = MagicMock()
-            shim_backend.protocol.types = types_mod
-            shim_backend.Axis = types_mod.Axis
-            shim_backend.Frame = types_mod.Frame
-
-        # Also mock the client submodule
-        shim_backend.client = MagicMock()
-        shim_backend.client.RobotClient = shim_backend.RobotClient
-        shim_backend.client.AsyncRobotClient = shim_backend.AsyncRobotClient
-
-        # Save original modules
-        original_modules = {}
-        backend_module_keys = [
-            k
-            for k in sys.modules.keys()
-            if k == backend_package or k.startswith(f"{backend_package}.")
-        ]
-        for key in backend_module_keys:
-            original_modules[key] = sys.modules[key]
-
-        # Replace backend in sys.modules (only affects this subprocess)
-        sys.modules[backend_package] = shim_backend
-        sys.modules[f"{backend_package}.client"] = shim_backend.client
+        # Monkeypatch the real backend module (subprocess-only, safe)
+        setattr(backend, "RobotClient", LocalPathPreviewClient)
+        setattr(backend, "AsyncRobotClient", LocalAsyncPathPreviewClient)
+        if hasattr(backend, "client"):
+            setattr(backend.client, "RobotClient", LocalPathPreviewClient)
+            setattr(backend.client, "AsyncRobotClient", LocalAsyncPathPreviewClient)
 
         # Create mock time module and insert into sys.modules
         # This ensures `import time` returns our mock instead of real time module
@@ -357,16 +285,6 @@ def _run_simulation_isolated(
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
         finally:
-            # Restore original modules
-            for key, mod in original_modules.items():
-                sys.modules[key] = mod
-            # Clean up any modules we added
-            for key in list(sys.modules.keys()):
-                if (
-                    key == backend_package or key.startswith(f"{backend_package}.")
-                ) and key not in original_modules:
-                    del sys.modules[key]
-
             # Restore original time module
             if original_time_module is not None:
                 sys.modules["time"] = original_time_module

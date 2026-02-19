@@ -18,8 +18,13 @@ def get_robot(name: str = DEFAULT_ROBOT) -> Robot:
     Raises ``ValueError`` for unknown robot names.
     """
     if name == "parol6":
-        from parol6 import Robot as Parol6Robot
-
+        try:
+            from parol6 import Robot as Parol6Robot
+        except ImportError:
+            raise ImportError(
+                "parol6 backend not installed. Install with: "
+                "pip install parol-commander[parol6]"
+            ) from None
         return Parol6Robot(normalize_logs=True)
 
     raise ValueError(f"Unknown robot {name!r}. Available: parol6")
