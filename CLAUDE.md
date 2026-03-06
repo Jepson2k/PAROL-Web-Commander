@@ -72,6 +72,8 @@ When debugging CI failures, this error is a **secondary symptom** that occurs af
 
 ### Testing Philosophy
 
+**When CI tests fail, fix them.** Don't waste time analyzing whether failures are "related to your changes" — just fix all failing tests. The goal is a green CI, not attribution.
+
 Prefer fewer, comprehensive integration tests that mimic manual testing over a large number of unit tests. We have no code coverage requirements—the goal is working features, not metrics.
 
 **Test type selection:**
