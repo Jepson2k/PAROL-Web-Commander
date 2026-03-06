@@ -12,11 +12,15 @@ import logging
 import os
 import sys
 import traceback
+from dataclasses import asdict
 from types import ModuleType
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 import numpy as np
 
 from nicegui import run
+
+from waldoctl import LinearMotion
 
 from parol_commander.state import (
     simulation_state,
@@ -26,9 +30,9 @@ from parol_commander.state import (
     robot_state,
     editor_tabs_state,
 )
-from parol_commander.common.logging_config import TRACE_ENABLED
+from parol_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 
-logger = logging.getLogger(__name__)
+logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 # Configuration constants
 MAX_PATH_SEGMENTS = 10000
@@ -102,6 +106,7 @@ def _run_simulation_isolated(
     max_segments: int = MAX_PATH_SEGMENTS,
     backend_package: str = "parol6",
     dry_run_client_cls: type | None = None,
+    tool_metadata: dict | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -116,6 +121,7 @@ def _run_simulation_isolated(
         max_segments: Maximum path segments to collect (prevents memory exhaustion)
         backend_package: Backend package name for module shimming
         dry_run_client_cls: Concrete DryRunRobotClient class for path preview
+        tool_metadata: Serializable tool info dict for tool action recording
 
     Returns:
         Dict with keys:
@@ -128,6 +134,7 @@ def _run_simulation_isolated(
     # Local collectors (not shared with main process)
     local_segments: list[dict] = []
     local_targets: list[dict] = []
+    local_tool_actions: list = []
     # Track final state (updated by client on each motion)
     final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
@@ -155,8 +162,10 @@ def _run_simulation_isolated(
                 super().__init__(
                     segment_collector=local_segments,
                     target_collector=local_targets,
+                    tool_action_collector=local_tool_actions,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
+                    tool_metadata=tool_metadata,
                 )
                 created_clients.append(self)
 
@@ -165,8 +174,10 @@ def _run_simulation_isolated(
                 self._sync_client = PathPreviewClient(
                     segment_collector=local_segments,
                     target_collector=local_targets,
+                    tool_action_collector=local_tool_actions,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
+                    tool_metadata=tool_metadata,
                 )
                 created_clients.append(self._sync_client)
 
@@ -182,10 +193,14 @@ def _run_simulation_isolated(
         class MockTimeModule(ModuleType):
             """Mock time module with no-op sleep for simulation."""
 
-            def __init__(self):
+            def __init__(self, real_time_module):
                 super().__init__("time")
                 self.__file__ = "<mock_time>"
                 self.__package__ = ""
+                self._real_time = real_time_module
+
+            def __getattr__(self, name):
+                return getattr(self._real_time, name)
 
             @staticmethod
             def sleep(seconds):
@@ -213,7 +228,7 @@ def _run_simulation_isolated(
 
         # Save original time module and replace with mock
         original_time_module = sys.modules.get("time")
-        mock_time = MockTimeModule()
+        mock_time = MockTimeModule(original_time_module)
         sys.modules["time"] = mock_time
 
         # Prepare execution environment
@@ -279,7 +294,7 @@ def _run_simulation_isolated(
 
                 elif callable(main_func):
                     # Sync main - just call it
-                    main_func()
+                    cast(Callable[[], None], main_func)()
 
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
@@ -296,7 +311,7 @@ def _run_simulation_isolated(
 
     # Flush pending blend buffers (handles scripts without context managers)
     for c in created_clients:
-        c._flush_blend()
+        c.close()
 
     # Extract final joints from the last created client instance
     if created_clients:
@@ -312,6 +327,7 @@ def _run_simulation_isolated(
     return {
         "segments": local_segments,
         "targets": local_targets,
+        "tool_actions": local_tool_actions,
         "truncated": truncated,
         "error": error_message,
         "total_steps": len(local_segments),
@@ -354,7 +370,7 @@ class PathVisualizer:
             if TRACE_ENABLED:
                 segments_before = len(simulation_state.path_segments)
                 targets_before = len(simulation_state.targets)
-                logger.trace(  # type: ignore[attr-defined]
+                logger.trace(
                     "PATHVIZ[%d]: Before simulation - segments=%d, targets=%d",
                     sim_id,
                     segments_before,
@@ -365,13 +381,14 @@ class PathVisualizer:
             # to avoid a transient "empty" state that destroys scene objects like TransformControls)
             simulation_state.path_segments.clear()
             simulation_state.targets.clear()
+            simulation_state.tool_actions.clear()
             simulation_state.current_step_index = 0
             simulation_state.total_steps = 0
             # NOTE: No notify_changed() here - we notify once at the end after new data arrives
 
             # Get current robot joint angles for initial position
             initial_joints_rad: np.ndarray | None = None
-            if len(robot_state.angles) >= 6:
+            if len(robot_state.angles) >= ui_state.active_robot.joints.count:
                 initial_joints_rad = robot_state.angles.rad
                 logger.debug(
                     "Using current robot joints as initial: %s deg",
@@ -379,9 +396,35 @@ class PathVisualizer:
                 )
 
             # Get backend info from current robot
-            backend_pkg = ui_state.active_robot.backend_package
-            dr_instance = ui_state.active_robot.create_dry_run_client()
+            robot = ui_state.active_robot
+            backend_pkg = robot.backend_package
+            dr_instance = robot.create_dry_run_client()
             dr_cls = type(dr_instance) if dr_instance is not None else None
+            if dr_cls is None:
+                logger.warning(
+                    "Backend %s does not support dry-run simulation", backend_pkg
+                )
+                simulation_state.notify_changed()
+                return None
+
+            # Build serializable tool metadata for subprocess tool action recording
+            tool_meta: dict | None = None
+            tool_key = robot_state.tool_key
+            if tool_key and tool_key != "NONE":
+                try:
+                    tool_spec = robot.tools[tool_key]
+                    motions = [
+                        {"type": "linear", **asdict(m)}
+                        if isinstance(m, LinearMotion)
+                        else {"type": "rotary", **asdict(m)}
+                        for m in tool_spec.motions
+                    ]
+                    tool_meta = {
+                        "motions": motions,
+                        "activation_type": tool_spec.activation_type.value,
+                    }
+                except (KeyError, AttributeError):
+                    pass
 
             try:
                 # Run simulation in subprocess via NiceGUI's cpu_bound
@@ -393,6 +436,7 @@ class PathVisualizer:
                         MAX_PATH_SEGMENTS,
                         backend_pkg,
                         dr_cls,
+                        tool_meta,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -415,6 +459,7 @@ class PathVisualizer:
                         MAX_PATH_SEGMENTS,
                         backend_pkg,
                         dr_cls,
+                        tool_meta,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)
@@ -460,12 +505,14 @@ class PathVisualizer:
                 target_tab.targets = [
                     ProgramTarget.from_dict(d) for d in result["targets"]
                 ]
+                target_tab.tool_actions = result.get("tool_actions", [])
                 target_tab.final_joints_rad = result.get("final_joints_rad")
 
                 # Only update global simulation_state if this tab is still active
                 if target_tab.id == editor_tabs_state.active_tab_id:
                     simulation_state.path_segments = list(target_tab.path_segments)
                     simulation_state.targets = list(target_tab.targets)
+                    simulation_state.tool_actions = list(target_tab.tool_actions)
                     simulation_state.total_steps = len(target_tab.path_segments)
                 else:
                     logger.debug(
@@ -479,7 +526,7 @@ class PathVisualizer:
                 ui_state.urdf_scene.invalidate_paths()
 
             # Trigger scene update via event-driven notification
-            await simulation_state.notify_changed()
+            simulation_state.notify_changed()
 
             # Return error message if any
             return result.get("error")

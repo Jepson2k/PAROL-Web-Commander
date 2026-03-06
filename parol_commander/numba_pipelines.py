@@ -6,7 +6,7 @@ numba functions from pinokin.numba_se3 which get inlined by numba.
 """
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit
 
 # so3_rpy used in local njit functions
 from pinokin import so3_rpy, warmup_numba_se3

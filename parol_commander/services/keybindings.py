@@ -5,15 +5,19 @@ Provides centralized keyboard shortcut handling with:
 - Click vs hold behavior for jog keys (matching button behavior)
 - Dynamic tooltip suffix generation
 - Keybinding registry for help menu display
+- Default keybinding registration (setup_keybindings)
 """
 
 import asyncio
+import inspect
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Any
 
 from nicegui import ui
+
+from parol_commander.state import ui_state
 
 
 # Click vs hold threshold (matches control.py)
@@ -35,6 +39,9 @@ class Keybinding:
     holdable: bool = False  # If True, supports click vs hold behavior
     on_release: Callable | None = None  # Called on keyup for holdable keys
     enabled_check: Callable[[], bool] | None = None  # Dynamic enable check
+    _accepts_press_kwargs: bool = field(
+        default=False, repr=False
+    )  # Set at registration
 
 
 class KeybindingsManager:
@@ -53,6 +60,12 @@ class KeybindingsManager:
 
     def register(self, binding: Keybinding) -> None:
         """Register a keybinding."""
+        # Introspect action signature once to cache whether it accepts is_press/is_click
+        try:
+            params = inspect.signature(binding.action).parameters
+            binding._accepts_press_kwargs = "is_press" in params or "is_click" in params
+        except (ValueError, TypeError):
+            binding._accepts_press_kwargs = False
         key_id = self._make_key_id(
             binding.key,
             binding.requires_shift,
@@ -153,7 +166,11 @@ class KeybindingsManager:
                 self._holding_active.add(key_id)
                 self._hold_timers.pop(key_id, None)
                 # Execute action for continuous jog start
-                self._execute_action(binding.action, is_press=True)
+                self._execute_action(
+                    binding.action,
+                    is_press=True,
+                    accepts_kwargs=binding._accepts_press_kwargs,
+                )
 
             try:
                 with ui.context.client:
@@ -162,7 +179,11 @@ class KeybindingsManager:
                     )
             except Exception:
                 # If no client context, fall back to simple execution
-                self._execute_action(binding.action, is_press=True)
+                self._execute_action(
+                    binding.action,
+                    is_press=True,
+                    accepts_kwargs=binding._accepts_press_kwargs,
+                )
 
         elif is_keyup:
             self._keys_down.discard(key_id)
@@ -176,34 +197,30 @@ class KeybindingsManager:
             if timer and timer.active:
                 timer.active = False
                 # Was a click (quick press) - execute single step action
-                self._execute_action(binding.action, is_press=False, is_click=True)
+                self._execute_action(
+                    binding.action,
+                    is_press=False,
+                    is_click=True,
+                    accepts_kwargs=binding._accepts_press_kwargs,
+                )
             elif was_holding and binding.on_release:
                 # Was a hold - execute release action
                 self._execute_action(binding.on_release)
 
     def _execute_action(
-        self, action: Callable, is_press: bool = True, is_click: bool = False
+        self,
+        action: Callable,
+        is_press: bool = True,
+        is_click: bool = False,
+        accepts_kwargs: bool = False,
     ) -> None:
         """Execute a keybinding action, handling async if needed."""
         try:
-            # Some actions accept is_press/is_click parameters
-            import inspect
-
-            sig = inspect.signature(action)
-            params = sig.parameters
-
-            kwargs = {}
-            if "is_press" in params:
-                kwargs["is_press"] = is_press
-            if "is_click" in params:
-                kwargs["is_click"] = is_click
-
-            if kwargs:
-                result = action(**kwargs)
+            if accepts_kwargs:
+                result = action(is_press=is_press, is_click=is_click)
             else:
                 result = action()
 
-            # Handle async actions
             if asyncio.iscoroutine(result):
                 asyncio.create_task(result)
         except Exception as ex:
@@ -255,3 +272,220 @@ class KeybindingsManager:
 
 # Singleton
 keybindings_manager = KeybindingsManager()
+
+
+# --------------- Default keybinding setup ---------------
+
+
+def setup_keybindings(help_menu: Any) -> None:
+    """Set up global keyboard handler, focus detection, register bindings,
+    and trigger first-time tutorial check."""
+    # Add global keyboard handler
+    ui.keyboard(on_key=keybindings_manager.handle_key)
+
+    # Set up JavaScript callback for focus detection
+    def on_focus_change(focused: bool) -> None:
+        keybindings_manager.set_editor_focused(focused)
+
+    # Expose the callback to JavaScript and initialize the focus detector
+    ui.run_javascript(
+        """
+        if (window.KeybindingsFocusDetector) {
+            window.KeybindingsFocusDetector.init(function(focused) {
+                // Send focus state to Python
+                emitEvent('keybindings_focus_change', { focused: focused });
+            });
+        }
+        """
+    )
+
+    # Listen for focus change events from JavaScript
+    ui.on(
+        "keybindings_focus_change",
+        lambda e: on_focus_change(e.args.get("focused", False)),
+    )
+
+    # Register all keybindings
+    _register_default_keybindings()
+
+    # Set up first-time tutorial dialog
+    ui_client = ui.context.client
+
+    async def check_first_visit():
+        with ui_client:
+            help_menu.check_first_visit()
+
+    asyncio.create_task(check_first_visit())
+
+
+def _register_default_keybindings() -> None:
+    """Register all default keybindings."""
+    cp = ui_state.control_panel
+    ep = ui_state.editor_panel
+
+    # Robot Control
+    keybindings_manager.register(
+        Keybinding(
+            key="h",
+            display="H",
+            description="Home robot",
+            action=lambda: asyncio.create_task(cp.send_home()),
+            category="Robot Control",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="Escape",
+            display="Esc",
+            description="Emergency Stop",
+            action=lambda: asyncio.create_task(cp.on_estop_click()),
+            category="Robot Control",
+        )
+    )
+
+    # Playback Controls
+    keybindings_manager.register(
+        Keybinding(
+            key=" ",
+            display="Space",
+            description="Play/Pause",
+            action=lambda: asyncio.create_task(ep.toggle_play()),
+            category="Playback",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="s",
+            display="S",
+            description="Step forward",
+            action=lambda: ep.step_forward(),
+            category="Playback",
+            # Only active when script is running
+            enabled_check=lambda: ep.script_running,
+        )
+    )
+
+    # Cartesian Jog - WASD + Q/E
+    # These are holdable: click = single step, hold = continuous jog
+    _register_cartesian_jog_keybindings(cp, ep)
+
+    # Speed Control
+    keybindings_manager.register(
+        Keybinding(
+            key="]",
+            display="]",
+            description="Increase jog speed",
+            action=_increase_jog_speed,
+            category="Speed Control",
+        )
+    )
+
+    keybindings_manager.register(
+        Keybinding(
+            key="[",
+            display="[",
+            description="Decrease jog speed",
+            action=_decrease_jog_speed,
+            category="Speed Control",
+        )
+    )
+
+    # Target insertion
+    keybindings_manager.register(
+        Keybinding(
+            key="t",
+            display="T",
+            description="Add target at current position",
+            action=lambda: ui_state.urdf_scene._show_unified_target_editor(
+                use_click_position=False
+            )
+            if ui_state.urdf_scene
+            else None,
+            category="Recording",
+        )
+    )
+
+
+def _register_cartesian_jog_keybindings(cp: Any, ep: Any) -> None:
+    """Register WASD + Q/E keybindings for cartesian jogging."""
+    # Map keys to axes: W/S = Y, A/D = X, Q/E = Z
+    jog_key_map = {
+        "w": "Y+",
+        "s": "Y-",
+        "a": "X-",
+        "d": "X+",
+        "q": "Z-",
+        "e": "Z+",
+    }
+
+    for key, axis in jog_key_map.items():
+        # S key is context-aware: jog when not running, step when running
+        enabled_check = (lambda: not ep.script_running) if key == "s" else None
+
+        keybindings_manager.register(
+            Keybinding(
+                key=key,
+                display=key.upper(),
+                description=f"Jog {axis}",
+                action=_make_jog_action(cp, axis),
+                on_release=_make_jog_release(cp, axis),
+                category="Cartesian Jog",
+                holdable=True,
+                enabled_check=enabled_check,
+            )
+        )
+
+
+def _make_jog_action(cp: Any, axis: str) -> Callable:
+    """Create a jog action callback for the given axis."""
+
+    def action(is_press: bool = True, is_click: bool = False) -> None:
+        _handle_jog_key(cp, axis, is_press, is_click)
+
+    return action
+
+
+def _make_jog_release(cp: Any, axis: str) -> Callable:
+    """Create a jog release callback for the given axis."""
+
+    def release() -> None:
+        asyncio.create_task(cp.set_axis_pressed(axis, False))
+
+    return release
+
+
+def _handle_jog_key(
+    cp: Any, axis: str, is_press: bool = True, is_click: bool = False
+) -> None:
+    """Handle jog key press/click for cartesian movement."""
+    if is_click:
+        # Single step movement
+        asyncio.create_task(cp.set_axis_pressed(axis, True))
+
+        # Small delay then release
+        async def release():
+            await asyncio.sleep(0.05)
+            await cp.set_axis_pressed(axis, False)
+
+        asyncio.create_task(release())
+    elif is_press:
+        # Start continuous jog
+        asyncio.create_task(cp.set_axis_pressed(axis, True))
+
+
+def _increase_jog_speed() -> None:
+    """Increase jog speed by 10%."""
+    current = ui_state.jog_speed
+    new_speed = min(100, current + 10)
+    ui_state.jog_speed = new_speed
+    ui.notify(f"Jog speed: {new_speed}%", position="bottom-right", timeout=1000)
+
+
+def _decrease_jog_speed() -> None:
+    """Decrease jog speed by 10%."""
+    current = ui_state.jog_speed
+    new_speed = max(1, current - 10)
+    ui_state.jog_speed = new_speed
+    ui.notify(f"Jog speed: {new_speed}%", position="bottom-right", timeout=1000)

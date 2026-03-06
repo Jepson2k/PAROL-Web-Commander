@@ -18,15 +18,21 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Sequence
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 import numpy as np
-from nicegui import ui, app  # type: ignore[no-redef]
+from nicegui import ui, app
 
-from parol_commander.common.logging_config import TRACE_ENABLED
-from parol_commander.common.theme import SceneColors, get_color_for_move_type
+from waldoctl import LinearMotion, RotaryMotion, MeshRole, PartMotion
+
+from parol_commander.common.logging_config import TRACE_ENABLED, TraceLogger
+from parol_commander.common.theme import (
+    PathColors,
+    SceneColors,
+    get_color_for_move_type,
+)
 from parol_commander.state import simulation_state, robot_state, ui_state
 
 from .envelope_mixin import workspace_envelope
@@ -45,7 +51,7 @@ from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_mixin import EnvelopeMixin
 from .path_renderer_mixin import PathRendererMixin
 
-logger = logging.getLogger(__name__)
+logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 
 class UrdfScene(
@@ -72,9 +78,7 @@ class UrdfScene(
         "Z": SceneColors.AXIS_Z_HEX,
     }
 
-    def __init__(
-        self, path: Union[str, Path], config: Optional[UrdfSceneConfig] = None
-    ):
+    def __init__(self, path: str | Path, config: UrdfSceneConfig | None = None):
         """Load a URDF file to construct a nicegui scene.
 
         Args:
@@ -97,7 +101,7 @@ class UrdfScene(
 
         if self.config.mount_static:
             try:
-                app.add_static_files(self.meshes_url, str(self.meshes_dir))  # type: ignore[attr-defined]
+                app.add_static_files(self.meshes_url, str(self.meshes_dir))
             except Exception as e:
                 msg = str(e).lower()
                 # Ignore duplicate registration across tests; re-raise other errors
@@ -115,9 +119,9 @@ class UrdfScene(
         self.joint_trafos: dict = {}
         self.scene: Any | None = None
         # Persist normalized joint axes (from URDF) by joint name
-        self.joint_axes: Dict[str, np.ndarray] = {}
+        self.joint_axes: dict[str, np.ndarray] = {}
         # Pre-populate joint axes directly from URDF so axes are available before scene build
-        for _name in self.joint_names[:6]:
+        for _name in self.joint_names:
             _j = next((jj for jj in self.urdf_model.joints if jj.name == _name), None)
             _raw = getattr(_j, "axis", None) if _j is not None else None
             try:
@@ -139,22 +143,47 @@ class UrdfScene(
         self.simulation_group: Any | None = None
         self.path_group: Any | None = None
         self.targets_group: Any | None = None
-        self._path_objects: List[Any] = []
-        self._segment_object_ranges: List[Tuple[int, int]] = []
+        self._path_objects: list[Any] = []
+        self._path_object_colors: list[str] = []  # display color per object
+        self._segment_object_ranges: list[tuple[int, int]] = []
         self._rendered_segment_count: int = 0
+        self._tool_action_objects: list[Any] = []
+        self._rendered_tool_action_count: int = 0
         self._highlighted_line: int = 0
 
         # Track robot mesh objects for material changes
-        self._robot_meshes: List[ui.scene.stl] = []
+        self._robot_meshes: list[ui.scene.stl] = []
+
+        # Tool mesh state
+        self._tool_meshes_group: Any | None = None
+        self._tool_meshes: list[Any] = []
+        self._tool_body_meshes: list[Any] = []  # static body parts (housing)
+        # Generic tool motion state (driven by ToolSpec.motions)
+        self._tool_motions: list[PartMotion] = []
+        self._tool_motion_meshes: dict[MeshRole, list[Any]] = {}  # role -> meshes
+        self._tool_motion_origins: dict[
+            MeshRole, list[tuple[float, float, float]]
+        ] = {}  # role -> mesh origins
+        self._tool_motion_rotations: dict[
+            MeshRole, list[tuple[float, float, float]]
+        ] = {}  # role -> mesh initial RPY
+        self._tool_motion_last: tuple[float, ...] = ()  # last positions for dirty-check
+        self._last_tool_engaged: bool | None = (
+            None  # track engaged state for color changes
+        )
+        self._tool_has_motions: bool = (
+            False  # whether current tool has motion descriptors
+        )
 
         # Robot appearance mode (unified state machine)
         self._appearance_mode: RobotAppearanceMode = RobotAppearanceMode.LIVE
 
         # Editing mode state
-        self._editing_angles: List[float] = [0.0] * 6  # Joint angles during editing
-        self._pre_edit_angles: List[float] = [
+        n = len(self.joint_names)
+        self._editing_angles: list[float] = [0.0] * n  # Joint angles during editing
+        self._pre_edit_angles: list[float] = [
             0.0
-        ] * 6  # Saved angles to restore on exit
+        ] * n  # Saved angles to restore on exit
         self._editing_target_type: str = "cartesian"  # "cartesian" or "joint"
         self._joint_ring_touched: bool = False  # True if user rotated any joint ring
 
@@ -168,6 +197,10 @@ class UrdfScene(
 
         # Register as listener for simulation state changes (event-driven updates)
         simulation_state.add_change_listener(self._update_simulation_view)
+
+    def cleanup(self) -> None:
+        """Remove listeners registered by this scene."""
+        simulation_state.remove_change_listener(self._update_simulation_view)
 
     def show(self, scale_stls: float = 1.0, material=None, background_color=None):
         """Plot a nicegui 3D scene from loaded URDF.
@@ -240,7 +273,7 @@ class UrdfScene(
 
             # Position orientation inset
             try:
-                if self.scene and hasattr(self.scene, "set_axes_inset"):
+                if self.scene:
                     self.scene.set_axes_inset(
                         {
                             "enabled": True,
@@ -250,8 +283,7 @@ class UrdfScene(
                             "size": 120,
                         }
                     )
-                    if hasattr(self.scene, "set_axes_labels"):
-                        self.scene.set_axes_labels({"enabled": True})
+                    self.scene.set_axes_labels({"enabled": True})
             except Exception as e:
                 logger.debug("set_axes_inset configuration failed: %s", e)
 
@@ -259,7 +291,7 @@ class UrdfScene(
             # Skip in tests that don't need it (PAROL_SKIP_ENVELOPE=1)
             if (
                 not os.environ.get("PAROL_SKIP_ENVELOPE")
-                and not workspace_envelope._generated
+                and not workspace_envelope.is_ready
             ):
                 workspace_envelope.generate()
 
@@ -299,12 +331,12 @@ class UrdfScene(
         object_name = getattr(e, "object_name", "") or ""
         if object_name in ("tcp:ball", "ghost:tcp_ball"):
             # Disable orbit controls as soon as TCP transform starts
-            if self.scene and hasattr(self.scene, "set_orbit_enabled"):
+            if self.scene:
                 self.scene.set_orbit_enabled(False)
             self._tcp_ball_dragging = True
             # Suspend joint controls during TCP ball manipulation in editing mode
             if self._appearance_mode == RobotAppearanceMode.EDITING:
-                if not getattr(self, "_joint_controls_suspended", False):
+                if not self._joint_controls_suspended:
                     self._disable_joint_transform_controls()
                     self._joint_controls_suspended = True
         elif object_name == "tcp:jog_ball":
@@ -326,12 +358,17 @@ class UrdfScene(
                 # Clear drag start rotation
                 self._tcp_drag_start_rot_deg = None
                 # Re-enable orbit controls when TCP transform ends
-                if self.scene and hasattr(self.scene, "set_orbit_enabled"):
+                if self.scene:
                     self.scene.set_orbit_enabled(True)
-                if getattr(self, "_joint_controls_suspended", False):
+                if self._joint_controls_suspended:
                     # Re-enable joint rotation controls
                     self._enable_joint_transform_controls()
                     self._joint_controls_suspended = False
+                # In editing mode, snap TCP ball back to valid editing position
+                # (IK may have failed during drag, leaving ball at unreachable spot)
+                if self._appearance_mode == RobotAppearanceMode.EDITING:
+                    self._last_fk_angles_tuple = None  # Invalidate FK cache
+                    self._update_tcp_ball_position()
                 # Notify drag-end to consumers (for jogging mode)
                 if self._appearance_mode != RobotAppearanceMode.EDITING:
                     cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
@@ -391,6 +428,15 @@ class UrdfScene(
                     clean_pose = [v if v is not None else 0.0 for v in target.pose]
                     ui_state.editor_panel.sync_code_from_target(target_id, clean_pose)
 
+    @staticmethod
+    def _screen_pos(evt) -> tuple[float, float]:
+        """Extract screen position from event, falling back to client coords."""
+        sx = getattr(evt, "screen_x", None)
+        sy = getattr(evt, "screen_y", None)
+        if sx is not None and sy is not None:
+            return float(sx), float(sy)
+        return float(getattr(evt, "client_x", 0)), float(getattr(evt, "client_y", 0))
+
     def _handle_scene_click(self, e) -> None:
         """Handle mouse events for target deselection, context menu, and joint target editing."""
         click_type = getattr(e, "click_type", "")
@@ -426,14 +472,7 @@ class UrdfScene(
         elif click_type == "contextmenu":
             # Record position and event when contextmenu fires
             # Menu only shows when populated - we decide on mouseup whether to populate
-            screen_x = getattr(e, "screen_x", None)
-            screen_y = getattr(e, "screen_y", None)
-            if screen_x is not None and screen_y is not None:
-                self._right_click_start_pos = (float(screen_x), float(screen_y))
-            else:
-                client_x = getattr(e, "client_x", 0)
-                client_y = getattr(e, "client_y", 0)
-                self._right_click_start_pos = (float(client_x), float(client_y))
+            self._right_click_start_pos = self._screen_pos(e)
             # Store event for populating menu on mouseup
             self._pending_context_menu_event = e
 
@@ -441,19 +480,9 @@ class UrdfScene(
             button = getattr(e, "button", 0)
             if button == 2 and self._right_click_start_pos is not None:
                 # Check if this was a drag
-                _screen_x = getattr(e, "screen_x", None)
-                _screen_y = getattr(e, "screen_y", None)
-                if _screen_x is None or _screen_y is None:
-                    screen_x = float(getattr(e, "client_x", 0))
-                    screen_y = float(getattr(e, "client_y", 0))
-                else:
-                    screen_x = float(_screen_x)
-                    screen_y = float(_screen_y)
-
+                screen_x, screen_y = self._screen_pos(e)
                 start_x, start_y = self._right_click_start_pos
-                dx = screen_x - start_x
-                dy = screen_y - start_y
-                distance = math.hypot(dx, dy)
+                distance = math.hypot(screen_x - start_x, screen_y - start_y)
 
                 self._right_click_start_pos = None
 
@@ -497,7 +526,7 @@ class UrdfScene(
 
         # Update Workspace Envelope based on envelope_mode
         envelope_mode = simulation_state.envelope_mode
-        approaching_positions: List[Tuple[float, float, float]] = []
+        approaching_positions: list[tuple[float, float, float]] = []
 
         if envelope_mode == "auto":
             # Check robot TCP position (convert mm to m)
@@ -535,7 +564,7 @@ class UrdfScene(
         prev_rendered = self._rendered_segment_count
 
         if TRACE_ENABLED:
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "SCENE: _update_simulation_view tick - current_segments=%d, "
                 "rendered_count=%d, path_objects=%d",
                 current_count,
@@ -545,7 +574,7 @@ class UrdfScene(
 
         if current_count == 0:
             if TRACE_ENABLED and self._path_objects:
-                logger.trace(  # type: ignore[attr-defined]
+                logger.trace(
                     "SCENE: Clearing %d path objects (segments went to 0)",
                     len(self._path_objects),
                 )
@@ -553,24 +582,29 @@ class UrdfScene(
 
         elif current_count > self._rendered_segment_count:
             if TRACE_ENABLED:
-                logger.trace(  # type: ignore[attr-defined]
+                logger.trace(
                     "SCENE: Adding segments %d-%d (new segments arrived)",
                     self._rendered_segment_count,
                     current_count - 1,
                 )
             if self.path_group and self.scene:
+                all_segments = simulation_state.path_segments
                 with self.scene:
                     with self.path_group:
                         for i in range(self._rendered_segment_count, current_count):
-                            segment = simulation_state.path_segments[i]
+                            segment = all_segments[i]
                             start_idx = len(self._path_objects)
-                            objs = self._render_path_segment(segment)
+                            pp_colors = self._gradient_colors(all_segments, i)
+                            objs, obj_colors = self._render_path_segment(
+                                segment, pp_colors
+                            )
                             self._path_objects.extend(objs)
+                            self._path_object_colors.extend(obj_colors)
                             self._segment_object_ranges.append(
                                 (start_idx, len(self._path_objects))
                             )
                             if TRACE_ENABLED:
-                                logger.trace(  # type: ignore[attr-defined]
+                                logger.trace(
                                     "SCENE: Rendered segment %d -> %d objects, "
                                     "total_path_objects=%d",
                                     i,
@@ -581,7 +615,7 @@ class UrdfScene(
 
         elif current_count < self._rendered_segment_count:
             if TRACE_ENABLED:
-                logger.trace(  # type: ignore[attr-defined]
+                logger.trace(
                     "SCENE: Resetting - current(%d) < rendered(%d), "
                     "clearing %d objects",
                     current_count,
@@ -593,6 +627,25 @@ class UrdfScene(
         # Highlight path segments matching active cursor line
         if simulation_state.paths_visible and self._segment_object_ranges:
             self.update_cursor_line_highlight()
+
+        # Render tool actions (gripper open/close arrows at TCP positions)
+        tool_action_count = len(simulation_state.tool_actions)
+        if tool_action_count > self._rendered_tool_action_count:
+            if self.path_group and self.scene:
+                with self.scene:
+                    with self.path_group:
+                        for i in range(
+                            self._rendered_tool_action_count, tool_action_count
+                        ):
+                            action = simulation_state.tool_actions[i]
+                            objs = self.render_tool_action(action)
+                            self._tool_action_objects.extend(objs)
+                self._rendered_tool_action_count = tool_action_count
+        elif tool_action_count < self._rendered_tool_action_count:
+            for obj in self._tool_action_objects:
+                self._safe_delete(obj)
+            self._tool_action_objects.clear()
+            self._rendered_tool_action_count = 0
 
         # Update targets - preserve existing targets to maintain TransformControls
         if self.targets_group and self.scene:
@@ -663,17 +716,95 @@ class UrdfScene(
         return self.scene is not None
 
     @property
-    def last_actuated_joint_name(self) -> Optional[str]:
+    def last_actuated_joint_name(self) -> str | None:
         """Get the name of the last actuated joint."""
         return self.joint_names[-1] if self.joint_names else None
 
     @property
-    def last_actuated_group(self) -> Optional[ui.scene.group]:
+    def last_actuated_group(self) -> ui.scene.group | None:
         """Get the scene group for the last actuated joint."""
         last_joint = self.last_actuated_joint_name
         return self.joint_groups.get(last_joint) if last_joint else None
 
-    _HIGHLIGHT_COLOR = "#ffffff"
+    @staticmethod
+    def _glow_color(hex_color: str) -> str:
+        """Brighten a hex color toward white to create a glow effect."""
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        factor = 0.55
+        r = int(r + (255 - r) * factor)
+        g = int(g + (255 - g) * factor)
+        b = int(b + (255 - b) * factor)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    _INVALID_RGB = tuple(
+        int(PathColors.INVALID.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)
+    )
+    _BLEND_RANGE = 3.0  # number of segments over which to fade toward red
+
+    @staticmethod
+    def _blend_hex(c1: str, c2_rgb: tuple, factor: float) -> str:
+        """Blend hex color c1 toward c2_rgb by factor (0=c1, 1=c2)."""
+        h = c1.lstrip("#")
+        r1, g1, b1 = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        r = int(r1 + (c2_rgb[0] - r1) * factor)
+        g = int(g1 + (c2_rgb[1] - g1) * factor)
+        b = int(b1 + (c2_rgb[2] - b1) * factor)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _gradient_colors(self, segments, seg_index) -> list[str] | None:
+        """Compute per-point-pair colors for a segment near invalid segments.
+
+        Returns None if no blending needed (segment keeps its uniform color).
+        """
+        seg = segments[seg_index]
+        n_pairs = len(seg.points) - 1
+        if n_pairs <= 0 or not seg.is_valid:
+            return None
+
+        n = len(segments)
+        rng = int(self._BLEND_RANGE)
+
+        # Find closest invalid segment before and after
+        dist_before = rng + 1
+        for d in range(1, rng + 1):
+            idx = seg_index - d
+            if 0 <= idx < n and not segments[idx].is_valid:
+                dist_before = d
+                break
+
+        dist_after = rng + 1
+        for d in range(1, rng + 1):
+            idx = seg_index + d
+            if 0 <= idx < n and not segments[idx].is_valid:
+                dist_after = d
+                break
+
+        if dist_before > rng and dist_after > rng:
+            return None
+
+        colors = []
+        for j in range(n_pairs):
+            t = (j + 0.5) / n_pairs  # 0..1 position within segment
+
+            # Continuous distance to invalid region in each direction
+            # At t=0, closest to the preceding segment; at t=1, closest to following
+            d_bef = (dist_before - 1) + t
+            d_aft = (dist_after - 1) + (1.0 - t)
+            min_d = min(d_bef, d_aft)
+
+            factor = max(0.0, 1.0 - min_d / self._BLEND_RANGE)
+            factor = factor**1.3  # ease-in for smoother ramp
+
+            if factor > 0.001:
+                colors.append(self._blend_hex(seg.color, self._INVALID_RGB, factor))
+            else:
+                colors.append(seg.color)
+
+        # Skip if all colors are the original
+        if all(c == seg.color for c in colors):
+            return None
+        return colors
 
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""
@@ -683,8 +814,9 @@ class UrdfScene(
         prev_line = self._highlighted_line
         self._highlighted_line = cursor_line
         segments = simulation_state.path_segments
+        n_colors = len(self._path_object_colors)
 
-        # Restore previously highlighted segments to their original color
+        # Restore previously highlighted segments to their display color
         if prev_line > 0:
             for i, seg in enumerate(segments):
                 if seg.line_number == prev_line and i < len(
@@ -692,9 +824,10 @@ class UrdfScene(
                 ):
                     start, end = self._segment_object_ranges[i]
                     for j in range(start, min(end, len(self._path_objects))):
-                        self._path_objects[j].material(seg.color)
+                        c = self._path_object_colors[j] if j < n_colors else seg.color
+                        self._path_objects[j].material(c)
 
-        # Apply highlight to segments matching the new cursor line
+        # Apply glow highlight to segments matching the new cursor line
         if cursor_line > 0:
             for i, seg in enumerate(segments):
                 if seg.line_number == cursor_line and i < len(
@@ -702,16 +835,24 @@ class UrdfScene(
                 ):
                     start, end = self._segment_object_ranges[i]
                     for j in range(start, min(end, len(self._path_objects))):
-                        self._path_objects[j].material(self._HIGHLIGHT_COLOR)
+                        base = (
+                            self._path_object_colors[j] if j < n_colors else seg.color
+                        )
+                        self._path_objects[j].material(self._glow_color(base))
 
     def _clear_path_state(self) -> None:
         """Delete all rendered path objects and reset bookkeeping."""
         for obj in self._path_objects:
             self._safe_delete(obj)
         self._path_objects.clear()
+        self._path_object_colors.clear()
         self._segment_object_ranges.clear()
         self._highlighted_line = 0
         self._rendered_segment_count = 0
+        for obj in self._tool_action_objects:
+            self._safe_delete(obj)
+        self._tool_action_objects.clear()
+        self._rendered_tool_action_count = 0
 
     def invalidate_paths(self) -> None:
         """Clear rendered paths and reset cache, forcing a full re-render on next update.
@@ -730,6 +871,7 @@ class UrdfScene(
         """
         self._update_jog_ball_from_robot_state()
         self._update_envelope_from_robot_state()
+        self._update_tool_animation()
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
         """Set a single joint axis value.
@@ -741,7 +883,7 @@ class UrdfScene(
         t, r = self.joint_trafos[joint_name](val)
         self.joint_groups[joint_name].move(*t).rotate(*r)
 
-    def set_axis_values(self, val: Union[List, np.ndarray]) -> None:
+    def set_axis_values(self, val: list | np.ndarray) -> None:
         """Set all axes values by passing an array or list.
 
         Args:
@@ -761,7 +903,7 @@ class UrdfScene(
             t, r = joint_TF(q)
             joint_i.move(*t).rotate(*r)
 
-    def _apply_joint_angles(self, angles_rad: List[float]) -> None:
+    def _apply_joint_angles(self, angles_rad: list[float]) -> None:
         """Apply joint angles to the main robot joint groups.
 
         Internal method used by both live updates and editing mode.
@@ -774,7 +916,7 @@ class UrdfScene(
                 t, r = self.joint_trafos[joint_name](q)
                 self.joint_groups[joint_name].move(*t).rotate(*r)
 
-    def set_editing_angles(self, angles: List[float]) -> None:
+    def set_editing_angles(self, angles: list[float]) -> None:
         """Set joint angles for editing mode (radians).
 
         Updates the robot visualization when in EDITING mode.
@@ -782,9 +924,9 @@ class UrdfScene(
         Args:
             angles: List of joint angles in radians
         """
-        # Ensure we have 6 angles
-        self._editing_angles = list(angles) + [0.0] * (6 - len(angles))
-        self._editing_angles = self._editing_angles[:6]
+        n = len(self.joint_names)
+        self._editing_angles = list(angles) + [0.0] * (n - len(angles))
+        self._editing_angles = self._editing_angles[:n]
 
         # Only apply to robot if in editing mode
         if self._appearance_mode == RobotAppearanceMode.EDITING:
@@ -792,7 +934,7 @@ class UrdfScene(
             # Update TCP ball position via FK
             self._update_tcp_ball_position_from_editing()
 
-    def get_editing_angles(self) -> List[float]:
+    def get_editing_angles(self) -> list[float]:
         """Get current editing joint angles.
 
         Returns:
@@ -808,11 +950,11 @@ class UrdfScene(
         # Use the unified TCP ball position update method
         self._update_tcp_ball_position()
 
-    def get_joint_names(self) -> List[str]:
+    def get_joint_names(self) -> list[str]:
         """Get list of actuated joint names in order."""
         return list(self.joint_groups.keys())
 
-    def get_joint_limits(self) -> Dict[str, Dict[str, Optional[float]]]:
+    def get_joint_limits(self) -> dict[str, dict[str, float | None]]:
         """Get joint position limits."""
         return {
             name: {"min": limits.get("min"), "max": limits.get("max")}
@@ -833,11 +975,16 @@ class UrdfScene(
             raise ValueError("origin and rpy must each have exactly 3 elements")
         self.tcp_offset.move(*origin).rotate(*rpy)
 
-    def update_tcp_pose_from_tool(self, tool: str) -> None:
+    def update_tcp_pose_from_tool(
+        self,
+        tool: str,
+        variant_key: str | None = None,
+    ) -> None:
         """Move/rotate the TCP offset based on selected tool's TCP config.
 
         Args:
             tool: Tool identifier string
+            variant_key: Optional variant key for per-variant TCP
         """
         if not self.tcp_offset:
             logger.warning("TCP offset group not initialized; cannot update from tool")
@@ -847,11 +994,11 @@ class UrdfScene(
         origin = [0.0, 0.0, 0.0]
         rpy = [0.0, 0.0, 0.0]
 
-        tool_pose: Optional[ToolPose] = None
+        tool_pose: ToolPose | None = None
 
         # Try resolver first
         if self.config.tool_pose_resolver is not None:
-            tool_pose = self.config.tool_pose_resolver(tool)
+            tool_pose = self.config.tool_pose_resolver(tool, variant_key)
 
         # Fall back to map
         if tool_pose is None and tool in self.config.tool_pose_map:
@@ -873,6 +1020,173 @@ class UrdfScene(
         # Update envelope sphere if it exists
         self._update_envelope_radius()
 
+    def swap_tool_mesh(self, tool_key: str, variant_key: str | None = None) -> None:
+        """Replace tool meshes in the 3D scene for the given tool.
+
+        Loads STL files from the tool's ``meshes`` spec into the
+        ``tool:meshes`` group.  Meshes with motion roles are tracked for animation.
+        When *variant_key* is given, uses that variant's meshes and motions
+        instead of the tool's defaults.
+        """
+        if not self.scene or not self._tool_meshes_group:
+            return
+
+        # Remove old tool meshes
+        for mesh in self._tool_meshes:
+            self._safe_delete(mesh)
+        self._tool_meshes.clear()
+        self._tool_body_meshes.clear()
+        self._tool_motions.clear()
+        self._tool_motion_meshes.clear()
+        self._tool_motion_origins.clear()
+        self._tool_motion_rotations.clear()
+        self._tool_motion_last = ()
+        self._last_tool_engaged = None
+        self._tool_has_motions = False
+
+        # Look up tool spec
+        try:
+            tool_spec = ui_state.active_robot.tools[tool_key]
+        except (KeyError, AttributeError):
+            logger.debug("No tool spec for '%s'; tool meshes cleared", tool_key)
+            return
+
+        meshes = getattr(tool_spec, "meshes", ())
+        motions = getattr(tool_spec, "motions", ())
+
+        # Override with variant meshes/motions if specified
+        if variant_key:
+            for v in getattr(tool_spec, "variants", ()):
+                if v.key == variant_key:
+                    meshes = v.meshes
+                    motions = v.motions
+                    break
+
+        if not meshes:
+            return
+
+        # Store motion descriptors from tool spec
+        self._tool_motions = list(motions)
+        self._tool_has_motions = bool(motions)
+        # Collect which roles need mesh tracking
+        motion_roles = {m.role for m in self._tool_motions}
+
+        # Determine per-role appearance for new meshes
+        body_color, moving_color, opacity = self._get_tool_colors()
+
+        with self.scene:
+            with self._tool_meshes_group:
+                for mesh_spec in meshes:
+                    filename = mesh_spec.file
+                    if not filename:
+                        continue
+                    origin = mesh_spec.origin
+                    rpy = mesh_spec.rpy
+                    role = mesh_spec.role
+
+                    url = f"{self.meshes_url}/{filename}"
+                    obj = (
+                        ui.scene.stl(url)
+                        .scale(self._stl_scale)
+                        .move(*origin)
+                        .rotate(*rpy)
+                    )
+                    is_moving = role in motion_roles
+                    color = moving_color if is_moving else body_color
+                    if color is not None:
+                        obj.material(color, opacity)
+                    self._tool_meshes.append(obj)
+                    if not is_moving:
+                        self._tool_body_meshes.append(obj)
+                    if role in motion_roles:
+                        self._tool_motion_meshes.setdefault(role, []).append(obj)
+                        self._tool_motion_origins.setdefault(role, []).append(
+                            (float(origin[0]), float(origin[1]), float(origin[2]))
+                        )
+                        self._tool_motion_rotations.setdefault(role, []).append(
+                            (float(rpy[0]), float(rpy[1]), float(rpy[2]))
+                        )
+
+    def _update_tool_animation(self) -> None:
+        """Animate tool meshes based on ``ToolSpec.motions`` descriptors.
+
+        Each motion reads its DOF position from ``robot_state.tool_status.positions``
+        (0..1 fraction) and applies translation or rotation to meshes matching
+        the motion's ``role``.
+
+        Also applies activated color: moving-part meshes get the "moving" color
+        only when ``tool_status.engaged`` is True.  Binary tools without motions
+        apply activated color to all tool meshes.
+        """
+        # Update engaged color state (applies to all tools, not just those with motions)
+        engaged = robot_state.tool_status.engaged
+        if (
+            engaged != self._last_tool_engaged
+            and self._appearance_mode != RobotAppearanceMode.EDITING
+        ):
+            self._last_tool_engaged = engaged
+            self._apply_tool_engaged_color(engaged)
+
+        if not self._tool_motions:
+            return
+
+        positions = robot_state.tool_status.positions
+        if positions == self._tool_motion_last:
+            return
+        self._tool_motion_last = positions
+
+        for idx, motion in enumerate(self._tool_motions):
+            meshes = self._tool_motion_meshes.get(motion.role)
+            if not meshes:
+                continue
+
+            frac = positions[idx] if idx < len(positions) else 0.0
+            frac = max(0.0, min(1.0, frac))
+
+            origins = self._tool_motion_origins.get(motion.role, [])
+
+            if isinstance(motion, LinearMotion):
+                travel = motion.travel_m * -frac
+                ax = motion.axis
+                for i, mesh in enumerate(meshes):
+                    sign = (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
+                    ox, oy, oz = origins[i] if i < len(origins) else (0.0, 0.0, 0.0)
+                    mesh.move(
+                        ox + ax[0] * travel * sign,
+                        oy + ax[1] * travel * sign,
+                        oz + ax[2] * travel * sign,
+                    )
+            elif isinstance(motion, RotaryMotion):
+                angle = motion.travel_rad * frac
+                ax = motion.axis
+                rots = self._tool_motion_rotations.get(motion.role, [])
+                for i, mesh in enumerate(meshes):
+                    sign = (1.0 if i % 2 == 0 else -1.0) if motion.symmetric else 1.0
+                    r0x, r0y, r0z = rots[i] if i < len(rots) else (0.0, 0.0, 0.0)
+                    mesh.rotate(
+                        r0x + ax[0] * angle * sign,
+                        r0y + ax[1] * angle * sign,
+                        r0z + ax[2] * angle * sign,
+                    )
+
+    def _apply_tool_engaged_color(self, engaged: bool) -> None:
+        """Apply activated color to tool meshes based on engaged state."""
+        if self._appearance_mode == RobotAppearanceMode.EDITING:
+            return  # don't change colors in editing mode
+        body_color, moving_color, opacity = self._get_tool_colors()
+
+        if self._tool_has_motions:
+            # Tools with motions: activated color only on moving parts
+            moving_meshes = {m for ms in self._tool_motion_meshes.values() for m in ms}
+            color = moving_color if engaged else body_color
+            for mesh in moving_meshes:
+                mesh.material(color, opacity)
+        else:
+            # Binary tools without motions (vacuum, etc.): color the whole tool
+            color = moving_color if engaged else body_color
+            for mesh in self._tool_meshes:
+                mesh.material(color, opacity)
+
     def set_appearance_mode(self, mode: RobotAppearanceMode) -> None:
         """Set robot appearance mode.
 
@@ -882,19 +1196,24 @@ class UrdfScene(
         self._appearance_mode = mode
 
         # Get appearance settings based on mode
-        if mode == RobotAppearanceMode.LIVE:
-            color = self.config.material
-            opacity = 1.0
-        elif mode == RobotAppearanceMode.SIMULATOR:
-            color = self.config.sim_color
-            opacity = self.config.sim_opacity
-        else:  # EDITING
-            color = self.config.edit_color
-            opacity = self.config.edit_opacity
+        body_color, moving_color, opacity = self._get_tool_colors()
+        arm_color = {
+            RobotAppearanceMode.LIVE: self.config.material,
+            RobotAppearanceMode.SIMULATOR: self.config.sim_color,
+        }.get(mode, self.config.edit_color)
 
-        # Apply to all robot meshes
+        # Apply to arm meshes
         for mesh in self._robot_meshes:
-            mesh.material(color, opacity)
+            mesh.material(arm_color, opacity)
+
+        # Apply to tool body meshes
+        for mesh in self._tool_body_meshes:
+            mesh.material(body_color, opacity)
+
+        # Apply to tool moving part meshes
+        moving_meshes = {m for ms in self._tool_motion_meshes.values() for m in ms}
+        for mesh in moving_meshes:
+            mesh.material(moving_color, opacity)
 
         logger.debug("Robot appearance mode set to %s", mode.value)
 
@@ -913,6 +1232,23 @@ class UrdfScene(
             self.set_appearance_mode(RobotAppearanceMode.SIMULATOR)
         else:
             self.set_appearance_mode(RobotAppearanceMode.LIVE)
+
+    def _get_tool_colors(self) -> tuple[str, str, float]:
+        """Get (body_color, moving_color, opacity) for the current appearance mode."""
+        if self._appearance_mode == RobotAppearanceMode.LIVE:
+            return self.config.tool_body_material, self.config.tool_moving_material, 1.0
+        elif self._appearance_mode == RobotAppearanceMode.SIMULATOR:
+            return (
+                self.config.tool_body_sim_color,
+                self.config.tool_moving_sim_color,
+                self.config.sim_opacity,
+            )
+        else:
+            return (
+                self.config.tool_body_edit_color,
+                self.config.tool_moving_edit_color,
+                self.config.edit_opacity,
+            )
 
     # --------- Internal URDF building ---------
 
@@ -961,18 +1297,6 @@ class UrdfScene(
                             f"'revolute', 'continuous'."
                         )
 
-                    # Persist normalized joint axis
-                    try:
-                        self.joint_axes[joint.name] = normalize_axis(
-                            getattr(joint, "axis", None)
-                        )
-                    except (ValueError, TypeError, AttributeError) as e:
-                        logger.warning(
-                            "Failed to normalize axis for joint '%s': %s",
-                            joint.name,
-                            e,
-                        )
-
                 child_link = next(
                     (link for link in urdf.links if link.name == joint.child), None
                 )
@@ -995,6 +1319,8 @@ class UrdfScene(
                             anchor = ui.scene.group().with_name("tcp:anchor")
                             self.tcp_anchor = anchor
                             with anchor:
+                                tool_grp = ui.scene.group().with_name("tool:meshes")
+                                self._tool_meshes_group = tool_grp
                                 offset = ui.scene.group().with_name("tcp:offset")
                                 self.tcp_offset = offset
                         # Optional: small axes at TCP
@@ -1007,6 +1333,13 @@ class UrdfScene(
             obj = ui.scene.stl(
                 self._stl_to_url(visual.geometry.geometry.filename)
             ).scale(scale)
+            # Apply visual origin offset if present
+            if visual.origin is not None:
+                t, r = get_transl_and_rpy(visual.origin)
+                if any(v != 0 for v in t):
+                    obj.move(*t)
+                if any(v != 0 for v in r):
+                    obj.rotate(*r)
             if material is not None:
                 obj.material(material)
             # Track mesh object for simulator appearance changes
@@ -1044,7 +1377,7 @@ class UrdfScene(
         return os.path.join(self.meshes_url, str(rel_path).replace("\\", "/"))
 
     def _draw_scene_cos(
-        self, scale: float = 0.3, translate: Optional[Sequence[float]] = None
+        self, scale: float = 0.3, translate: Sequence[float] | None = None
     ):
         """Draw coordinate system axes at specified location."""
         scene = self.scene

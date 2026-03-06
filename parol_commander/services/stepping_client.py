@@ -9,8 +9,6 @@ Provides a wrapper around RobotClient that:
 Cross-platform compatible (Windows, macOS, Linux).
 """
 
-from __future__ import annotations
-
 import json
 import os
 import shutil
@@ -19,25 +17,36 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .path_preview_client import MOTION_METHODS
 
-# Motion methods that should trigger wait_until_stopped and stepping behavior
-MOTION_METHODS = frozenset(
-    {
-        "home",
-        "moveJ",
-        "moveL",
-        "moveC",
-        "moveS",
-        "moveP",
-        "jogJ",
-        "jogL",
-        "servoJ",
-        "servoL",
-        "control_pneumatic_gripper",
-        "control_electric_gripper",
-        "delay",
-    }
+# Methods that trigger wait_command_complete and stepping behavior.
+# Includes all motion methods plus non-motion commands that queue on the controller.
+STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
+    {"home", "tool_action", "delay"}
 )
+
+
+def _atomic_write(path: Path, data: dict) -> None:
+    """Write data to file atomically using temp file + move."""
+    temp_path = path.with_suffix(".tmp")
+    try:
+        temp_path.write_text(json.dumps(data, indent=2))
+        shutil.move(str(temp_path), str(path))
+    except Exception:
+        # Clean up temp file if move failed
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
+def _read_control(control_file: Path) -> dict:
+    """Read control file, return defaults if not exists or parse error."""
+    try:
+        if control_file.exists():
+            return json.loads(control_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {"paused": True, "step_signal": 0, "step_acked": 0}
 
 
 class StepIO:
@@ -68,27 +77,6 @@ class StepIO:
             return None
         return cls(session_id)
 
-    def _atomic_write(self, path: Path, data: dict) -> None:
-        """Write data to file atomically using temp file + move."""
-        temp_path = path.with_suffix(".tmp")
-        try:
-            temp_path.write_text(json.dumps(data, indent=2))
-            shutil.move(str(temp_path), str(path))
-        except Exception:
-            # Clean up temp file if move failed
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
-
-    def _read_control(self) -> dict:
-        """Read control file, return defaults if not exists or parse error."""
-        try:
-            if self._control_file.exists():
-                return json.loads(self._control_file.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-        return {"paused": True, "step_signal": 0, "step_acked": 0}
-
     def _read_events(self) -> list[dict]:
         """Read events from event file."""
         try:
@@ -118,11 +106,11 @@ class StepIO:
                 **extra,
             }
         )
-        self._atomic_write(self._event_file, {"events": events})
+        _atomic_write(self._event_file, {"events": events})
 
     def check_should_pause(self) -> bool:
         """Check if the script should pause (paused flag is true)."""
-        control = self._read_control()
+        control = _read_control(self._control_file)
         return control.get("paused", True)
 
     def wait_for_step_or_play(
@@ -137,7 +125,7 @@ class StepIO:
         """
         start_time = time.time()
         while time.time() - start_time < timeout:
-            control = self._read_control()
+            control = _read_control(self._control_file)
 
             # If paused is False, we're in play mode - continue immediately
             if not control.get("paused", True):
@@ -159,11 +147,38 @@ class StepIO:
     def _ack_step(self, control: dict, step_signal: int) -> None:
         """Acknowledge a step by incrementing step_acked."""
         control["step_acked"] = step_signal
-        self._atomic_write(self._control_file, control)
+        _atomic_write(self._control_file, control)
 
     def increment_step_count(self) -> None:
         """Increment the internal step counter."""
         self._step_count += 1
+
+
+_STEPPABLE_TOOL_METHODS = frozenset({"set_position", "open", "close", "calibrate"})
+
+
+class _SteppingToolProxy:
+    """Proxy that wraps a sync tool's action methods with stepping behavior."""
+
+    def __init__(self, sync_tool: Any, step_io: StepIO) -> None:
+        self._tool = sync_tool
+        self._step_io = step_io
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._tool, name)
+        if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
+            return attr
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            self._step_io.emit_event("start", "tool_action")
+            result = attr(*args, **kwargs)
+            self._step_io.emit_event("complete", "tool_action")
+            self._step_io.increment_step_count()
+            if self._step_io.check_should_pause():
+                self._step_io.wait_for_step_or_play()
+            return result
+
+        return wrapper
 
 
 class SteppingClientWrapper:
@@ -172,8 +187,9 @@ class SteppingClientWrapper:
 
     - Intercepts motion methods
     - Emits start/complete events for GUI visualization
-    - Calls wait_until_stopped() after each motion command
+    - Calls wait_command_complete() after each motion command
     - Optionally pauses for stepping based on control file
+    - Blended commands (r > 0) are grouped as a single step
     """
 
     def __init__(self, wrapped_client: Any, step_io: StepIO) -> None:
@@ -186,6 +202,44 @@ class SteppingClientWrapper:
         """
         self._wrapped = wrapped_client
         self._step_io = step_io
+        self._in_blend = False
+        self._last_blend_index: int = -1
+
+    def _flush_blend(self) -> None:
+        """Flush any pending blend group, emit events, and pause if stepping."""
+        if not self._in_blend:
+            return
+        if self._last_blend_index >= 0:
+            self._wrapped.wait_command_complete(self._last_blend_index)
+        self._in_blend = False
+        self._last_blend_index = -1
+        self._step_io.emit_event("complete", "blend_group")
+        self._step_io.increment_step_count()
+        if self._step_io.check_should_pause():
+            self._step_io.wait_for_step_or_play()
+
+    @property
+    def tool(self):
+        """Return the sync tool with stepping behavior on action methods."""
+        self._flush_blend()
+        return _SteppingToolProxy(self._wrapped.tool, self._step_io)
+
+    def __enter__(self) -> "SteppingClientWrapper":
+        self._wrapped.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> bool | None:
+        # Flush any pending blend before closing
+        if self._in_blend:
+            # Only wait/complete if not exiting due to an exception
+            if args[0] is None:
+                if self._last_blend_index >= 0:
+                    self._wrapped.wait_command_complete(self._last_blend_index)
+                self._step_io.emit_event("complete", "blend_group")
+                self._step_io.increment_step_count()
+            self._in_blend = False
+            self._last_blend_index = -1
+        return self._wrapped.__exit__(*args)
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -194,23 +248,51 @@ class SteppingClientWrapper:
         """
         attr = getattr(self._wrapped, name)
 
-        if name in MOTION_METHODS and callable(attr):
+        if name in STEPPABLE_METHODS and callable(attr):
             return self._wrap_motion_method(name, attr)
 
+        self._flush_blend()
         return attr
+
+    @staticmethod
+    def _is_blended(kwargs: dict) -> bool:
+        """Check if motion kwargs specify a blend radius."""
+        return float(kwargs.get("r", 0)) > 0
 
     def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
         """Create a wrapper function for a motion method."""
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Emit start event
+            is_blended = self._is_blended(kwargs)
+
+            if is_blended:
+                # Blended command — emit start event on first blend command,
+                # then execute without waiting or stepping
+                if not self._in_blend:
+                    self._step_io.emit_event("start", name, blend=True)
+                    self._in_blend = True
+                result = method(*args, **kwargs)
+                if isinstance(result, int) and result >= 0:
+                    self._last_blend_index = result
+                return result
+
+            # Non-blended command — flush any pending blend group first
+            if self._in_blend:
+                if self._last_blend_index >= 0:
+                    self._wrapped.wait_command_complete(self._last_blend_index)
+                self._in_blend = False
+                self._last_blend_index = -1
+                self._step_io.emit_event("complete", "blend_group")
+                self._step_io.increment_step_count()
+
             self._step_io.emit_event("start", name)
 
             # Call the actual method
             result = method(*args, **kwargs)
 
-            # Wait for motion to complete
-            self._wrapped.wait_motion_complete()
+            # Wait for command to complete
+            if isinstance(result, int) and result >= 0:
+                self._wrapped.wait_command_complete(result)
 
             # Emit complete event
             self._step_io.emit_event("complete", name)
@@ -240,29 +322,9 @@ class GUIStepController:
         self._event_file = self._temp_dir / f".parol_events_{session_id}"
         self._last_event_count = 0
 
-    def _atomic_write(self, path: Path, data: dict) -> None:
-        """Write data to file atomically using temp file + move."""
-        temp_path = path.with_suffix(".tmp")
-        try:
-            temp_path.write_text(json.dumps(data, indent=2))
-            shutil.move(str(temp_path), str(path))
-        except Exception:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise
-
-    def _read_control(self) -> dict:
-        """Read current control state."""
-        try:
-            if self._control_file.exists():
-                return json.loads(self._control_file.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-        return {"paused": True, "step_signal": 0, "step_acked": 0}
-
     def initialize(self) -> None:
         """Initialize control file with default state (paused=True)."""
-        self._atomic_write(
+        _atomic_write(
             self._control_file,
             {
                 "paused": True,
@@ -271,26 +333,26 @@ class GUIStepController:
             },
         )
         # Clear any existing events
-        self._atomic_write(self._event_file, {"events": []})
+        _atomic_write(self._event_file, {"events": []})
 
     def signal_step(self) -> None:
         """Signal the script to execute one command then pause."""
-        control = self._read_control()
+        control = _read_control(self._control_file)
         control["paused"] = True
         control["step_signal"] = control.get("step_signal", 0) + 1
-        self._atomic_write(self._control_file, control)
+        _atomic_write(self._control_file, control)
 
     def signal_play(self) -> None:
         """Signal the script to continue without pausing (play mode)."""
-        control = self._read_control()
+        control = _read_control(self._control_file)
         control["paused"] = False
-        self._atomic_write(self._control_file, control)
+        _atomic_write(self._control_file, control)
 
     def signal_pause(self) -> None:
         """Signal the script to pause after the current command."""
-        control = self._read_control()
+        control = _read_control(self._control_file)
         control["paused"] = True
-        self._atomic_write(self._control_file, control)
+        _atomic_write(self._control_file, control)
 
     def poll_events(self) -> list[dict]:
         """

@@ -10,6 +10,7 @@ import os
 
 import pytest
 from nicegui.testing import User
+from waldoctl import ActionState
 
 from tests.helpers.wait import (
     enable_sim,
@@ -135,7 +136,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
     # Wait for robot to be completely idle - no pending commands
     for _ in range(50):  # Up to 5 seconds
-        if robot_state.action_state in ("IDLE", ""):
+        if robot_state.action_state == ActionState.IDLE:
             break
         await asyncio.sleep(0.1)
 
@@ -187,9 +188,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
 
 @pytest.mark.integration
-async def test_joint_jog_one_degree_step(
-    user: User, robot_state, session_client
-) -> None:
+async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
     """Verify single click with 1.0° step moves exactly 1 degree.
 
     Regression test for step precision with small step sizes.
@@ -202,8 +201,8 @@ async def test_joint_jog_one_degree_step(
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
-    # Set motion profile to TOPPRA
-    await session_client.set_profile("TOPPRA")
+    # Set motion profile to TOPPRA (use the app's own client, not session_client)
+    await ui_state.control_panel.client.set_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
     ui_state.joint_step_deg = 1.0
@@ -225,9 +224,7 @@ async def test_joint_jog_one_degree_step(
 
 
 @pytest.mark.integration
-async def test_cartesian_jog_one_mm_step(
-    user: User, robot_state, session_client
-) -> None:
+async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
     """Verify single click with 1.0mm step moves exactly 1mm.
 
     Regression test for cartesian step precision with small step sizes.
@@ -240,8 +237,8 @@ async def test_cartesian_jog_one_mm_step(
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
-    # Set motion profile to TOPPRA (applies to all move types)
-    await session_client.set_profile("TOPPRA")
+    # Set motion profile to TOPPRA (use the app's own client, not session_client)
+    await ui_state.control_panel.client.set_profile("TOPPRA")
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()
@@ -271,7 +268,7 @@ async def test_cartesian_jog_one_mm_step(
     reason="Timing-dependent: CI runners may not complete all motion steps",
 )
 @pytest.mark.integration
-async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -> None:
+async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
     """Verify rapid clicking accumulates steps correctly.
 
     When clicking multiple times in quick succession, each click should
@@ -284,8 +281,8 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
-    # Set motion profile to TOPPRA
-    await session_client.set_profile("TOPPRA")
+    # Set motion profile to TOPPRA (use the app's own client, not session_client)
+    await ui_state.control_panel.client.set_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
     ui_state.joint_step_deg = 1.0
@@ -326,9 +323,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state, session_client) -
     reason="Timing-dependent: CI runners may not complete all motion steps",
 )
 @pytest.mark.integration
-async def test_cartesian_jog_rapid_clicks(
-    user: User, robot_state, session_client
-) -> None:
+async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
     """Verify rapid cartesian clicking accumulates steps correctly.
 
     When clicking multiple times in quick succession, each click should
@@ -341,8 +336,8 @@ async def test_cartesian_jog_rapid_clicks(
     await enable_sim(user, robot_state)
     await ensure_robot_ready_for_motion(robot_state)
 
-    # Set motion profile to TOPPRA (applies to all move types)
-    await session_client.set_profile("TOPPRA")
+    # Set motion profile to TOPPRA (use the app's own client, not session_client)
+    await ui_state.control_panel.client.set_profile("TOPPRA")
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()
@@ -400,7 +395,7 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
 
     # Wait for any queued commands to complete first (action_state becomes IDLE)
     for _ in range(50):  # Up to 5 seconds
-        if robot_state.action_state in ("IDLE", ""):
+        if robot_state.action_state == ActionState.IDLE:
             break
         await asyncio.sleep(0.1)
 

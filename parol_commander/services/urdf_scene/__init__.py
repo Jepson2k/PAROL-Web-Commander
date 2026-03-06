@@ -8,6 +8,10 @@ This package provides:
 - RobotAppearanceMode: Enum for robot visual states
 """
 
+from parol_commander.services.urdf_scene.angle_pipeline import (
+    init_buffers as init_angle_buffers,
+    update_urdf_angles,
+)
 from parol_commander.services.urdf_scene.config import (
     RobotAppearanceMode,
     ToolPose,
@@ -15,4 +19,11 @@ from parol_commander.services.urdf_scene.config import (
 )
 from parol_commander.services.urdf_scene.urdf_scene import UrdfScene
 
-__all__ = ["UrdfScene", "UrdfSceneConfig", "ToolPose", "RobotAppearanceMode"]
+__all__ = [
+    "UrdfScene",
+    "UrdfSceneConfig",
+    "ToolPose",
+    "RobotAppearanceMode",
+    "init_angle_buffers",
+    "update_urdf_angles",
+]

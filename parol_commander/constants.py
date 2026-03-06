@@ -103,4 +103,7 @@ class _Config:
         return 1.0 / max(self.webapp_control_rate_hz, 1.0)
 
 
+# Default 3D scene camera position
+DEFAULT_CAMERA = dict(x=0.3, y=0.3, z=0.22, look_at_z=0.22)
+
 config = _Config()

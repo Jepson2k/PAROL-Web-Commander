@@ -11,17 +11,18 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from urchin import URDF  # type: ignore[import-untyped]
+from urchin import URDF
+
+logger = logging.getLogger(__name__)
 
 
 def load_urdf(
     path: Path,
     *,
-    package_map: Optional[Dict[str, Path]] = None,
+    package_map: dict[str, Path] | None = None,
     lazy: bool = True,
 ) -> URDF:
     """Load a URDF file into memory, expanding package:// URIs to absolute paths.
@@ -64,7 +65,7 @@ def load_urdf(
         else:
             # Fallback: use URDF parent directory
             replacement = path.parent.as_uri()
-            logging.warning(
+            logger.warning(
                 f"Package '{pkg_name}' not in package_map; using fallback: {replacement}"
             )
 
@@ -79,7 +80,7 @@ def load_urdf(
         return URDF.load(str(tmp_file_path), lazy_load_meshes=lazy)
 
 
-def resolve_meshes_dir(urdf_path: Path, configured_dir: Optional[Path] = None) -> Path:
+def resolve_meshes_dir(urdf_path: Path, configured_dir: Path | None = None) -> Path:
     """Resolve mesh directory from config or URDF location.
 
     Args:
@@ -116,7 +117,7 @@ def resolve_meshes_dir(urdf_path: Path, configured_dir: Optional[Path] = None) -
     )
 
 
-def get_transl_and_rpy(mat: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def get_transl_and_rpy(mat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Return translation and Euler rpy from 4x4 homogeneous transformation.
 
     Args:
@@ -130,7 +131,7 @@ def get_transl_and_rpy(mat: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return trans, rpy
 
 
-def rot_joint(axis: np.ndarray, rot_rad: float) -> Tuple[np.ndarray, np.ndarray]:
+def rot_joint(axis: np.ndarray, rot_rad: float) -> tuple[np.ndarray, np.ndarray]:
     """Transformation for rotatory joint around `axis` with value `rot_rad` [rad].
 
     Args:
@@ -146,7 +147,7 @@ def rot_joint(axis: np.ndarray, rot_rad: float) -> Tuple[np.ndarray, np.ndarray]
     return t, rpy
 
 
-def transl_joint(axis: np.ndarray, transl: float) -> Tuple[np.ndarray, np.ndarray]:
+def transl_joint(axis: np.ndarray, transl: float) -> tuple[np.ndarray, np.ndarray]:
     """Transformation for translational joint along `axis` with value `transl` [m].
 
     Args:
@@ -174,7 +175,7 @@ def normalize_axis(axis) -> np.ndarray:
     Returns:
         Normalized 3D numpy array
     """
-    vec: Optional[np.ndarray] = None
+    vec: np.ndarray | None = None
 
     if isinstance(axis, (list, tuple, np.ndarray)):
         try:
@@ -195,12 +196,12 @@ def normalize_axis(axis) -> np.ndarray:
             vec = None
 
     if vec is None or not np.all(np.isfinite(vec)):
-        logging.warning("Invalid joint axis encountered; defaulting to Z-axis")
+        logger.warning("Invalid joint axis encountered; defaulting to Z-axis")
         return np.array([0.0, 0.0, 1.0], dtype=float)
 
     n = float(np.linalg.norm(vec))
     if n < 1e-9:
-        logging.warning("Near-zero joint axis magnitude; defaulting to Z-axis")
+        logger.warning("Near-zero joint axis magnitude; defaulting to Z-axis")
         return np.array([0.0, 0.0, 1.0], dtype=float)
 
     return vec / n

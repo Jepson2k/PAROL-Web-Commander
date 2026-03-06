@@ -1,22 +1,22 @@
 """Bottom-left control panel component for jog speed, step size, and robot control buttons."""
 
 import asyncio
-import contextlib
+import dataclasses
 import logging
 import time
-import os
 import re
 import math
 from functools import partial
-from typing import Any, List
+from typing import Any, Callable
 import importlib.resources as pkg_resources
 
 import numpy as np
 
-from nicegui import ui, app
-from parol_commander.robot_interface import RobotClient
+from nicegui import ui, app, Client
+from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToolSpec
+from waldoctl.types import Axis
 
-from parol_commander.constants import config
+from parol_commander.constants import config, DEFAULT_CAMERA
 from parol_commander.state import (
     robot_state,
     ui_state,
@@ -24,6 +24,8 @@ from parol_commander.state import (
 )
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.components.settings import SettingsContent
+
+logger = logging.getLogger(__name__)
 
 # Module-level constants (avoid recreation every frame)
 _AXIS_ORDER = (
@@ -41,36 +43,417 @@ _AXIS_ORDER = (
     "RZ-",
 )
 _AXIS_MAP = {"X": 0, "Y": 1, "Z": 2, "RX": 3, "RY": 4, "RZ": 5}
+_DEFAULT_CART_EN = np.ones(12, dtype=np.int32)
+_DEFAULT_CART_EN.flags.writeable = False
 
-_CART_AXIS_LOOKUP: dict[str, tuple[str, float, str]] | None = None
+# SVG icon transform lookup: (vb_width, vb_height) -> default transform
+_ICON_TRANSFORMS: dict[tuple[int, int], str] = {
+    (32, 32): "translate(-2,-2) scale(0.85)",
+    (24, 24): "translate(-5,-5) scale(1.4)",
+}
+# Per-slot transform overrides (takes precedence over dimension-based lookup)
+_SLOT_TRANSFORM_OVERRIDES: dict[str, str] = {
+    "lr_neg": "translate(-2,-5) scale(1.4)",
+}
+# Slots that use overflow:visible style on the outer SVG
+_OVERFLOW_VISIBLE_SLOTS: frozenset[str] = frozenset()
+# Regex patterns compiled once
+_RE_VIEWBOX = re.compile(r'viewBox="\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*"')
+_RE_SVG_INNER = re.compile(r"<svg[^>]*>([\s\S]*?)</svg>")
+_RE_TEXT_LABEL = re.compile(r"(<text\b[^>]*>)(.*?)(</text>)", re.DOTALL)
+_RE_WHITESPACE = re.compile(r"\s+")
 
 
-def _get_cart_axis_lookup() -> dict[str, tuple[str, float, str]]:
-    """Build cartesian axis lookup from the active profile's frame names.
+@dataclasses.dataclass
+class _CadenceTracker:
+    """Tracks timer cadence and warns on drift."""
 
-    Translation axes (X, Y, Z) use the first frame (world),
-    rotation axes (RX, RY, RZ) use the second frame (tool).
+    last_ts: float = 0.0
+    accum: float = 0.0
+    count: int = 0
+
+    def tick(
+        self, now: float, target_dt: float, window: int, tolerance: float, label: str
+    ) -> None:
+        if self.last_ts > 0.0:
+            dt = now - self.last_ts
+            self.accum += dt
+            self.count += 1
+            if self.count >= window:
+                avg = self.accum / self.count
+                if abs(avg - target_dt) > tolerance:
+                    logger.warning(
+                        "[CADENCE] %s avg dt=%.4f s (target=%.4f s, tol=%.4f s)",
+                        label,
+                        avg,
+                        target_dt,
+                        tolerance,
+                    )
+                self.accum = 0.0
+                self.count = 0
+        self.last_ts = now
+
+    def reset(self) -> None:
+        self.last_ts = self.accum = 0.0
+        self.count = 0
+
+
+class _EStopManager:
+    """Manages E-STOP dialog state and physical/digital E-STOP transitions."""
+
+    def __init__(self, client: "RobotClient", ui_client_fn: Callable[[], Any]) -> None:
+        self._client = client
+        self._ui_client_fn = ui_client_fn
+        self._dialog: ui.dialog | None = None
+        self._is_physical: bool = False
+        self._last_io_state: int = 1
+        self._digital_active: bool = False
+
+    def show(self, is_physical: bool) -> None:
+        """Show E-STOP dialog with Lottie animation."""
+        ui_client = self._ui_client_fn()
+        if not ui_client:
+            return
+
+        with ui_client:
+            if is_physical and self._dialog and not self._is_physical:
+                self._digital_active = True
+
+            if self._dialog:
+                self._dialog.close()
+                self._dialog = None
+
+            self._dialog = ui.dialog()
+            self._is_physical = is_physical
+            self._dialog.props("persistent")
+
+            with (
+                self._dialog,
+                ui.card()
+                .classes("overlay-card gap-4 items-center")
+                .mark("estop-dialog"),
+            ):
+                ui.html(
+                    """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
+                    sanitize=False,
+                ).classes("w-96")
+
+                if is_physical:
+                    ui.label("Physical E-STOP Active").classes(
+                        "text-xl font-bold text-negative text-center"
+                    )
+                    ui.label("The physical E-STOP button was pressed.").classes(
+                        "text-center"
+                    )
+                    ui.label("To continue, unset the E-STOP button.").classes(
+                        "text-center"
+                    )
+                else:
+                    ui.label("Digital E-STOP Active").classes(
+                        "text-xl font-bold text-warning text-center"
+                    )
+                    ui.label("Robot motion has been stopped.").classes("text-center")
+
+                    async def resume():
+                        try:
+                            await self._client.resume()
+                            self._digital_active = False
+                            if self._dialog:
+                                self._dialog.close()
+                                self._dialog = None
+                        except Exception as e:
+                            logger.error("Resume after digital E-STOP failed: %s", e)
+
+                    with ui.row().classes("gap-2 justify-center w-full mt-4"):
+                        ui.button("Resume", on_click=resume).props(
+                            "color=positive size=lg"
+                        ).mark("btn-estop-resume")
+
+            self._dialog.open()
+
+    def close(self) -> None:
+        """Close the E-STOP dialog if open."""
+        ui_client = self._ui_client_fn()
+        if not ui_client:
+            return
+        with ui_client:
+            if self._dialog:
+                self._dialog.close()
+                self._dialog = None
+                self._is_physical = False
+
+    def check_state_change(self) -> None:
+        """Monitor robot_state.io_estop and show/hide dialog on transitions."""
+        current = robot_state.io_estop
+
+        if self._last_io_state == 1 and current == 0:
+            logger.warning("Physical E-STOP detected (io_estop 1->0)")
+            self.show(is_physical=True)
+        elif self._last_io_state == 0 and current == 1:
+            logger.info("Physical E-STOP released (io_estop 0->1)")
+            if self._dialog and self._is_physical:
+                self.close()
+                if self._digital_active:
+                    self.show(is_physical=False)
+
+        self._last_io_state = current
+
+
+class _ToolQuickActions:
+    """Tool toggle, force jog buttons, and visual updates."""
+
+    def __init__(
+        self, client: "RobotClient", movement_allowed_fn: Callable[..., bool]
+    ) -> None:
+        self._client = client
+        self._movement_allowed = movement_allowed_fn
+        self._toggle_btn: ui.button | None = None
+        self._force_minus_btn: ui.button | None = None
+        self._force_plus_btn: ui.button | None = None
+        self._toggle_tooltip: ui.tooltip | None = None
+        self._force_minus_tooltip: ui.tooltip | None = None
+        self._force_plus_tooltip: ui.tooltip | None = None
+        self._last_visual: tuple = ()
+
+    def _get_active_tool(self) -> "ToolSpec | None":
+        try:
+            return self._client.tool
+        except (RuntimeError, KeyError, NotImplementedError):
+            return None
+
+    def build(self) -> None:
+        """Build the tool quick-action box (toggle + force jog)."""
+        with (
+            ui.column()
+            .classes("rounded-lg shadow-sm p-1 gap-1")
+            .style("border: 1px solid rgba(255,255,255,0.1);")
+            .bind_visibility_from(
+                robot_state, "tool_key", backward=lambda k: k != "NONE"
+            )
+            .mark("tool-quick-actions")
+        ):
+            ui.label().bind_text_from(robot_state, "tool_key").classes(
+                "text-[10px] text-center w-full opacity-60"
+            )
+
+            with ui.row().classes("items-center gap-1 justify-center"):
+                self._toggle_btn = (
+                    ui.button(icon="close_fullscreen", on_click=self._on_toggle)
+                    .props("round dense unelevated size=sm color=grey-7")
+                    .mark("btn-tool-toggle")
+                )
+                self._force_minus_btn = (
+                    ui.button(
+                        icon="remove", on_click=lambda: _safe_task(self._force_jog(-1))
+                    )
+                    .props("round dense unelevated size=sm color=grey-7")
+                    .mark("btn-tool-force-minus")
+                )
+                self._force_plus_btn = (
+                    ui.button(
+                        icon="add", on_click=lambda: _safe_task(self._force_jog(1))
+                    )
+                    .props("round dense unelevated size=sm color=grey-7")
+                    .mark("btn-tool-force-plus")
+                )
+
+    def update_visual(self) -> None:
+        """Update toggle button icon and color from current tool state."""
+        if self._toggle_btn is None:
+            return
+        tool = self._get_active_tool()
+        if tool is None:
+            return
+
+        visual_key = (
+            robot_state.tool_key,
+            robot_state.tool_position,
+            robot_state.tool_engaged,
+        )
+        if visual_key == self._last_visual:
+            return
+        self._last_visual = visual_key
+
+        if isinstance(tool, GripperTool):
+            is_open = tool.is_open(robot_state.tool_position)
+            off_icon, on_icon = tool.toggle_icons or (
+                "close_fullscreen",
+                "open_in_full",
+            )
+            off_label, on_label = tool.toggle_labels or ("Close", "Open")
+            icon = on_icon if is_open else off_icon
+            color = "positive" if is_open else "negative"
+            tooltip_text = on_label if is_open else off_label
+        elif tool.toggle_icons:
+            off_icon, on_icon = tool.toggle_icons
+            off_label, on_label = tool.toggle_labels or ("Off", "On")
+            engaged = robot_state.tool_engaged
+            icon = on_icon if engaged else off_icon
+            color = "positive" if engaged else "negative"
+            tooltip_text = on_label if engaged else off_label
+        else:
+            return
+
+        self._toggle_btn._props["icon"] = icon
+        self._toggle_btn.props(f"color={color}")
+        if self._toggle_tooltip is None:
+            with self._toggle_btn:
+                self._toggle_tooltip = ui.tooltip(tooltip_text)
+        else:
+            self._toggle_tooltip.text = tooltip_text
+        self._toggle_btn.update()
+
+        has_force_jog = tool.force_jog_step is not None
+        if self._force_minus_btn is not None:
+            assert self._force_plus_btn is not None
+            self._force_minus_btn.set_visibility(has_force_jog)
+            self._force_plus_btn.set_visibility(has_force_jog)
+            if has_force_jog:
+                cur = ui_state.gripper_current
+                step = tool.force_jog_step
+                if self._force_minus_tooltip is None:
+                    with self._force_minus_btn:
+                        self._force_minus_tooltip = ui.tooltip("")
+                    with self._force_plus_btn:
+                        self._force_plus_tooltip = ui.tooltip("")
+                assert self._force_minus_tooltip is not None
+                assert self._force_plus_tooltip is not None
+                self._force_minus_tooltip.text = f"Current: {cur} mA (\u2212{step})"
+                self._force_plus_tooltip.text = f"Current: {cur} mA (+{step})"
+
+    async def _on_toggle(self) -> None:
+        if not self._movement_allowed():
+            return
+        tool = self._get_active_tool()
+        if tool is None:
+            return
+        try:
+            await tool.toggle(robot_state.tool_status.engaged)
+        except Exception as e:
+            logger.error("Tool toggle failed: %s", e)
+            ui.notify(f"Toggle failed: {e}", color="negative")
+
+    async def _force_jog(self, direction: int) -> None:
+        if not self._movement_allowed():
+            return
+        tool = self._get_active_tool()
+        if tool is None or tool.force_jog_step is None:
+            return
+        if not isinstance(tool, ElectricGripperTool):
+            return
+        step = tool.force_jog_step * direction
+        lo, hi = tool.current_range
+        new_cur = max(lo, min(hi, ui_state.gripper_current + step))
+        ui_state.gripper_current = new_cur
+        try:
+            pos = robot_state.tool_position
+            await tool.set_position(pos, current=new_cur)
+            motion_recorder.record_action("gripper", position=pos, current=new_cur)
+        except Exception as e:
+            logger.error("Force jog failed: %s", e)
+            ui.notify(f"Force jog failed: {e}", color="negative")
+
+
+class _ClickHoldHandler:
+    """Generic click-vs-hold detection for jog buttons.
+
+    Manages hold timers and tracks which keys are actively being held.
+    Domain-specific behavior is injected via callbacks to on_change().
     """
-    global _CART_AXIS_LOOKUP
-    if _CART_AXIS_LOOKUP is not None:
-        return _CART_AXIS_LOOKUP
-    frames = ui_state.active_robot.cartesian_frames
-    wrf, trf = frames[0], frames[1]
-    _CART_AXIS_LOOKUP = {
-        "X+": ("X", 1.0, wrf),
-        "X-": ("X", -1.0, wrf),
-        "Y+": ("Y", 1.0, wrf),
-        "Y-": ("Y", -1.0, wrf),
-        "Z+": ("Z", 1.0, wrf),
-        "Z-": ("Z", -1.0, wrf),
-        "RX+": ("RX", 1.0, trf),
-        "RX-": ("RX", -1.0, trf),
-        "RY+": ("RY", 1.0, trf),
-        "RY-": ("RY", -1.0, trf),
-        "RZ+": ("RZ", 1.0, trf),
-        "RZ-": ("RZ", -1.0, trf),
-    }
-    return _CART_AXIS_LOOKUP
+
+    def __init__(self, threshold_s: float, ui_client_fn: Callable[[], Any]) -> None:
+        self._threshold_s = threshold_s
+        self._ui_client_fn = ui_client_fn
+        self._hold_timers: dict[Any, ui.timer] = {}
+        self._holding_active: set[Any] = set()
+
+    def is_holding(self, key: Any) -> bool:
+        return key in self._holding_active
+
+    @property
+    def any_active(self) -> bool:
+        return bool(self._holding_active)
+
+    def cancel_key(self, key: Any) -> None:
+        """Cancel any pending timer and clear hold state for a key."""
+        tm = self._hold_timers.pop(key, None)
+        if tm:
+            tm.active = False
+        self._holding_active.discard(key)
+
+    async def on_change(
+        self,
+        key: Any,
+        is_pressed: bool,
+        *,
+        on_click: Callable[[], Any],
+        on_hold_start: Callable[[], None],
+        on_release: Callable[[bool], None],
+    ) -> None:
+        """Handle press/release for a key.
+
+        Args:
+            key: Unique identifier for the button/axis
+            is_pressed: True on press, False on release
+            on_click: Called (awaited if coroutine) when a quick click is detected
+            on_hold_start: Called when hold threshold is reached (start streaming)
+            on_release: Called on release with was_holding=True/False for cleanup
+        """
+        if is_pressed:
+            # Cancel any existing timer for this key
+            tm_prev = self._hold_timers.pop(key, None)
+            if tm_prev:
+                tm_prev.active = False
+
+            def _start_hold():
+                self._holding_active.add(key)
+                on_hold_start()
+                tm = self._hold_timers.pop(key, None)
+                if tm:
+                    tm.active = False
+
+            ui_client = self._ui_client_fn()
+            if ui_client:
+                with ui_client:
+                    self._hold_timers[key] = ui.timer(
+                        self._threshold_s, _start_hold, once=True
+                    )
+            return
+
+        # Release path
+        tm = self._hold_timers.pop(key, None)
+        was_holding = key in self._holding_active
+
+        if tm and tm.active:
+            # Timer still running → this was a quick click
+            tm.active = False
+            result = on_click()
+            if asyncio.iscoroutine(result):
+                await result
+            self._holding_active.discard(key)
+            on_release(False)
+            return
+
+        if was_holding:
+            self._holding_active.discard(key)
+            on_release(True)
+
+    def cleanup(self) -> None:
+        for tm in self._hold_timers.values():
+            tm.cancel()
+        self._hold_timers.clear()
+        self._holding_active.clear()
+
+
+def _safe_task(coro: Any) -> asyncio.Task:
+    """Create an asyncio task that logs exceptions instead of silently swallowing them."""
+    task = asyncio.create_task(coro)
+    task.add_done_callback(
+        lambda t: logger.error("Unhandled error in task", exc_info=t.exception())
+        if not t.cancelled() and t.exception()
+        else None
+    )
+    return task
 
 
 def _norm_speed() -> float:
@@ -100,23 +483,10 @@ class ControlPanel:
         self._cart_axis_imgs: dict[str, ui.element] = {}
 
         # Jog state tracking
-        n_joints = ui_state.active_robot.joints.count
-        self._jog_pressed_pos: list[bool] = [False] * n_joints
-        self._jog_pressed_neg: list[bool] = [False] * n_joints
-        self._cart_pressed_axes: dict[str, bool] = {
-            "X+": False,
-            "X-": False,
-            "Y+": False,
-            "Y-": False,
-            "Z+": False,
-            "Z-": False,
-            "RX+": False,
-            "RX-": False,
-            "RY+": False,
-            "RY-": False,
-            "RZ+": False,
-            "RZ-": False,
-        }
+        self._n_joints = ui_state.active_robot.joints.count
+        self._jog_pressed_pos: list[bool] = [False] * self._n_joints
+        self._jog_pressed_neg: list[bool] = [False] * self._n_joints
+        self._cart_pressed_axes: dict[str, bool] = {ax: False for ax in _AXIS_ORDER}
 
         # Cartesian button slots/elements and assignment (layout fixed; labels/colors/actions dynamic)
         self._cart_slot_elems: dict[str, ui.element] = {}
@@ -132,17 +502,19 @@ class ControlPanel:
             "rz": "tcp-rz",
         }
 
-        # Hybrid click/hold state for joint controls
+        # Click/hold handlers (initialized with ui_client in build())
         self.CLICK_HOLD_THRESHOLD_S: float = 0.25
-        self._holding_active: set[tuple[int, str]] = set()
-        self._hold_timers: dict[tuple[int, str], ui.timer] = {}
-
-        # Hold timers for cartesian axes (click vs hold)
-        self._hold_timers_cart: dict[str, ui.timer] = {}
-        self._holding_active_cart: set[str] = set()
+        self._joint_click_hold: _ClickHoldHandler | None = None
+        self._cart_click_hold: _ClickHoldHandler | None = None
 
         # Settings content for cleanup
         self._settings_content: "SettingsContent | None" = None
+
+        # Tool quick-actions (initialized in build())
+        self.tool_actions: _ToolQuickActions | None = None
+
+        # Cartesian axis lookup (lazily built from robot's frame names)
+        self._cart_axis_lookup: dict[str, tuple[Axis, float, str]] | None = None
 
         # Jog cadence constants
         self.JOG_TICK_S: float = config.webapp_control_interval_s
@@ -151,17 +523,14 @@ class ControlPanel:
         self.STREAM_TIMEOUT_S: float = 0.1
 
         # Cadence tracking
-        self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-        self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+        self._joint_cadence = _CadenceTracker()
+        self._cart_cadence = _CadenceTracker()
 
-        # Visual update callback
-        self._update_robot_btn_visual: Any = None
+        # Robot/Sim toggle button reference
+        self._robot_btn: ui.button | None = None
 
-        # E-STOP dialog tracking
-        self._estop_dialog: ui.dialog | None = None
-        self._estop_dialog_is_physical: bool = False
-        self._last_estop_state: int = 1  # Track previous io_estop value
-        self._digital_estop_active: bool = False  # Track if digital estop was active
+        # E-STOP manager (initialized with ui_client in build())
+        self.estop: _EStopManager | None = None
 
         # TCP TransformControls drag state
         self._tcp_latest_pose: list[float] | None = None
@@ -188,6 +557,32 @@ class ControlPanel:
 
     # ---- Helper methods ----
 
+    def _get_cart_axis_lookup(self) -> dict[str, tuple[Axis, float, str]]:
+        """Build cartesian axis lookup from the active robot's frame names.
+
+        Translation axes (X, Y, Z) use the first frame (world),
+        rotation axes (RX, RY, RZ) use the second frame (tool).
+        """
+        if self._cart_axis_lookup is not None:
+            return self._cart_axis_lookup
+        frames = ui_state.active_robot.cartesian_frames
+        wrf, trf = frames[0], frames[1]
+        self._cart_axis_lookup = {
+            "X+": ("X", 1.0, wrf),
+            "X-": ("X", -1.0, wrf),
+            "Y+": ("Y", 1.0, wrf),
+            "Y-": ("Y", -1.0, wrf),
+            "Z+": ("Z", 1.0, wrf),
+            "Z-": ("Z", -1.0, wrf),
+            "RX+": ("RX", 1.0, trf),
+            "RX-": ("RX", -1.0, trf),
+            "RY+": ("RY", 1.0, trf),
+            "RY-": ("RY", -1.0, trf),
+            "RZ+": ("RZ", 1.0, trf),
+            "RZ-": ("RZ", -1.0, trf),
+        }
+        return self._cart_axis_lookup
+
     def _apply_pressed_style(self, widget: ui.element | None, pressed: bool) -> None:
         if not widget:
             return
@@ -195,26 +590,6 @@ class ControlPanel:
             widget.classes(add="is-pressed")
         else:
             widget.classes(remove="is-pressed")
-
-    def _cadence_tick(self, now: float, stats: dict, label: str) -> None:
-        last = stats.get("last_ts", 0.0)
-        if last > 0.0:
-            dt = now - last
-            stats["accum"] = stats.get("accum", 0.0) + dt
-            stats["count"] = stats.get("count", 0.0) + 1.0
-            if stats["count"] >= self.CADENCE_WARN_WINDOW:
-                avg = stats["accum"] / stats["count"]
-                if abs(avg - self.JOG_TICK_S) > self.CADENCE_TOLERANCE:
-                    logging.warning(
-                        "[CADENCE] %s avg dt=%.4f s (target=%.4f s, tol=%.4f s)",
-                        label,
-                        avg,
-                        self.JOG_TICK_S,
-                        self.CADENCE_TOLERANCE,
-                    )
-                stats["accum"] = 0.0
-                stats["count"] = 0.0
-        stats["last_ts"] = now
 
     def _get_first_pressed_joint(self) -> tuple[int, str] | None:
         """Return (index, 'pos'|'neg') for the first pressed joint, else None."""
@@ -239,7 +614,7 @@ class ControlPanel:
             if i < pos_deg.shape[0]:
                 return float(pos_deg[i, 0]), float(pos_deg[i, 1])
             return (-360.0, 360.0)
-        except Exception:
+        except (AttributeError, IndexError, AssertionError):
             return (-360.0, 360.0)
 
     # ---- Cartesian helpers (icons, orientation, refresh) ----
@@ -256,79 +631,54 @@ class ControlPanel:
         letter = self._cart_assignment.get(assign_key, "X").upper()
         return f"R{letter}{sign}" if rotation else f"{letter}{sign}"
 
-    def _read_icon_svg(self, svg_filename: str) -> tuple[str, list[int]]:
-        """Load SVG text via package resources with filesystem fallback and extract viewBox size."""
-        raw = ""
-        try:
-            raw = (
-                pkg_resources.files("parol_commander.static.icons") / svg_filename
-            ).read_text(encoding="utf-8")
-        except Exception:
-            icons_dir = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "static", "icons")
-            )
-            with open(
-                os.path.join(icons_dir, svg_filename), "r", encoding="utf-8"
-            ) as f:
-                raw = f.read()
-        m = re.search(r'viewBox="\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*"', raw)
-        w1 = int(m.group(1)) if m else 24
-        h1 = int(m.group(2)) if m else 24
-        w2 = int(m.group(3)) if m else 24
-        h2 = int(m.group(4)) if m else 24
-        return raw, [w1, h1, w2, h2]
+    @staticmethod
+    def _read_icon_svg(svg_filename: str) -> tuple[str, list[int]]:
+        """Load SVG text via package resources and extract viewBox size."""
+        raw = (
+            pkg_resources.files("parol_commander.static.icons") / svg_filename
+        ).read_text(encoding="utf-8")
+        m = _RE_VIEWBOX.search(raw)
+        vb = [int(m.group(i)) if m else 24 for i in range(1, 5)]
+        return raw, vb
 
+    @staticmethod
     def _prepare_icon_markup(
-        self, raw_svg: str, viewbox_wh: list[int], label: str, slot_id: str = ""
+        raw_svg: str, viewbox_wh: list[int], label: str, slot_id: str = ""
     ) -> str:
-        """Return wrapped 56x56 SVG markup with enlarged glyph and updated label."""
-        # Extract inner SVG content (strip outer <svg>), normalize colors to currentColor
-        inner_match = re.search(r"<svg[^>]*>([\s\S]*?)</svg>", raw_svg)
+        """Return wrapped SVG markup with enlarged glyph and updated label."""
+        inner_match = _RE_SVG_INNER.search(raw_svg)
         inner = inner_match.group(1) if inner_match else raw_svg
 
-        # Replace any <text> contents with dynamic label; keep existing fill/stroke (black)
-        try:
+        inner = _RE_TEXT_LABEL.sub(r"\1" + label + r"\3", inner)
+        raw_svg_processed = _RE_TEXT_LABEL.sub(r"\1" + label + r"\3", raw_svg)
 
-            def _replace_text_label(svg_str: str, new_label: str) -> str:
-                return re.sub(
-                    r"(<text\b[^>]*>)(.*?)(</text>)",
-                    r"\1" + new_label + r"\3",
-                    svg_str,
-                    flags=re.DOTALL,
-                )
+        vb_min_x, vb_min_y, vb_width, vb_height = viewbox_wh
 
-            inner = _replace_text_label(inner, label)
-            raw_svg_processed = _replace_text_label(raw_svg, label)
-        except Exception:
-            raw_svg_processed = raw_svg
-
-        w1, h1, w2, h2 = viewbox_wh
-        if w2 == 32 and h2 == 32:
-            transform = "translate(-2,-2) scale(0.85)"
-        elif w2 == 24 and h2 == 24:
-            transform = "translate(-5,-5) scale(1.4)"
-        elif h1 == 17:
+        # Determine transform: slot override > dimension lookup > fallback
+        if slot_id in _SLOT_TRANSFORM_OVERRIDES:
+            transform = _SLOT_TRANSFORM_OVERRIDES[slot_id]
+        elif (vb_width, vb_height) in _ICON_TRANSFORMS:
+            transform = _ICON_TRANSFORMS[(vb_width, vb_height)]
+        elif vb_min_y == 17:
             transform = "translate(-5,12)"
         else:
             transform = "translate(-5,-12)"
-        if h2 == 7:
-            svg = f"""<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" style="overflow:visible">
-  <g transform="{transform}" fill="currentColor" stroke="currentColor">{raw_svg_processed}</g>
-</svg>"""
-        elif slot_id == "r_ud2_minus":
-            svg = f"""<svg viewBox="0 0 24 24" style="transform: scaleX(1);" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
-    <g transform="{transform}" fill="currentColor" stroke="currentColor">{inner}</g>
-    </svg>"""
-        elif slot_id == "lr_neg":
-            svg = f"""<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" x="0" y="0" style="overflow:visible">
-    <g transform="translate(-2,-5) scale(1.4)" fill="currentColor" stroke="currentColor">{inner}</g>
-    </svg>"""
+
+        # Cropped icons (height == 7) use the full SVG with overflow:visible
+        if vb_height == 7:
+            content = raw_svg_processed
+            style = ' style="overflow:visible"'
         else:
-            svg = f"""<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
-    <g transform="{transform}" fill="currentColor" stroke="currentColor">{inner}</g>
-    </svg>"""
-        # Minify whitespace for data URI
-        return re.sub(r"\s+", " ", svg).strip()
+            content = inner
+            style = ""
+
+        svg = (
+            f'<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"'
+            f' preserveAspectRatio="xMidYMid meet"{style}>'
+            f'<g transform="{transform}" fill="currentColor" stroke="currentColor">'
+            f"{content}</g></svg>"
+        )
+        return _RE_WHITESPACE.sub(" ", svg).strip()
 
     async def _on_slot_press(self, slot_id: str, is_pressed: bool) -> None:
         """Event bridge: map fixed slot to current axis string and call set_axis_pressed."""
@@ -370,12 +720,8 @@ class ControlPanel:
             </g>
             </svg>
             """
-            # For ui.html elements, update the content property and trigger update
-            if hasattr(elem, "_props") and "content" in elem._props:
-                elem._props["content"] = new_html
-                elem.update()
-            elif hasattr(elem, "content"):
-                elem.content = new_html  # type: ignore[attr-defined]
+            elem._props["content"] = new_html
+            elem.update()
             # Update color classes
             elem.classes(remove=remove_classes)
             letter = self._cart_assignment.get(assign_key, "X").upper()
@@ -398,7 +744,7 @@ class ControlPanel:
         # Get current state for dirty checking
         editing_mode = robot_state.editing_mode
         en = robot_state.joint_en
-        current_tuple = tuple(en) if len(en) == 12 else None
+        current_tuple = tuple(en) if len(en) == 2 * self._n_joints else None
 
         # Skip if state unchanged (18x faster when idle)
         if (
@@ -436,8 +782,8 @@ class ControlPanel:
         editing_mode = robot_state.editing_mode
         frames = ui_state.active_robot.cartesian_frames
         frame = str(ui_state.frame).upper() if ui_state.frame else frames[0]
-        en = robot_state.cart_en.get(frame, np.ones(12, dtype=np.int32))
-        current_tuple = tuple(en) if len(en) == 12 else None
+        en = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
+        current_tuple = tuple(en) if len(en) == 2 * self._n_joints else None
 
         # Skip if state unchanged
         if (
@@ -484,25 +830,31 @@ class ControlPanel:
             self._set_strong_disabled(elem, is_editing)
         # Note: E-STOP button is NOT in these collections, so remains enabled
 
+    # ---- Movement permission check ----
+
+    @staticmethod
+    def _movement_allowed(notify: bool = True) -> bool:
+        """Return True if robot movement is permitted (simulator active or hardware connected)."""
+        if robot_state.simulator_active or robot_state.connected:
+            return True
+        if notify:
+            ui.notify(
+                "Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
+                color="negative",
+                icon="error",
+            )
+        return False
+
     # ---- Joint jog methods ----
 
     async def set_joint_pressed(self, j: int, direction: str, is_pressed: bool) -> None:
         """Hybrid click/hold: quick click => single step, press-and-hold => stream until release."""
-        # Skip if in editing mode (target editor controls robot)
         if robot_state.editing_mode:
             return
-
-        # Check if movement is allowed (simulator mode OR connected)
-        if not robot_state.simulator_active and not robot_state.connected:
-            if is_pressed:
-                ui.notify(
-                    "Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-                    color="negative",
-                    icon="error",
-                )
+        if not self._movement_allowed(notify=is_pressed):
             return
+        assert self._joint_click_hold is not None
 
-        # Notify motion recorder of jog start/end
         sign = "+" if direction == "pos" else "-"
         axis_info = f"J{j + 1}{sign}"
         if is_pressed:
@@ -510,74 +862,46 @@ class ControlPanel:
         else:
             self._schedule_jog_end_wait()
 
-        # Visual feedback target
-        target = (
+        target_btn = (
             self._joint_right_btns.get(j)
             if direction == "pos"
             else self._joint_left_btns.get(j)
         )
-        self._apply_pressed_style(target, bool(is_pressed))
+        self._apply_pressed_style(target_btn, bool(is_pressed))
 
         key = (j, direction)
 
-        def _start_streaming():
-            # Mark pressed and turn on jog timer if needed
-            if direction == "pos":
-                self._jog_pressed_pos[j] = True
-            else:
-                self._jog_pressed_neg[j] = True
-
-            self._holding_active.add(key)
-            if not ui_state.joint_jog_timer.active:
-                self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-            ui_state.joint_jog_timer.active = True
-
-            tm = self._hold_timers.pop(key, None)
-            if tm:
-                tm.active = False
-
+        # Enforce mutual exclusivity: cancel opposite direction
         if is_pressed:
-            tm_prev = self._hold_timers.pop(key, None)
-            if tm_prev:
-                tm_prev.active = False
-
-            # Enforce mutual exclusivity: clear opposite direction for this joint
             other_dir = "neg" if direction == "pos" else "pos"
             other_key = (j, other_dir)
-            # Cancel any pending hold timer for the opposite direction
-            tm_other = self._hold_timers.pop(other_key, None)
-            if tm_other:
-                tm_other.active = False
-            # Clear streaming/click-hold state for the opposite direction
-            self._holding_active.discard(other_key)
+            self._joint_click_hold.cancel_key(other_key)
             if other_dir == "pos":
                 self._jog_pressed_pos[j] = False
-                # Remove pressed visual from opposite button
-                other_btn = self._joint_right_btns.get(j)
-                self._apply_pressed_style(other_btn, False)
+                self._apply_pressed_style(self._joint_right_btns.get(j), False)
             else:
                 self._jog_pressed_neg[j] = False
-                other_btn = self._joint_left_btns.get(j)
-                self._apply_pressed_style(other_btn, False)
+                self._apply_pressed_style(self._joint_left_btns.get(j), False)
 
-            self._hold_timers[key] = ui.timer(
-                self.CLICK_HOLD_THRESHOLD_S, _start_streaming, once=True
-            )
-            return
+        def _set_pressed(val: bool):
+            if direction == "pos":
+                self._jog_pressed_pos[j] = val
+            else:
+                self._jog_pressed_neg[j] = val
 
-        # Release path
-        tm = self._hold_timers.pop(key, None)
-        was_holding = key in self._holding_active
-        if tm and tm.active:
-            tm.active = False
-            # CLICK => one incremental step using moveJ for precision
+        def _sync_timer():
+            any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
+            if any_pressed and not ui_state.joint_jog_timer.active:
+                self._joint_cadence.reset()
+            ui_state.joint_jog_timer.active = bool(any_pressed)
+
+        async def on_click():
             speed = _norm_speed()
             step = abs(float(ui_state.joint_step_deg))
             try:
-                # Get current angles and calculate target
                 angles = list(robot_state.angles.deg)
-                if len(angles) >= 6:
-                    target_angles = angles[:6]
+                if len(angles) >= self._n_joints:
+                    target_angles = angles[: self._n_joints]
                     lo, hi = self._get_joint_limits(j)
                     if direction == "pos":
                         target_angles[j] = min(hi, target_angles[j] + step)
@@ -585,32 +909,30 @@ class ControlPanel:
                         target_angles[j] = max(lo, target_angles[j] - step)
                     await self.client.moveJ(target_angles, speed=speed)
             except Exception as e:
-                logging.error("Incremental joint move failed: %s", e)
-            if direction == "pos":
-                self._jog_pressed_pos[j] = False
-            else:
-                self._jog_pressed_neg[j] = False
-            self._holding_active.discard(key)
-            any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
-            ui_state.joint_jog_timer.active = bool(any_pressed)
-            return
+                logger.error("Incremental joint move failed: %s", e)
 
-        if was_holding:
-            if direction == "pos":
-                self._jog_pressed_pos[j] = False
-            else:
-                self._jog_pressed_neg[j] = False
-            self._holding_active.discard(key)
-            any_pressed = any(self._jog_pressed_pos) or any(self._jog_pressed_neg)
-            if any_pressed and not ui_state.joint_jog_timer.active:
-                self._tick_stats = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-            ui_state.joint_jog_timer.active = bool(any_pressed)
+        def on_hold_start():
+            _set_pressed(True)
+            if not ui_state.joint_jog_timer.active:
+                self._joint_cadence.reset()
+            ui_state.joint_jog_timer.active = True
+
+        def on_release(was_holding: bool):
+            _set_pressed(False)
+            _sync_timer()
+
+        await self._joint_click_hold.on_change(
+            key,
+            is_pressed,
+            on_click=on_click,
+            on_hold_start=on_hold_start,
+            on_release=on_release,
+        )
 
     async def jog_tick(self) -> None:
         """Timer callback: send/update joint streaming jog if any button is pressed."""
         with global_phase_timer.phase("jog"):
-            # Check if movement is allowed
-            if not robot_state.simulator_active and not robot_state.connected:
+            if not self._movement_allowed(notify=False):
                 return
 
             speed = _norm_speed()
@@ -621,127 +943,97 @@ class ControlPanel:
                 await self.client.jogJ(
                     j, speed=signed_speed, duration=self.STREAM_TIMEOUT_S
                 )
-            self._cadence_tick(time.time(), self._tick_stats, "joint")
+            self._joint_cadence.tick(
+                time.time(),
+                self.JOG_TICK_S,
+                self.CADENCE_WARN_WINDOW,
+                self.CADENCE_TOLERANCE,
+                "joint",
+            )
 
     # ---- Cartesian jog methods ----
 
     async def set_axis_pressed(self, axis: str, is_pressed: bool) -> None:
         """Hybrid click/hold for cartesian axes: click => single step, hold => stream."""
-        # Skip if in editing mode (target editor controls robot)
         if robot_state.editing_mode:
             return
-
-        # Check if movement is allowed (simulator mode OR connected)
-        if not robot_state.simulator_active and not robot_state.connected:
-            if is_pressed:
-                ui.notify(
-                    "Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-                    color="negative",
-                    icon="error",
-                )
+        if not self._movement_allowed(notify=is_pressed):
             return
+        assert self._cart_click_hold is not None
 
-        # Notify motion recorder of jog start/end
         if is_pressed:
             motion_recorder.on_jog_start("cartesian", axis)
         else:
             self._schedule_jog_end_wait()
 
-        # Check backend-reported enablement for this axis in current frame
-        frame = str(getattr(ui_state, "frame", "")).upper()
-        en_list = robot_state.cart_en.get(frame, np.ones(12, dtype=np.int32))
+        # Check enablement for this axis in current frame
+        frame = ui_state.frame.upper()
+        en_list = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
         allowed = True
         if len(en_list) == 12 and axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
             allowed = bool(int(en_list[idx]))
-        # Apply strong disabled visual if not allowed and ignore press
         self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
         if is_pressed and not allowed:
             return
 
         self._apply_pressed_style(self._cart_axis_imgs.get(axis), bool(is_pressed))
 
-        key = axis
-
-        def _start_streaming():
-            self._cart_pressed_axes[key] = True
-            self._holding_active_cart.add(key)
+        def _sync_timer():
             t = ui_state.cart_jog_timer
             if t:
-                if not t.active:
-                    self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-                t.active = True
-            tm = self._hold_timers_cart.pop(key, None)
-            if tm:
-                tm.active = False
+                any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
+                if any_pressed and not t.active:
+                    self._cart_cadence.reset()
+                t.active = bool(any_pressed)
 
-        if is_pressed:
-            tm_prev = self._hold_timers_cart.pop(key, None)
-            if tm_prev:
-                tm_prev.active = False
-            # Ensure we have a client context when creating UI elements
-            if self._ui_client:
-                with self._ui_client:
-                    self._hold_timers_cart[key] = ui.timer(
-                        self.CLICK_HOLD_THRESHOLD_S, _start_streaming, once=True
-                    )
-            return
-
-        tm = self._hold_timers_cart.pop(key, None)
-        was_holding = key in self._holding_active_cart
-        if tm and tm.active:
-            tm.active = False
-            # CLICK => one incremental step using moveL for precision
+        async def on_click():
             speed = _norm_speed()
             step = max(0.1, min(100.0, float(ui_state.joint_step_deg)))
             try:
-                # Get current position and calculate target
-                # Parse axis string: "X+", "X-", "RX+", "RZ-", etc.
-                axis_letter = key.rstrip("+-")  # "X", "Y", "Z", "RX", "RY", "RZ"
-                direction = 1.0 if key.endswith("+") else -1.0
-
-                # Fill preallocated target buffer from current state
+                axis_letter = axis.rstrip("+-")
+                direction = 1.0 if axis.endswith("+") else -1.0
                 self._cart_target_buffer[0] = float(robot_state.x)
                 self._cart_target_buffer[1] = float(robot_state.y)
                 self._cart_target_buffer[2] = float(robot_state.z)
                 self._cart_target_buffer[3] = float(robot_state.rx)
                 self._cart_target_buffer[4] = float(robot_state.ry)
                 self._cart_target_buffer[5] = float(robot_state.rz)
-
-                # Apply step to the appropriate axis
                 if axis_letter in _AXIS_MAP:
-                    idx = _AXIS_MAP[axis_letter]
-                    self._cart_target_buffer[idx] += direction * step
+                    buf_idx = _AXIS_MAP[axis_letter]
+                    self._cart_target_buffer[buf_idx] += direction * step
                     await self.client.moveL(
                         self._cart_target_buffer,
                         speed=speed,
                         accel=_norm_accel(),
                     )
             except Exception as e:
-                logging.error("Incremental cart move failed: %s", e)
-            self._cart_pressed_axes[key] = False
-            self._holding_active_cart.discard(key)
-            t = ui_state.cart_jog_timer
-            if t:
-                any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
-                t.active = bool(any_pressed)
-            return
+                logger.error("Incremental cart move failed: %s", e)
 
-        if was_holding:
-            self._cart_pressed_axes[key] = False
-            self._holding_active_cart.discard(key)
+        def on_hold_start():
+            self._cart_pressed_axes[axis] = True
             t = ui_state.cart_jog_timer
             if t:
-                any_pressed = any(bool(v) for v in self._cart_pressed_axes.values())
-                if any_pressed and not t.active:
-                    self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
-                t.active = bool(any_pressed)
+                if not t.active:
+                    self._cart_cadence.reset()
+                t.active = True
+
+        def on_release(was_holding: bool):
+            self._cart_pressed_axes[axis] = False
+            _sync_timer()
+
+        await self._cart_click_hold.on_change(
+            axis,
+            is_pressed,
+            on_click=on_click,
+            on_hold_start=on_hold_start,
+            on_release=on_release,
+        )
 
     async def cart_jog_tick(self) -> None:
         """Timer callback: unified movement timer for TransformControls drag or cartesian jog."""
         with global_phase_timer.phase("jog"):
-            # Check if movement is allowed
-            if not robot_state.simulator_active and not robot_state.connected:
+            if not self._movement_allowed(notify=False):
                 return
 
             speed = _norm_speed()
@@ -762,10 +1054,16 @@ class ControlPanel:
                             break
                     if not pose_changed:
                         # Pose hasn't changed, skip sending
-                        self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
+                        self._cart_cadence.tick(
+                            time.time(),
+                            self.JOG_TICK_S,
+                            self.CADENCE_WARN_WINDOW,
+                            self.CADENCE_TOLERANCE,
+                            "cart",
+                        )
                         return
                 else:
-                    logging.debug("TCP Drag: First move (no last sent pose)")
+                    logger.debug("TCP Drag: First move (no last sent pose)")
 
                 try:
                     # Use speed for stream blending. The server enforces a
@@ -779,26 +1077,38 @@ class ControlPanel:
                     # Track what we sent to avoid duplicates
                     self._tcp_last_sent_pose = list(self._tcp_latest_pose[:6])
                 except Exception as e:
-                    logging.debug("TCP Cartesian move (timer) failed: %s", e)
-                self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
+                    logger.debug("TCP Cartesian move (timer) failed: %s", e)
+                self._cart_cadence.tick(
+                    time.time(),
+                    self.JOG_TICK_S,
+                    self.CADENCE_WARN_WINDOW,
+                    self.CADENCE_TOLERANCE,
+                    "cart",
+                )
                 return
 
             # Priority 2: legacy cart jog buttons (streamed)
             axis = self._get_first_pressed_axis()
             if axis is not None:
-                axis_name, direction, frame = _get_cart_axis_lookup()[axis]
+                axis_name, direction, frame = self._get_cart_axis_lookup()[axis]
                 await self.client.jogL(
                     frame, axis_name, speed * direction, self.STREAM_TIMEOUT_S
                 )
-            self._cadence_tick(time.time(), self._tick_stats_cart, "cart")
+            self._cart_cadence.tick(
+                time.time(),
+                self.JOG_TICK_S,
+                self.CADENCE_WARN_WINDOW,
+                self.CADENCE_TOLERANCE,
+                "cart",
+            )
 
     def _handle_tcp_cartesian_move_start(self) -> None:
         """Handle start of a TCP TransformControls drag.
 
         Ensures drag state is reset so that even small initial movements are registered.
         """
-        logging.debug("TCP Drag: START event received")
-        if not robot_state.simulator_active and not robot_state.connected:
+        logger.debug("TCP Drag: START event received")
+        if not self._movement_allowed(notify=False):
             return
 
         # Force a fresh start for the drag session
@@ -812,22 +1122,21 @@ class ControlPanel:
         # Ensure movement timer is active
         t = ui_state.cart_jog_timer
         if t and not t.active:
-            self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+            self._cart_cadence.reset()
             t.active = True
 
-    def _handle_tcp_cartesian_move(self, pose: List[float]) -> None:
+    def _handle_tcp_cartesian_move(self, pose: list[float]) -> None:
         """Handle TCP Cartesian move events from TransformControls drag operations.
 
         This sets the latest target pose and ensures the movement timer sends it.
         Recording starts on first drag event and ends on drag-end.
         Used for WRF (World Reference Frame) mode.
         """
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
+        if not self._movement_allowed(notify=False):
             return
 
         if len(pose) < 6:
-            logging.warning("Invalid pose length for Cartesian move: %d", len(pose))
+            logger.warning("Invalid pose length for Cartesian move: %d", len(pose))
             return
 
         # Cache latest target pose (x,y,z in mm, rx,ry,rz in deg)
@@ -835,7 +1144,7 @@ class ControlPanel:
 
         # Start drag session (once) and recorder
         if not self._tcp_drag_active:
-            logging.debug("TCP Drag: Move received while inactive (implicit start)")
+            logger.debug("TCP Drag: Move received while inactive (implicit start)")
             self._tcp_drag_active = True
             # Implicit start: force reset last sent pose to ensure first move is sent
             self._tcp_last_sent_pose = None
@@ -844,12 +1153,12 @@ class ControlPanel:
         # Ensure movement timer is active
         t = ui_state.cart_jog_timer
         if t and not t.active:
-            self._tick_stats_cart = {"last_ts": 0.0, "accum": 0.0, "count": 0.0}
+            self._cart_cadence.reset()
             t.active = True
 
     def _handle_tcp_cartesian_move_end(self) -> None:
         """End of a TCP TransformControls drag: wait for motion to stop, then record."""
-        logging.debug("TCP Drag: END event received")
+        logger.debug("TCP Drag: END event received")
         if self._tcp_drag_active:
             self._tcp_drag_active = False
             self._schedule_jog_end_wait()
@@ -871,39 +1180,33 @@ class ControlPanel:
         """Wait for robot motion to stop, then record the jog end position."""
         try:
             await self.client.wait_motion_complete(timeout=5.0, settle_window=0.2)
-            logging.debug("Jog: Motion stopped, recording position")
+            logger.debug("Jog: Motion stopped, recording position")
         except asyncio.CancelledError:
-            logging.debug("Jog: wait task cancelled (superseded by new jog)")
+            logger.debug("Jog: wait task cancelled (superseded by new jog)")
             return
         except Exception as e:
-            logging.warning("Jog: wait_motion_complete failed: %s", e)
+            logger.warning("Jog: wait_motion_complete failed: %s", e)
         finally:
             self._jog_end_wait_task = None
         motion_recorder.on_jog_end()
 
     async def move_joint_to_angle(self, joint_index: int, target_deg: float) -> None:
         """Move a single joint to the specified angle (deg) while holding others."""
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
-            ui.notify(
-                "Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-                color="negative",
-                icon="error",
-            )
+        if not self._movement_allowed():
             return
 
         try:
             angles = list(robot_state.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
             tgt = max(lo, min(hi, float(target_deg)))
-            pose = angles[:6]
+            pose = angles[: self._n_joints]
             pose[joint_index] = tgt
             spd = _norm_speed()
 
             await self.client.moveJ(pose, speed=spd)
             ui.notify(f"Joint J{joint_index + 1} \u2192 {tgt:.2f}°", color="primary")
         except Exception as e:
-            logging.error("Go to joint angle failed: %s", e)
+            logger.error("Go to joint angle failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
 
     async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
@@ -912,26 +1215,20 @@ class ControlPanel:
         if robot_state.editing_mode:
             return
 
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
-            ui.notify(
-                "Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-                color="negative",
-                icon="error",
-            )
+        if not self._movement_allowed():
             return
 
         try:
             angles = list(robot_state.angles.deg)
             lo, hi = self._get_joint_limits(joint_index)
 
-            target = angles[:6]
+            target = angles[: self._n_joints]
             target[joint_index] = float(lo if which == "min" else hi)
             spd = _norm_speed()
 
             await self.client.moveJ(target, speed=spd)
         except Exception as e:
-            logging.error("Go to joint limit failed: %s", e)
+            logger.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
 
     # ---- Gizmo control methods ----
@@ -964,7 +1261,7 @@ class ControlPanel:
     def on_gizmo_mode_changed(self, mode: str) -> None:
         """Switch gizmo display mode between Move (translation) and Rotate."""
         if ui_state.urdf_scene is None:
-            logging.warning("Cannot change gizmo mode: URDF scene not initialized")
+            logger.warning("Cannot change gizmo mode: URDF scene not initialized")
             return
         # Map UI values to internal mode values
         internal_mode = "TRANSLATE" if mode == "Move" else "ROTATE"
@@ -977,136 +1274,17 @@ class ControlPanel:
         """Toggle gizmo visibility and TCP TransformControls."""
         ui_state.gizmo_visible = bool(visible)
         if ui_state.urdf_scene is None:
-            logging.warning("Cannot toggle gizmo: URDF scene not initialized")
+            logger.warning("Cannot toggle gizmo: URDF scene not initialized")
             return
         ui_state.urdf_scene.set_gizmo_visible(bool(visible))
         # Enable/disable TCP TransformControls based on visibility
         if visible:
             # Re-enable with current mode
             # Determine mode from current transform mode (lowercase: "translate" or "rotate")
-            mode = ui_state.urdf_scene._tcp_transform_mode or "translate"
+            mode = ui_state.urdf_scene.tcp_transform_mode or "translate"
             ui_state.urdf_scene.enable_tcp_transform_controls(mode)
         else:
             ui_state.urdf_scene.disable_tcp_transform_controls()
-
-    # ---- E-STOP dialog methods ----
-
-    def show_estop_dialog(self, is_physical: bool) -> None:
-        """Show E-STOP dialog with Lottie animation.
-
-        Args:
-            is_physical: True for physical E-STOP (persistent until released),
-                        False for digital E-STOP (with Resume button)
-        """
-        if not self._ui_client:
-            return
-
-        with self._ui_client:
-            # If replacing a digital estop dialog with physical, remember digital is pending
-            if (
-                is_physical
-                and self._estop_dialog
-                and not self._estop_dialog_is_physical
-            ):
-                self._digital_estop_active = True
-
-            # Close existing dialog if open
-            if self._estop_dialog:
-                self._estop_dialog.close()
-                self._estop_dialog = None
-
-            # Create new dialog
-            self._estop_dialog = ui.dialog()
-            self._estop_dialog_is_physical = is_physical
-
-            # Both dialog types are persistent - physical requires button release, digital requires Resume
-            self._estop_dialog.props("persistent")
-
-            with (
-                self._estop_dialog,
-                ui.card()
-                .classes("overlay-card gap-4 items-center")
-                .mark("estop-dialog"),
-            ):
-                # Ensure lottie-player web component is loaded
-                ui.html(
-                    """<lottie-player src="https://lottie.host/b9d2fa51-2204-454e-a882-7647c6712b03/d7w0e81TRh.json" autoplay loop />""",
-                    sanitize=False,
-                ).classes("w-96")
-
-                if is_physical:
-                    # Physical E-STOP: persistent message
-                    ui.label("Physical E-STOP Active").classes(
-                        "text-xl font-bold text-negative text-center"
-                    )
-                    ui.label("The physical E-STOP button was pressed.").classes(
-                        "text-center"
-                    )
-                    ui.label("To continue, unset the E-STOP button.").classes(
-                        "text-center"
-                    )
-                else:
-                    # Digital E-STOP: with Resume button
-                    ui.label("Digital E-STOP Active").classes(
-                        "text-xl font-bold text-warning text-center"
-                    )
-                    ui.label("Robot motion has been stopped.").classes("text-center")
-
-                    async def resume():
-                        try:
-                            await self.client.resume()
-                            self._digital_estop_active = (
-                                False  # Clear digital estop state
-                            )
-                            if self._estop_dialog:
-                                self._estop_dialog.close()
-                                self._estop_dialog = None
-                        except Exception as e:
-                            logging.error("Resume after digital E-STOP failed: %s", e)
-
-                    with ui.row().classes("gap-2 justify-center w-full mt-4"):
-                        ui.button("Resume", on_click=resume).props(
-                            "color=positive size=lg"
-                        ).mark("btn-estop-resume")
-
-            self._estop_dialog.open()
-
-    def close_estop_dialog(self) -> None:
-        """Close the E-STOP dialog if open."""
-        if not self._ui_client:
-            return
-
-        with self._ui_client:
-            if self._estop_dialog:
-                self._estop_dialog.close()
-                self._estop_dialog = None
-                self._estop_dialog_is_physical = False
-
-    def check_estop_state_change(self) -> None:
-        """Monitor robot_state.io_estop and show/hide dialog as needed.
-
-        Should be called regularly from main.py's update_ui_from_status().
-        """
-        current_estop = robot_state.io_estop
-
-        # Detect transition from OK (1) to TRIGGERED (0)
-        if self._last_estop_state == 1 and current_estop == 0:
-            logging.warning("Physical E-STOP detected (io_estop 1->0)")
-            # Physical E-STOP was just pressed
-            self.show_estop_dialog(is_physical=True)
-
-        # Detect transition from TRIGGERED (0) to OK (1)
-        elif self._last_estop_state == 0 and current_estop == 1:
-            logging.info("Physical E-STOP released (io_estop 0->1)")
-            # Physical E-STOP was just released
-            if self._estop_dialog and self._estop_dialog_is_physical:
-                self.close_estop_dialog()
-                # If digital estop was active before physical, restore digital dialog
-                if self._digital_estop_active:
-                    self.show_estop_dialog(is_physical=False)
-
-        # Update last state
-        self._last_estop_state = current_estop
 
     # ---- Robot action methods ----
 
@@ -1114,55 +1292,47 @@ class ControlPanel:
         # In editing mode, move the editing robot to home position
         if robot_state.editing_mode:
             if ui_state.urdf_scene:
-                home_angles_rad = ui_state.active_robot.joints.home.rad.tolist()
-                ui_state.urdf_scene.set_editing_angles(home_angles_rad)
-                # Sync robot_state with new editing values
-                if hasattr(ui_state.urdf_scene, "_sync_robot_state_from_editing"):
-                    ui_state.urdf_scene._sync_robot_state_from_editing()
-                # Update edit bar values if present
-                if (
-                    hasattr(ui_state.urdf_scene, "_current_editing_type")
-                    and ui_state.urdf_scene._current_editing_type
-                ):
-                    if hasattr(ui_state.urdf_scene, "_update_edit_bar_values"):
-                        ui_state.urdf_scene._update_edit_bar_values(
-                            ui_state.urdf_scene._current_editing_type
-                        )
-                logging.info("HOME sent to editing robot")
+                ui_state.urdf_scene.apply_editing_home()
+                logger.info("HOME sent to editing robot")
             return
 
-        # Check if movement is allowed
-        if not robot_state.simulator_active and not robot_state.connected:
-            ui.notify(
-                "Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-                color="negative",
-                icon="error",
-            )
+        if not self._movement_allowed():
             return
 
         try:
             _ = await self.client.home()
-            logging.info("HOME sent")
+            logger.info("HOME sent")
 
             # Record the home action if recording is active
             motion_recorder.record_action("home")
         except Exception as e:
-            logging.error("HOME failed: %s", e)
+            logger.error("HOME failed: %s", e)
 
     def _is_urdf_scene_valid(self) -> bool:
         """Check if urdf_scene exists and its client is still valid."""
         if not ui_state.urdf_scene:
             return False
-        scene = getattr(ui_state.urdf_scene, "scene", None)
+        scene = ui_state.urdf_scene.scene
         if not scene:
             return False
         try:
             scene_client = scene._client()
-            if scene_client is None or scene_client._deleted:
+            if scene_client is None or scene_client.id not in Client.instances:
                 return False
         except (RuntimeError, AttributeError):
             return False
         return True
+
+    def update_robot_btn_visual(self) -> None:
+        """Update Robot/Simulator toggle button appearance."""
+        if self._robot_btn is None:
+            return
+        if robot_state.simulator_active:
+            self._robot_btn.props("color=amber-8")
+            self._robot_btn.classes("glass-btn glass-amber")
+        else:
+            self._robot_btn.props("color=grey-7")
+            self._robot_btn.classes("glass-btn")
 
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
@@ -1170,9 +1340,11 @@ class ControlPanel:
             # Stop any running user script before mode switch (safety)
             editor_panel = getattr(ui_state, "editor_panel", None)
             if editor_panel and getattr(editor_panel, "script_running", False):
-                logging.info("Stopping running script before mode switch")
-                with contextlib.suppress(Exception):
+                logger.info("Stopping running script before mode switch")
+                try:
                     await editor_panel._stop_script_process()
+                except Exception as e:
+                    logger.warning("Failed to stop script before mode switch: %s", e)
 
             # Toggle simulator mode and enable
             if not robot_state.simulator_active:
@@ -1186,7 +1358,7 @@ class ControlPanel:
                 try:
                     await self.client.resume()
                 except Exception as e:
-                    logging.warning("Resume after simulator on failed: %s", e)
+                    logger.warning("Resume after simulator on failed: %s", e)
             else:
                 await self.client.simulator_off()
                 robot_state.simulator_active = False
@@ -1197,30 +1369,23 @@ class ControlPanel:
                 try:
                     await self.client.resume()
                 except Exception as e:
-                    logging.warning("Resume after simulator off failed: %s", e)
+                    logger.warning("Resume after simulator off failed: %s", e)
 
-            # Update any visual toggle state if present
-            if callable(getattr(self, "_update_robot_btn_visual", None)):
-                self._update_robot_btn_visual()
+            self.update_robot_btn_visual()
         except Exception as ex:
             ui.notify(f"Simulator toggle failed: {ex}", color="negative")
-            logging.error("Simulator toggle failed: %s", ex)
+            logger.error("Simulator toggle failed: %s", ex)
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""
-        # Don't allow digital estop while physical estop is active
         if robot_state.io_estop == 0:
             ui.notify("Physical E-STOP is active - release it first", color="warning")
             return
 
-        # Stop robot immediately
         await self.client.halt()
-        self._digital_estop_active = True
-
-        # Show E-STOP dialog with Resume button (needs UI context)
-        if self._ui_client:
-            with self._ui_client:
-                self.show_estop_dialog(is_physical=False)
+        if self.estop:
+            self.estop._digital_active = True
+            self.estop.show(is_physical=False)
 
     def render_jog_content(self) -> None:
         """Render jog controls (tabs + grids) and settings."""
@@ -1236,16 +1401,12 @@ class ControlPanel:
             if self._step_input is None:
                 return
             tab_value = e.value if hasattr(e, "value") else e.args
-            # Get tab name from the tab object or string
-            tab_name = getattr(tab_value, "label", str(tab_value)) if tab_value else ""
-            if "Joint" in tab_name:
+            if tab_value is joint_tab:
                 self._step_input.props('suffix="°"')
-                self._step_input._props["suffix"] = "°"
                 if self._step_input_tooltip:
                     self._step_input_tooltip.text = "Step size in degrees"
-            elif "Cartesian" in tab_name:
+            elif tab_value is cart_tab:
                 self._step_input.props('suffix="mm"')
-                self._step_input._props["suffix"] = "mm"
                 if self._step_input_tooltip:
                     self._step_input_tooltip.text = "Step size in mm"
             self._step_input.update()
@@ -1259,14 +1420,7 @@ class ControlPanel:
         ):
             # Joint jog panel
             with ui.tab_panel(joint_tab).classes("gap-1"):
-                joint_names = [
-                    "Base",
-                    "Shoulder",
-                    "Elbow",
-                    "Wrist 1",
-                    "Wrist 2",
-                    "Wrist 3",
-                ]
+                joint_names = list(ui_state.active_robot.joints.names)
 
                 def make_joint_row(idx: int, name: str):
                     with ui.grid(rows="auto", columns="60px auto 80px").classes(
@@ -1292,23 +1446,34 @@ class ControlPanel:
                                 backward=_bar_backward,
                             )
 
-                            # Centered numeric input to allow exact setpoint
-                            num = (
-                                ui.number(
-                                    value=0.0,
-                                    min=lo,
-                                    max=hi,
-                                    step=0.1,
-                                    format="%.1f",
-                                    suffix="°",
-                                )
-                                .props(
-                                    'dense borderless input-style="text-align:right"'
-                                )
+                            # Centered position + speed overlay
+                            with (
+                                ui.row()
+                                .classes("items-center gap-1 no-wrap")
                                 .style(
-                                    "position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:50px;"
+                                    "position:absolute; left:50%; top:50%;"
+                                    " transform:translate(-50%,-50%);"
                                 )
-                            )
+                            ):
+                                num = (
+                                    ui.number(
+                                        value=0.0,
+                                        min=lo,
+                                        max=hi,
+                                        step=0.1,
+                                        format="%.1f",
+                                        suffix="°",
+                                    )
+                                    .props(
+                                        'dense borderless input-style="text-align:right;font-weight:bold"'
+                                    )
+                                    .style("width:55px;")
+                                )
+                                spd_lbl = (
+                                    ui.label("")
+                                    .classes("text-xs opacity-60")
+                                    .style("min-width:2rem;")
+                                )
 
                             def _num_backward(a, i=idx) -> float | None:
                                 if len(a) <= i or not math.isfinite(a[i]):
@@ -1321,17 +1486,27 @@ class ControlPanel:
                                 backward=_num_backward,
                             )
 
+                            def _spd_backward(s, i=idx) -> str:
+                                if len(s) <= i:
+                                    return ""
+                                v = abs(s[i])
+                                return f"{v:.0f}°/s" if v >= 1.0 else ""
+
+                            spd_lbl.bind_text_from(
+                                robot_state,
+                                "speeds",
+                                backward=_spd_backward,
+                            )
+
                             def _submit_exact(e=None, i=idx, n=num):
                                 try:
                                     val = (
                                         float(n.value) if n.value is not None else None
                                     )
-                                except Exception:
+                                except (ValueError, TypeError):
                                     val = None
                                 if val is not None:
-                                    asyncio.create_task(
-                                        self.move_joint_to_angle(i, val)
-                                    )
+                                    _safe_task(self.move_joint_to_angle(i, val))
 
                             num.on("blur", _submit_exact)
                             num.on("keydown.enter", _submit_exact)
@@ -1402,7 +1577,7 @@ class ControlPanel:
                             min_btn = (
                                 ui.button(
                                     icon="first_page",
-                                    on_click=lambda e, i=idx: asyncio.create_task(
+                                    on_click=lambda e, i=idx: _safe_task(
                                         self.go_to_joint_limit(i, "min")
                                     ),
                                 )
@@ -1413,7 +1588,7 @@ class ControlPanel:
                             max_btn = (
                                 ui.button(
                                     icon="last_page",
-                                    on_click=lambda e, i=idx: asyncio.create_task(
+                                    on_click=lambda e, i=idx: _safe_task(
                                         self.go_to_joint_limit(i, "max")
                                     ),
                                 )
@@ -1518,6 +1693,49 @@ class ControlPanel:
                     self._settings_content = SettingsContent(self.client)
                     self._settings_content.build_embedded()
 
+    def _build_rating_row(
+        self,
+        *,
+        icon_name: str,
+        storage_key: str,
+        ui_attr: str,
+        default_color: str,
+        colors: list[str],
+        format_tooltip: Callable[[float], str],
+    ) -> None:
+        """Build a 10-step rating row (speed or acceleration) with persistence."""
+        unit = 10
+        with ui.row().classes("items-center gap-2 w-full"):
+            icon = ui.icon(icon_name, size="md", color=default_color)
+            with icon:
+                tooltip = ui.tooltip(storage_key.replace("_", " ").title())
+            stored = app.storage.general.get(storage_key, getattr(ui_state, ui_attr))
+            setattr(ui_state, ui_attr, stored)
+            v_init = max(1, min(10, round(int(stored) / unit)))
+
+            def _on_change(
+                e,
+                _icon=icon,
+                _tooltip=tooltip,
+                _colors=colors,
+                _key=storage_key,
+                _attr=ui_attr,
+                _fmt=format_tooltip,
+            ):
+                val = max(1, min(10, int(e.args) if e.args else 1))
+                setattr(ui_state, _attr, int(val * unit))
+                app.storage.general[_key] = int(val * unit)
+                _icon.props(f"color={_colors[val - 1]}")
+                _tooltip.text = _fmt(val / 10.0)
+
+            rating = ui.rating(max=10, icon="circle", value=v_init).props(
+                f':color="{colors}"'
+            )
+            rating.on("update:model-value", _on_change)
+            if v_init > 0:
+                icon.props(f"color={colors[v_init - 1]}")
+                tooltip.text = format_tooltip(v_init / 10.0)
+
     def build(self, anchor: str = "bl") -> None:
         """Render the bottom-left control panel (overlay-bl).
 
@@ -1526,113 +1744,29 @@ class ControlPanel:
         """
         # Capture UI client for background task operations
         self._ui_client = ui.context.client
+        self.estop = _EStopManager(self.client, lambda: self._ui_client)
+
+        def ui_client_fn() -> object:
+            return self._ui_client
+
+        self._joint_click_hold = _ClickHoldHandler(
+            self.CLICK_HOLD_THRESHOLD_S, ui_client_fn
+        )
+        self._cart_click_hold = _ClickHoldHandler(
+            self.CLICK_HOLD_THRESHOLD_S, ui_client_fn
+        )
 
         with ui.card().classes(f"overlay-panel overlay-card overlay-{anchor} gap-1"):
-            # Two-column layout: left column with two rows, right column with E-STOP spanning both rows
             with ui.column().classes("gap-2 w-full"):
                 with ui.row().classes("items-center w-full"):
-                    # Left column: Speed/Step row + Controls row
                     with ui.column().classes("gap-1 flex-grow"):
-                        # Speed + Step (single compact row)
-                        with ui.row().classes("items-center gap-2 w-full"):
-                            speed_icon = ui.icon(
-                                "speed", size="md", color="amber-6"
-                            ).tooltip("Jog speed")
-                            # Map 10 rating steps across the configured max jog speed
-                            # unit = percentage per rating step
-                            unit = max(1, int(100 / 10))
-                            # Load persisted value or use default
-                            stored_speed = app.storage.general.get(
-                                "jog_speed", ui_state.jog_speed
-                            )
-                            ui_state.jog_speed = stored_speed
-                            v_init = max(
-                                1, min(10, round(int(ui_state.jog_speed) / unit))
-                            )
-                            # Yellow→red gradient for 10 speed levels (continuously darkening)
-                            speed_colors_list = [
-                                "yellow-4",
-                                "yellow-6",
-                                "amber-5",
-                                "amber-7",
-                                "orange-6",
-                                "orange-8",
-                                "deep-orange-6",
-                                "deep-orange-8",
-                                "red-7",
-                                "red-9",
-                            ]
+                        self._build_speed_accel_rows()
 
-                            def update_speed(e):
-                                val = int(e.args) if e.args else 1
-                                val = max(1, min(10, val))
-                                setattr(ui_state, "jog_speed", int(val * unit))
-                                # Persist to storage
-                                app.storage.general["jog_speed"] = int(val * unit)
-                                # Update icon color
-                                color = speed_colors_list[val - 1]
-                                speed_icon.props(f"color={color}")
-
-                            v_rating = ui.rating(
-                                max=10, icon="circle", value=v_init
-                            ).props(f':color="{speed_colors_list}"')
-                            v_rating.on("update:model-value", update_speed)
-
-                            # Initialize icon color
-                            if v_init > 0:
-                                speed_icon.props(
-                                    f"color={speed_colors_list[v_init - 1]}"
-                                )
-
-                        # Acceleration rating row
-                        with ui.row().classes("items-center gap-2 w-full"):
-                            accel_icon = ui.icon(
-                                "bolt", size="md", color="cyan-6"
-                            ).tooltip("Jog acceleration")
-                            # Map 10 rating steps across 100% acceleration
-                            accel_unit = max(1, int(100 / 10))
-                            # Load persisted value or use default
-                            stored_accel = app.storage.general.get(
-                                "jog_accel", ui_state.jog_accel
-                            )
-                            ui_state.jog_accel = stored_accel
-                            accel_init = max(
-                                1, min(10, round(int(ui_state.jog_accel) / accel_unit))
-                            )
-                            # Electric Green gradient for 10 acceleration levels (neon/energy feel)
-                            accel_colors_list = [
-                                "lime-3",
-                                "lime-4",
-                                "light-green-4",
-                                "light-green-5",
-                                "green-6",
-                                "green-7",
-                                "teal-7",
-                                "teal-8",
-                                "cyan-8",
-                                "cyan-9",
-                            ]
-
-                            def update_accel(e):
-                                val = int(e.args) if e.args else 1
-                                val = max(1, min(10, val))
-                                setattr(ui_state, "jog_accel", int(val * accel_unit))
-                                # Persist to storage
-                                app.storage.general["jog_accel"] = int(val * accel_unit)
-                                # Update icon color
-                                color = accel_colors_list[val - 1]
-                                accel_icon.props(f"color={color}")
-
-                            accel_rating = ui.rating(
-                                max=10, icon="circle", value=accel_init
-                            ).props(f':color="{accel_colors_list}"')
-                            accel_rating.on("update:model-value", update_accel)
-
-                            # Initialize icon color
-                            if accel_init > 0:
-                                accel_icon.props(
-                                    f"color={accel_colors_list[accel_init - 1]}"
-                                )
+                    # Tool quick-action box
+                    self.tool_actions = _ToolQuickActions(
+                        self.client, self._movement_allowed
+                    )
+                    self.tool_actions.build()
 
                     # Right column: Large E-STOP spanning both rows
                     ui.button(
@@ -1640,138 +1774,193 @@ class ControlPanel:
                     ).props("round unelevated").classes(
                         "ml-auto glass-btn text-2xl"
                     ).tooltip("E-Stop (Esc)").mark("btn-estop")
-                # Home, Robot/Simulator toggle, gizmo controls, and camera reset
-                with ui.row().classes("gap-2 items-center"):
-                    ui.button(icon="home", on_click=self.send_home).props(
-                        "dense round unelevated color=teal-6"
-                    ).tooltip("Home (H)").mark("btn-home")
 
-                    # Single-button Robot/Simulator toggle (precision_manufacturing)
-                    robot_btn = (
-                        ui.button(
-                            icon="precision_manufacturing",
-                            on_click=self.on_toggle_sim,
-                        )
-                        .props("round unelevated dense")
-                        .tooltip("Robot/Simulator")
-                    )
-                    robot_btn.mark("btn-robot-toggle")
-
-                    def _update_robot_btn_visual():
-                        sim = bool(getattr(robot_state, "simulator_active", False))
-                        if sim:
-                            # Simulator active: amber (see theme.py SceneColors.SIM_AMBER)
-                            robot_btn.props("color=amber-8")
-                            robot_btn.classes("glass-btn glass-amber")
-                        else:
-                            # Robot mode: muted appearance
-                            robot_btn.props("color=grey-7")
-                            robot_btn.classes("glass-btn")
-
-                    self._update_robot_btn_visual = (
-                        _update_robot_btn_visual  # store for reuse
-                    )
-                    _update_robot_btn_visual()
-
-                    # Gizmo mode button group (rounded icons, single-select)
-                    selected = {"value": "Move"}
-                    buttons: dict[str, ui.button] = {}
-
-                    def set_gizmo_mode(mode: str):
-                        if mode == "Hidden":
-                            asyncio.create_task(self.on_gizmo_toggle(False))
-                        else:
-                            asyncio.create_task(self.on_gizmo_toggle(True))
-                            self.on_gizmo_mode_changed(mode)
-                        selected["value"] = mode
-                        # Update visual state
-                        for m, btn in buttons.items():
-                            if m == mode:
-                                btn.props("color=primary")
-                            else:
-                                btn.props("color=grey-7")
-
-                    with ui.button_group().props("rounded unelevated dense"):
-                        buttons["Move"] = (
-                            ui.button(
-                                icon="open_with",
-                                on_click=lambda e, m="Move": set_gizmo_mode(m),
-                            )
-                            .props("round unelevated dense")
-                            .tooltip("Translate gizmo mode")
-                        )
-                        buttons["Rotate"] = (
-                            ui.button(
-                                icon="sync",
-                                on_click=lambda e, m="Rotate": set_gizmo_mode(m),
-                            )
-                            .props("round unelevated dense")
-                            .tooltip("Rotate gizmo mode")
-                        )
-                        buttons["Hidden"] = (
-                            ui.button(
-                                icon="visibility_off",
-                                on_click=lambda e, m="Hidden": set_gizmo_mode(m),
-                            )
-                            .props("round unelevated dense")
-                            .tooltip("Hide gizmo")
-                        )
-                        # Set visual state only - defer actual gizmo calls until URDF scene is ready
-                        selected["value"] = "Move"
-                        buttons["Move"].props("color=primary")
-                        buttons["Rotate"].props("color=grey-7")
-                        buttons["Hidden"].props("color=grey-7")
-
-                    # Reset camera button
-                    def _reset_cam():
-                        try:
-                            if ui_state.urdf_scene and ui_state.urdf_scene.scene:
-                                ui_state.urdf_scene.scene.move_camera(
-                                    x=0.3,
-                                    y=0.3,
-                                    z=0.22,
-                                    look_at_z=0.22,
-                                    duration=0.0,
-                                )
-                        except Exception as e:
-                            logging.error("Reset camera failed: %s", e)
-
-                    ui.button(icon="view_in_ar", on_click=_reset_cam).props(
-                        "round unelevated dense color=light-blue-6"
-                    ).tooltip("Reset camera")
-                    ui.space()
-                    with ui.row(align_items="center").classes("gap-1"):
-                        ui.label("Step:").classes("text-white")
-                        self._step_input = (
-                            ui.number(
-                                value=ui_state.joint_step_deg,
-                                min=1,
-                                max=100.0,
-                                step=1,
-                                format="%.1f",
-                                suffix="°",
-                            )
-                            .props(
-                                'dense borderless hide-bottom-space input-style="text-align:right"'
-                            )
-                            .bind_value(ui_state, "joint_step_deg")
-                        )
-                        with self._step_input:
-                            self._step_input_tooltip = ui.tooltip(
-                                "Step size in degrees"
-                            )
+                self._build_action_row()
 
             # Jog controls (tabs + grids)
             self.render_jog_content()
+
+    def _build_speed_accel_rows(self) -> None:
+        """Build speed and acceleration rating rows."""
+
+        def _format_speed_tooltip(fraction: float) -> str:
+            pct = int(fraction * 100)
+            try:
+                robot = ui_state.active_robot
+                n = robot.joints.count
+                jog_vel_deg = np.rad2deg(robot.joints.limits.jog.velocity) * fraction
+                cart = robot.cartesian_limits
+                lin_mm_s = cart.velocity.linear * 1000 * fraction
+                ang_deg_s = np.degrees(cart.velocity.angular) * fraction
+                joints_str = ", ".join(f"{v:.0f}" for v in jog_vel_deg)
+                return (
+                    f"Jog Speed: {pct}%"
+                    f" | L: {lin_mm_s:.0f} mm/s, {ang_deg_s:.0f} °/s"
+                    f" | J1-{n}: {joints_str} °/s"
+                )
+            except (AttributeError, TypeError):
+                return f"Jog Speed: {pct}%"
+
+        def _format_accel_tooltip(fraction: float) -> str:
+            pct = int(fraction * 100)
+            try:
+                robot = ui_state.active_robot
+                n = robot.joints.count
+                jog_acc_deg = (
+                    np.rad2deg(robot.joints.limits.jog.acceleration) * fraction
+                )
+                cart = robot.cartesian_limits
+                lin_mm_s2 = cart.acceleration.linear * 1000 * fraction
+                ang_deg_s2 = np.degrees(cart.acceleration.angular) * fraction
+                joints_str = ", ".join(f"{v:.0f}" for v in jog_acc_deg)
+                return (
+                    f"Jog Accel: {pct}%"
+                    f" | L: {lin_mm_s2:.0f} mm/s², {ang_deg_s2:.0f} °/s²"
+                    f" | J1-{n}: {joints_str} °/s²"
+                )
+            except (AttributeError, TypeError):
+                return f"Jog Accel: {pct}%"
+
+        self._build_rating_row(
+            icon_name="speed",
+            storage_key="jog_speed",
+            ui_attr="jog_speed",
+            default_color="amber-6",
+            colors=[
+                "yellow-3",
+                "yellow-6",
+                "amber-4",
+                "amber-7",
+                "orange-5",
+                "orange-8",
+                "deep-orange-5",
+                "deep-orange-8",
+                "red-7",
+                "red-9",
+            ],
+            format_tooltip=_format_speed_tooltip,
+        )
+        self._build_rating_row(
+            icon_name="bolt",
+            storage_key="jog_accel",
+            ui_attr="jog_accel",
+            default_color="cyan-6",
+            colors=[
+                "lime-3",
+                "lime-6",
+                "light-green-4",
+                "light-green-7",
+                "green-5",
+                "green-8",
+                "teal-6",
+                "teal-8",
+                "cyan-7",
+                "cyan-9",
+            ],
+            format_tooltip=_format_accel_tooltip,
+        )
+
+    def _build_action_row(self) -> None:
+        """Build the action row: Home, Robot/Sim toggle, gizmo controls, camera reset, step input."""
+        with ui.row().classes("gap-2 items-center"):
+            ui.button(icon="home", on_click=self.send_home).props(
+                "dense round unelevated color=teal-6"
+            ).tooltip("Home (H)").mark("btn-home")
+
+            # Single-button Robot/Simulator toggle
+            robot_btn = (
+                ui.button(
+                    icon="precision_manufacturing",
+                    on_click=self.on_toggle_sim,
+                )
+                .props("round unelevated dense")
+                .tooltip("Robot/Simulator")
+            )
+            robot_btn.mark("btn-robot-toggle")
+            self._robot_btn = robot_btn
+            self.update_robot_btn_visual()
+
+            # Gizmo mode button group
+            selected = {"value": "Move"}
+            buttons: dict[str, ui.button] = {}
+
+            def set_gizmo_mode(mode: str):
+                if mode == "Hidden":
+                    _safe_task(self.on_gizmo_toggle(False))
+                else:
+                    _safe_task(self.on_gizmo_toggle(True))
+                    self.on_gizmo_mode_changed(mode)
+                selected["value"] = mode
+                for m, btn in buttons.items():
+                    btn.props("color=primary" if m == mode else "color=grey-7")
+
+            with ui.button_group().props("rounded unelevated dense"):
+                buttons["Move"] = (
+                    ui.button(
+                        icon="open_with",
+                        on_click=lambda e, m="Move": set_gizmo_mode(m),
+                    )
+                    .props("round unelevated dense")
+                    .tooltip("Translate gizmo mode")
+                )
+                buttons["Rotate"] = (
+                    ui.button(
+                        icon="sync",
+                        on_click=lambda e, m="Rotate": set_gizmo_mode(m),
+                    )
+                    .props("round unelevated dense")
+                    .tooltip("Rotate gizmo mode")
+                )
+                buttons["Hidden"] = (
+                    ui.button(
+                        icon="visibility_off",
+                        on_click=lambda e, m="Hidden": set_gizmo_mode(m),
+                    )
+                    .props("round unelevated dense")
+                    .tooltip("Hide gizmo")
+                )
+                buttons["Move"].props("color=primary")
+                buttons["Rotate"].props("color=grey-7")
+                buttons["Hidden"].props("color=grey-7")
+
+            # Reset camera button
+            def _reset_cam():
+                try:
+                    if ui_state.urdf_scene and ui_state.urdf_scene.scene:
+                        ui_state.urdf_scene.scene.move_camera(
+                            **DEFAULT_CAMERA, duration=0.0
+                        )
+                except Exception as e:
+                    logger.error("Reset camera failed: %s", e)
+
+            ui.button(icon="view_in_ar", on_click=_reset_cam).props(
+                "round unelevated dense color=light-blue-6"
+            ).tooltip("Reset camera")
+            ui.space()
+            with ui.row(align_items="center").classes("gap-1"):
+                ui.label("Step:").classes("text-white")
+                self._step_input = (
+                    ui.number(
+                        value=ui_state.joint_step_deg,
+                        min=1,
+                        max=100.0,
+                        step=1,
+                        format="%.1f",
+                        suffix="°",
+                    )
+                    .props(
+                        'dense borderless hide-bottom-space input-style="text-align:right"'
+                    )
+                    .bind_value(ui_state, "joint_step_deg")
+                )
+                with self._step_input:
+                    self._step_input_tooltip = ui.tooltip("Step size in degrees")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""
         if self._settings_content is not None:
             self._settings_content.cleanup()
-        # Cancel any active hold timers
-        for tm in self._hold_timers.values():
-            tm.cancel()
-        self._hold_timers.clear()
-        for tm in self._hold_timers_cart.values():
-            tm.cancel()
-        self._hold_timers_cart.clear()
+        if self._joint_click_hold:
+            self._joint_click_hold.cleanup()
+        if self._cart_click_hold:
+            self._cart_click_hold.cleanup()

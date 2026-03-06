@@ -1,28 +1,66 @@
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 from nicegui import binding
+from waldoctl import ActionState, ToolStatus
+
 from parol_commander.common.loop_timer import PhaseTimer
-from typing_extensions import dataclass_transform
+
+logger = logging.getLogger(__name__)
 
 # Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
 if TYPE_CHECKING:
-    from nicegui.elements.timer import Timer
+    from typing import dataclass_transform
+
     from parol_commander.services.urdf_scene import UrdfScene
-    from parol_commander.components.editor import EditorPanel
-    from parol_commander.components.control import ControlPanel
-    from parol_commander.components.readout import ReadoutPanel
-    from parol_commander.robot_interface import Robot
+    from waldoctl import Robot
 
     @dataclass_transform(field_specifiers=(field,))
     def bindable_dataclass(cls=None, /, **kwargs):
-        return cls  # type: ignore[return-value]
+        return cls
 else:
     bindable_dataclass = binding.bindable_dataclass
+
+
+class ChangeNotifierMixin:
+    """Mixin providing add/remove/notify change-listener pattern.
+
+    Uses copy-on-write: add/remove replace the list reference so that
+    notify_changed can iterate without allocation or mutation risk.
+
+    Subclasses using @dataclass should declare:
+        _change_listeners: list[Callable[[], None]] = field(default_factory=list, repr=False)
+    If omitted, the list is auto-created on first use.
+    """
+
+    _change_listeners: list[Callable[[], None]]
+
+    def _get_listeners(self) -> list[Callable[[], None]]:
+        try:
+            return self._change_listeners
+        except AttributeError:
+            self._change_listeners = []
+            return self._change_listeners
+
+    def add_change_listener(self, callback: Callable[[], None]) -> None:
+        listeners = self._get_listeners()
+        if callback not in listeners:
+            self._change_listeners = [*listeners, callback]
+
+    def remove_change_listener(self, callback: Callable[[], None]) -> None:
+        self._change_listeners = [
+            cb for cb in self._get_listeners() if cb is not callback
+        ]
+
+    def notify_changed(self) -> None:
+        for cb in self._get_listeners():
+            cb()
 
 
 class AngleArray:
@@ -66,91 +104,52 @@ class AngleArray:
         return float(self._deg[idx])
 
 
-class OrientationArray:
-    """Dual-representation orientation array storing both degrees and radians.
+class ToolTimeSeries:
+    """Rolling time series buffer for tool telemetry (position, force, current).
 
-    Stores rx, ry, rz (roll, pitch, yaw) in both units. Conversion
-    happens once at update time via set_deg() or set_rad().
+    Samples at 10 Hz from the 50 Hz status loop.  Chart timers read via
+    ``get_series()`` — no locking needed since both sides run on the
+    same asyncio event loop.
+
+    Uses column-oriented storage to avoid zip-transpose on every read.
     """
 
-    __slots__ = ("_deg", "_rad")
+    __slots__ = ("_ts", "_pos", "_frc", "_cur", "_maxlen", "_interval", "_last_ts")
 
-    def __init__(self) -> None:
-        self._deg = np.zeros(3, dtype=np.float64)
-        self._rad = np.zeros(3, dtype=np.float64)
+    def __init__(self, max_points: int = 300) -> None:
+        self._maxlen = max_points
+        self._ts: deque[float] = deque(maxlen=max_points)
+        self._pos: deque[float] = deque(maxlen=max_points)
+        self._frc: deque[float] = deque(maxlen=max_points)
+        self._cur: deque[float] = deque(maxlen=max_points)
+        self._interval: float = 0.1  # 10 Hz
+        self._last_ts: float = 0.0
 
-    @property
-    def deg(self) -> np.ndarray:
-        """Orientation in degrees [rx, ry, rz]."""
-        return self._deg
+    def maybe_push(self, position: float, force: float, current: float) -> bool:
+        """Append a sample if ≥ ``_interval`` seconds have elapsed."""
+        now = time.time()
+        if now - self._last_ts < self._interval:
+            return False
+        self._ts.append(now)
+        self._pos.append(position)
+        self._frc.append(force)
+        self._cur.append(current)
+        self._last_ts = now
+        return True
 
-    @property
-    def rad(self) -> np.ndarray:
-        """Orientation in radians [rx, ry, rz]."""
-        return self._rad
+    def get_series(self) -> tuple[list[float], list[float], list[float], list[float]]:
+        """Return ``(timestamps, positions, forces, currents)`` for charting."""
+        return list(self._ts), list(self._pos), list(self._frc), list(self._cur)
 
-    def set_deg(self, values: np.ndarray) -> None:
-        """Set orientation from degrees, computing radians in-place."""
-        self._deg[:] = values
-        np.deg2rad(self._deg, out=self._rad)
-
-    def set_rad(self, values: np.ndarray) -> None:
-        """Set orientation from radians, computing degrees in-place."""
-        self._rad[:] = values
-        np.rad2deg(self._rad, out=self._deg)
-
-    def __len__(self) -> int:
-        return len(self._deg)
-
-    def __getitem__(self, idx: int) -> float:
-        """Index access returns degrees (for backwards compatibility)."""
-        return float(self._deg[idx])
-
-
-@dataclass
-class JointAngles:
-    values: list[float] = field(default_factory=lambda: [0.0] * 6)
+    def clear(self) -> None:
+        self._ts.clear()
+        self._pos.clear()
+        self._frc.clear()
+        self._cur.clear()
+        self._last_ts = 0.0
 
 
-@dataclass
-class RobotPose:
-    x: float = 0.0  # mm
-    y: float = 0.0  # mm
-    z: float = 0.0  # mm
-    rx: float = 0.0  # deg
-    ry: float = 0.0  # deg
-    rz: float = 0.0  # deg
-
-
-@dataclass
-class RobotIO:
-    in1: int = 0
-    in2: int = 0
-    out1: int = 0
-    out2: int = 0
-    estop: int = 1  # 1=OK, 0=TRIGGERED
-
-
-@dataclass
-class GripperStatus:
-    device_id: int = 0
-    position: int = 0
-    speed: int = 0
-    current: int = 0
-    status_byte: int = 0
-    object_detected: int = 0  # 0=no, 1=closing, 2=opening
-
-
-@dataclass
-class StatusSnapshot:
-    pose: RobotPose | None = None
-    joint_angles: JointAngles | None = None
-    io: RobotIO | None = None
-    gripper: GripperStatus | None = None
-    timestamp: float = 0.0
-
-
-@dataclass
+@dataclass(slots=True)
 class ProgramTarget:
     id: str  # Unique identifier (UUID)
     line_number: int  # Line number in the editor (1-based)
@@ -158,23 +157,13 @@ class ProgramTarget:
     move_type: str  # "cartesian", "pose", "joints"
     scene_object_id: str  # ID of the 3D marker object in the scene
 
-    def to_dict(self) -> dict:
-        """Serialize to dict for subprocess communication."""
-        return {
-            "id": self.id,
-            "line_number": self.line_number,
-            "pose": self.pose,
-            "move_type": self.move_type,
-            "scene_object_id": self.scene_object_id,
-        }
-
     @classmethod
     def from_dict(cls, d: dict) -> "ProgramTarget":
         """Deserialize from dict."""
         return cls(**d)
 
 
-@dataclass
+@dataclass(slots=True)
 class PathSegment:
     points: list[list[float]]  # List of [x, y, z] points defining the segment
     color: str  # Hex color code (green, blue, orange, red)
@@ -189,44 +178,27 @@ class PathSegment:
     requested_duration: float | None = None  # User-requested duration
     timing_feasible: bool = True  # Whether motion achievable in requested time
 
-    def to_dict(self) -> dict:
-        """Serialize to dict for subprocess communication."""
-        return {
-            "points": self.points,
-            "color": self.color,
-            "is_valid": self.is_valid,
-            "line_number": self.line_number,
-            "joints": self.joints,
-            "move_type": self.move_type,
-            "is_dashed": self.is_dashed,
-            "show_arrows": self.show_arrows,
-            "estimated_duration": self.estimated_duration,
-            "requested_duration": self.requested_duration,
-            "timing_feasible": self.timing_feasible,
-        }
-
     @classmethod
     def from_dict(cls, d: dict) -> "PathSegment":
         """Deserialize from dict."""
         return cls(**d)
 
 
-@dataclass
-class PlaybackState:
-    """State for unified playback (simulation and robot execution)."""
-
-    is_playing: bool = False
-    is_simulating: bool = False  # True = sim mode, False = robot execution
-    current_step: int = 0
-    total_steps: int = 0
-    playback_speed: float = 1.0  # 1.0, 2.0, 4.0, 8.0
-    scrub_interactive: bool = True  # False in robot mode
+@dataclass(slots=True)
+class ToolAction:
+    tcp_pose: list[float] | None
+    motions: list[dict[str, Any]]
+    target_positions: tuple[float, ...]
+    activation_type: str
+    line_number: int
+    method: str
 
 
 @bindable_dataclass
-class SimulationState:
+class SimulationState(ChangeNotifierMixin):
     targets: list[ProgramTarget] = field(default_factory=list)
     path_segments: list[PathSegment] = field(default_factory=list)
+    tool_actions: list[ToolAction] = field(default_factory=list)
     current_step_index: int = 0
     total_steps: int = 0
     is_playing: bool = False
@@ -240,34 +212,28 @@ class SimulationState:
         default_factory=list, repr=False
     )
 
-    def add_change_listener(self, callback: Callable[[], None]) -> None:
-        """Register a callback to be notified when simulation state changes."""
-        if callback not in self._change_listeners:
-            self._change_listeners.append(callback)
-
-    def remove_change_listener(self, callback: Callable[[], None]) -> None:
-        """Unregister a previously registered callback."""
-        if callback in self._change_listeners:
-            self._change_listeners.remove(callback)
-
-    async def notify_changed(self) -> None:
-        """Notify all registered listeners that state has changed.
-
-        Yields control before calling listeners to avoid modifying UI during
-        event handling, which can cause 'dictionary changed size during iteration'.
-        """
-        import asyncio
-
-        await asyncio.sleep(0)
-        for cb in self._change_listeners:
-            cb()
+    def reset(self) -> None:
+        self.targets.clear()
+        self.path_segments.clear()
+        self.tool_actions.clear()
+        self.current_step_index = 0
+        self.total_steps = 0
+        self.is_playing = False
+        self.playback_speed = 1.0
+        self.preview_mode = False
+        self.paths_visible = True
+        self.envelope_visible = False
+        self.envelope_mode = "auto"
+        self.active_cursor_line = 0
+        self._change_listeners = []
 
 
 @bindable_dataclass
 class RecordingState:
     is_recording: bool = False
-    mode: str = "manual"  # "manual", "continuous", "post_jog"
-    capture_interval_s: float = 0.5
+
+    def reset(self) -> None:
+        self.is_recording = False
 
 
 # Extended shared state singletons for cross-module access
@@ -281,37 +247,36 @@ class RecordingState:
         "rx",
         "ry",
         "rz",
-        "io_in1",
-        "io_in2",
-        "io_out1",
-        "io_out2",
+        "io_inputs",
+        "io_outputs",
         "io_estop",
-        "grip_id",
-        "grip_pos",
-        "grip_speed",
-        "grip_current",
-        "grip_obj",
+        "tool_key",
+        "tool_position",
+        "tool_force",
+        "tool_current",
+        "tool_engaged",
+        "tool_part_detected",
         "simulator_active",
         "action_current",
         "action_state",
+        "action_params",
         "editing_mode",
+        "tcp_speed",
     ]
 )
-class RobotState:
+class RobotState(ChangeNotifierMixin):
     # Preallocated arrays for zero-allocation hot path updates
     angles: AngleArray = field(default_factory=AngleArray)  # joint angles (deg/rad)
-    orientation: OrientationArray = field(
-        default_factory=OrientationArray
+    orientation: AngleArray = field(
+        default_factory=lambda: AngleArray(size=3)
     )  # rx/ry/rz (deg/rad)
     pose: np.ndarray = field(
         default_factory=lambda: np.zeros(16, dtype=np.float64)
     )  # homogeneous transform flattened
     io: np.ndarray = field(
         default_factory=lambda: np.zeros(5, dtype=np.int32)
-    )  # [in1,in2,out1,out2,estop]
-    gripper: np.ndarray = field(
-        default_factory=lambda: np.zeros(6, dtype=np.int32)
-    )  # [id,pos,spd,cur,status,obj]
+    )  # [inputs..., outputs..., estop] — resized at startup
+    tool_status: ToolStatus = field(default_factory=ToolStatus)
     # Movement enablement arrays from STATUS (12 ints each)
     joint_en: np.ndarray = field(default_factory=lambda: np.ones(12, dtype=np.int32))
     cart_en: dict[str, np.ndarray] = field(default_factory=dict)
@@ -323,24 +288,28 @@ class RobotState:
     rx: float = 0.0
     ry: float = 0.0
     rz: float = 0.0
-    io_in1: int = 0
-    io_in2: int = 0
-    io_out1: int = 0
-    io_out2: int = 0
+    # Dynamic IO lists (length determined by robot.digital_inputs / digital_outputs)
+    io_inputs: list[int] = field(default_factory=list)
+    io_outputs: list[int] = field(default_factory=list)
     io_estop: int = 1
-    grip_id: int = 0
-    grip_pos: int = 0
-    grip_speed: int = 0
-    grip_current: int = 0
-    grip_obj: int = 0
+    tool_key: str = "NONE"
+    tool_position: float = 0.0
+    tool_force: float = 0.0
+    tool_current: float = 0.0
+    tool_engaged: bool = False
+    tool_part_detected: bool = False
+    tool_time_series: ToolTimeSeries = field(default_factory=ToolTimeSeries)
+    speeds: np.ndarray = field(
+        default_factory=lambda: np.zeros(6, dtype=np.float64)
+    )  # deg/s
+    tcp_speed: float = 0.0  # mm/s
     simulator_active: bool = False
     action_current: str = ""
-    action_state: str = ""
+    action_state: ActionState = ActionState.IDLE
+    action_params: str = ""
     executing_index: int = -1
     completed_index: int = -1
-    last_checkpoint: str = ""
     last_update_ts: float = 0.0  # timestamp of last STATUS update
-    action_queue: list[dict] = field(default_factory=list)
     # Editing mode - when True, x/y/z/angles are controlled by target editor
     editing_mode: bool = False
     _change_listeners: list[Callable[[], None]] = field(
@@ -351,33 +320,69 @@ class RobotState:
         """Initialize cart_en arrays for each Cartesian frame."""
         self.cart_en = {f: np.ones(12, dtype=np.int32) for f in frames}
 
-    def add_change_listener(self, callback: Callable[[], None]) -> None:
-        """Register a callback to be notified when robot state changes."""
-        if callback not in self._change_listeners:
-            self._change_listeners.append(callback)
-
-    def remove_change_listener(self, callback: Callable[[], None]) -> None:
-        """Unregister a previously registered callback."""
-        if callback in self._change_listeners:
-            self._change_listeners.remove(callback)
-
-    def notify_changed(self) -> None:
-        """Notify all registered listeners that state has changed."""
-        for cb in self._change_listeners:
-            cb()
+    def reset(self) -> None:
+        """Reset to defaults. Arrays are zeroed in-place; cart_en frames preserved."""
+        self.angles.set_deg(np.zeros(len(self.angles), dtype=np.float64))
+        self.orientation.set_deg(np.zeros(3, dtype=np.float64))
+        self.pose[:] = 0.0
+        self.io[:] = 0
+        self.tool_status = ToolStatus()
+        self.joint_en[:] = 1
+        for arr in self.cart_en.values():
+            arr[:] = 1
+        self.connected = False
+        self.x = self.y = self.z = 0.0
+        self.rx = self.ry = self.rz = 0.0
+        self.io_inputs = []
+        self.io_outputs = []
+        self.io_estop = 1
+        self.tool_key = "NONE"
+        self.tool_position = 0.0
+        self.tool_force = 0.0
+        self.tool_current = 0.0
+        self.tool_engaged = False
+        self.tool_part_detected = False
+        self.tool_time_series.clear()
+        self.speeds[:] = 0.0
+        self.tcp_speed = 0.0
+        self.simulator_active = False
+        self.action_current = ""
+        self.action_state = ActionState.IDLE
+        self.action_params = ""
+        self.executing_index = -1
+        self.completed_index = -1
+        self.last_update_ts = 0.0
+        self.editing_mode = False
+        self._change_listeners = []
 
 
 @dataclass
 class ControllerState:
     running: bool = False
-    pid: int | None = None
     com_port: str | None = None
 
+    def reset(self) -> None:
+        self.running = False
+        self.com_port = None
 
-@dataclass
-class ProgramState:
-    running: bool = False
-    cancel_event_present: bool = False
+
+class _RequiredField:
+    """Descriptor for fields that must be set post-init (asserts on access)."""
+
+    def __set_name__(self, _owner: type, name: str) -> None:
+        self._attr = f"_{name}"
+        self._name = name
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if obj is None:
+            return self
+        val = getattr(obj, self._attr, None)
+        if val is None:
+            raise RuntimeError(f"{self._name} not initialized")
+        return val
+
+    def __set__(self, obj: Any, value: Any) -> None:
+        setattr(obj, self._attr, value)
 
 
 @bindable_dataclass
@@ -399,6 +404,19 @@ class UiState:
     frame: str = "WRF"
     gizmo_visible: bool = True
 
+    # Gripper panel state
+    gripper_speed_sync: bool = True
+    gripper_speed: int = 50
+    gripper_current: int = 500
+
+    # Camera device: -1 = disabled, int = device index, str = device name
+    camera_device: int | str = -1
+
+    # Page-scoped UI elements (set post-build)
+    response_log: Any = None
+    io_page: Any = None
+    gripper_page: Any = None
+
     # Private storage for timers and panels (set post-build)
     _joint_jog_timer: Any = None
     _cart_jog_timer: Any = None
@@ -409,64 +427,25 @@ class UiState:
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
 
+    # Post-init required fields (assert on access, set via assignment)
+    editor_panel = _RequiredField()
+    control_panel = _RequiredField()
+    readout_panel = _RequiredField()
+    joint_jog_timer = _RequiredField()
+    cart_jog_timer = _RequiredField()
+
     @property
     def active_robot(self) -> "Robot":
         """Get robot, asserting it's set."""
         assert self.robot is not None, "robot not set"
         return self.robot
 
-    @property
-    def editor_panel(self) -> "EditorPanel":
-        """Get editor panel, asserting it's initialized."""
-        assert self._editor_panel is not None, "editor_panel not initialized"
-        return self._editor_panel
-
-    @editor_panel.setter
-    def editor_panel(self, value: "EditorPanel") -> None:
-        self._editor_panel = value
-
-    @property
-    def control_panel(self) -> "ControlPanel":
-        """Get control panel, asserting it's initialized."""
-        assert self._control_panel is not None, "control_panel not initialized"
-        return self._control_panel
-
-    @control_panel.setter
-    def control_panel(self, value: "ControlPanel") -> None:
-        self._control_panel = value
-
-    @property
-    def readout_panel(self) -> "ReadoutPanel":
-        """Get readout panel, asserting it's initialized."""
-        assert self._readout_panel is not None, "readout_panel not initialized"
-        return self._readout_panel
-
-    @readout_panel.setter
-    def readout_panel(self, value: "ReadoutPanel") -> None:
-        self._readout_panel = value
-
-    @property
-    def joint_jog_timer(self) -> "Timer":
-        """Get joint jog timer, asserting it's initialized."""
-        assert self._joint_jog_timer is not None, "joint_jog_timer not initialized"
-        return self._joint_jog_timer
-
-    @joint_jog_timer.setter
-    def joint_jog_timer(self, value: "Timer") -> None:
-        self._joint_jog_timer = value
-
-    @property
-    def cart_jog_timer(self) -> "Timer":
-        """Get cart jog timer, asserting it's initialized."""
-        assert self._cart_jog_timer is not None, "cart_jog_timer not initialized"
-        return self._cart_jog_timer
-
-    @cart_jog_timer.setter
-    def cart_jog_timer(self, value: "Timer") -> None:
-        self._cart_jog_timer = value
+    def reset(self) -> None:
+        """Reset UI state. Does not reset robot (set once at startup)."""
+        self.urdf_scene = None
 
 
-@dataclass
+@dataclass(slots=True)
 class EditorTab:
     """State for a single editor tab."""
 
@@ -480,7 +459,9 @@ class EditorTab:
         default_factory=list
     )  # Per-tab simulation paths
     targets: list[ProgramTarget] = field(default_factory=list)  # Per-tab targets
+    tool_actions: list[ToolAction] = field(default_factory=list)  # Per-tab tool actions
     final_joints_rad: list[float] | None = None  # Final joint position from simulation
+    last_sim_joints_deg: np.ndarray | None = None  # Robot position when last simulated
     created_at: float = 0.0  # Timestamp
 
     @property
@@ -490,7 +471,7 @@ class EditorTab:
 
 
 @bindable_dataclass
-class EditorTabsState:
+class EditorTabsState(ChangeNotifierMixin):
     """State for multi-tab editor."""
 
     tabs: list[EditorTab] = field(default_factory=list)
@@ -527,20 +508,10 @@ class EditorTabsState:
             self.active_tab_id = self.tabs[0].id if self.tabs else None
         self.notify_changed()
 
-    def add_change_listener(self, callback: Callable[[], None]) -> None:
-        """Register a callback to be notified when tabs state changes."""
-        if callback not in self._change_listeners:
-            self._change_listeners.append(callback)
-
-    def remove_change_listener(self, callback: Callable[[], None]) -> None:
-        """Unregister a previously registered callback."""
-        if callback in self._change_listeners:
-            self._change_listeners.remove(callback)
-
-    def notify_changed(self) -> None:
-        """Notify all registered listeners that state has changed."""
-        for cb in self._change_listeners:
-            cb()
+    def reset(self) -> None:
+        self.tabs = []
+        self.active_tab_id = None
+        self._change_listeners = []
 
 
 @dataclass
@@ -582,27 +553,27 @@ class ReadinessState:
             if not self.app_ready.is_set():
                 self.app_ready_ts = time.time()
                 self.app_ready.set()
-                logging.debug("Readiness: app_ready signaled")
+                logger.debug("Readiness: app_ready signaled")
 
     def mark_startup_done(self) -> None:
         """Mark startup as complete (call from _on_startup finally block)."""
         if not self._startup_done:
             self._startup_done = True
-            logging.debug("Readiness: startup done")
+            logger.debug("Readiness: startup done")
             self._check_app_ready()
 
     def mark_backend_done(self) -> None:
         """Mark backend as ready (call from _status_consumer on first valid status)."""
         if not self._backend_done:
             self._backend_done = True
-            logging.debug("Readiness: backend done")
+            logger.debug("Readiness: backend done")
             self._check_app_ready()
 
     def mark_page_done(self) -> None:
         """Mark page as ready (call from index_page after setup)."""
         if not self._page_done:
             self._page_done = True
-            logging.debug("Readiness: page done")
+            logger.debug("Readiness: page done")
             self._check_app_ready()
 
     def signal_urdf_scene_ready(self) -> None:
@@ -610,19 +581,155 @@ class ReadinessState:
         if not self.urdf_scene_ready.is_set():
             self.urdf_scene_ready_ts = time.time()
             self.urdf_scene_ready.set()
-            logging.debug("Readiness: urdf_scene_ready signaled")
+            logger.debug("Readiness: urdf_scene_ready signaled")
+
+
+# ===========================================================================
+# Action Log
+# ===========================================================================
+
+
+class ActionStatus(Enum):
+    EXECUTING = "executing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass
+class ActionLogEntry:
+    """Single entry in the action log."""
+
+    command_name: str
+    params: str = ""
+    status: ActionStatus = ActionStatus.EXECUTING
+    command_index: int = -1
+    count: int = 1
+    timestamp: float = 0.0
+
+
+class ActionLog:
+    """Session-scoped action log with coalescing of repeated commands."""
+
+    def __init__(self, max_entries: int = 200) -> None:
+        self._entries: deque[ActionLogEntry] = deque(maxlen=max_entries)
+        self._last_executing_index: int = -1
+        self._last_completed_index: int = -1
+        self._version: int = 0
+
+    @property
+    def entries(self) -> deque[ActionLogEntry]:
+        return self._entries
+
+    @property
+    def version(self) -> int:
+        return self._version
+
+    @property
+    def latest(self) -> ActionLogEntry | None:
+        return self._entries[-1] if self._entries else None
+
+    def process_status(
+        self,
+        action_current: str,
+        action_params: str,
+        action_state: ActionState,
+        executing_index: int,
+        completed_index: int,
+    ) -> bool:
+        """Process a status update, returning True if the log changed."""
+        changed = False
+
+        # Detect new command starting
+        if (
+            executing_index > self._last_executing_index
+            and action_state == ActionState.EXECUTING
+        ):
+            name = action_current.removesuffix("Command")
+            latest = self.latest
+            if (
+                latest
+                and latest.command_name == name
+                and latest.params == action_params
+                and latest.status == ActionStatus.COMPLETED
+            ):
+                latest.count += 1
+                latest.status = ActionStatus.EXECUTING
+                latest.command_index = executing_index
+                latest.timestamp = time.time()
+            else:
+                self._entries.append(
+                    ActionLogEntry(
+                        command_name=name,
+                        params=action_params,
+                        command_index=executing_index,
+                        timestamp=time.time(),
+                    )
+                )
+            self._last_executing_index = executing_index
+            changed = True
+
+        # Detect command completion
+        if completed_index > self._last_completed_index:
+            matched = False
+            for entry in reversed(self._entries):
+                if entry.command_index == completed_index:
+                    entry.status = ActionStatus.COMPLETED
+                    matched = True
+                    break
+            # Coalesced entries may have overwritten command_index;
+            # fall back to marking the latest EXECUTING entry as completed
+            if not matched and self._entries:
+                for entry in reversed(self._entries):
+                    if entry.status == ActionStatus.EXECUTING:
+                        entry.status = ActionStatus.COMPLETED
+                        break
+            self._last_completed_index = completed_index
+            changed = True
+
+        # Detect failure (action goes IDLE but completed_index didn't advance)
+        if (
+            action_state != ActionState.EXECUTING
+            and self._entries
+            and self._entries[-1].status == ActionStatus.EXECUTING
+            and completed_index == self._last_completed_index
+            and executing_index == self._last_executing_index
+        ):
+            self._entries[-1].status = ActionStatus.FAILED
+            changed = True
+
+        if changed:
+            self._version += 1
+        return changed
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self._last_executing_index = -1
+        self._last_completed_index = -1
+        self._version += 1
 
 
 # Module-level singletons
 robot_state: RobotState = RobotState()
 controller_state: ControllerState = ControllerState()
-program_state: ProgramState = ProgramState()
 ui_state: UiState = UiState()
 simulation_state: SimulationState = SimulationState()
 recording_state: RecordingState = RecordingState()
-playback_state: PlaybackState = PlaybackState()
 readiness_state: ReadinessState = ReadinessState()
 editor_tabs_state: EditorTabsState = EditorTabsState()
+action_log: ActionLog = ActionLog()
+
+
+def reset_all_state() -> None:
+    """Reset all state singletons to defaults. For test isolation."""
+    robot_state.reset()
+    controller_state.reset()
+    ui_state.reset()
+    simulation_state.reset()
+    recording_state.reset()
+    readiness_state.reset()
+    editor_tabs_state.reset()
+    action_log.clear()
+
 
 # Global timing instrumentation - import and use from any module
 # Usage: with global_phase_timer.phase("my_operation"): ...

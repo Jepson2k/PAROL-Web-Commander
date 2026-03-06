@@ -10,7 +10,7 @@ Contains:
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Sequence
 
 from parol_commander.common.theme import SceneColors
 
@@ -41,13 +41,13 @@ class UrdfSceneConfig:
     """Configuration for UrdfScene behavior, appearance, and kinematics."""
 
     # --- Mesh and static file settings ---
-    meshes_dir: Optional[Path] = None
+    meshes_dir: Path | None = None
     """Directory containing mesh files. If None, auto-discover from URDF location."""
 
     static_url_prefix: str = "/meshes"
     """URL prefix for serving static mesh files."""
 
-    package_map: Dict[str, Path] = field(default_factory=lambda: {})
+    package_map: dict[str, Path] = field(default_factory=lambda: {})
     """Mapping from package:// names to filesystem paths."""
 
     mount_static: bool = True
@@ -57,18 +57,21 @@ class UrdfSceneConfig:
     """Scale factor for all STL files (e.g., 1e-1 if designed in mm)."""
 
     # --- Gizmo settings ---
-    gizmo_scale: Optional[float] = None
+    gizmo_scale: float | None = None
     """Override gizmo size. If None, scales with STL scale."""
 
     draw_tcp_axes: bool = True
     """Whether to draw coordinate axes at TCP location."""
 
     # --- Tool pose settings ---
-    tool_pose_map: Dict[str, "ToolPose"] = field(default_factory=lambda: {})
+    tool_pose_map: dict[str, "ToolPose"] = field(default_factory=lambda: {})
     """Mapping from tool names to TCP poses."""
 
-    tool_pose_resolver: Optional[Callable[[str], Optional["ToolPose"]]] = None
-    """Function to resolve tool name to TCP pose dynamically."""
+    tool_pose_resolver: Callable[[str, str | None], "ToolPose | None"] | None = None
+    """Function to resolve tool name to TCP pose dynamically.
+
+    Signature: ``(tool_key, variant_key) -> ToolPose | None``.
+    """
 
     # --- Appearance settings ---
     # Colors from theme.py SceneColors
@@ -93,8 +96,26 @@ class UrdfSceneConfig:
     edit_opacity: float = 0.4
     """Opacity for robot in editing mode."""
 
+    tool_body_material: str = SceneColors.TOOL_BODY_HEX
+    """Color for tool body meshes in live mode."""
+
+    tool_body_sim_color: str = SceneColors.TOOL_BODY_SIM_HEX
+    """Color for tool body meshes in simulator mode."""
+
+    tool_body_edit_color: str = SceneColors.TOOL_BODY_EDIT_HEX
+    """Color for tool body meshes in editing mode."""
+
+    tool_moving_material: str = SceneColors.TOOL_MOVING_HEX
+    """Color for tool moving parts in live mode."""
+
+    tool_moving_sim_color: str = SceneColors.TOOL_MOVING_SIM_HEX
+    """Color for tool moving parts in simulator mode."""
+
+    tool_moving_edit_color: str = SceneColors.TOOL_MOVING_EDIT_HEX
+    """Color for tool moving parts in editing mode."""
+
     # --- Kinematic mapping settings ---
-    joint_name_order: List[str] = field(
+    joint_name_order: list[str] = field(
         default_factory=lambda: ["L1", "L2", "L3", "L4", "L5", "L6"]
     )
     """Order of joint names for mapping controller angles to URDF joints."""
@@ -102,10 +123,10 @@ class UrdfSceneConfig:
     deg_to_rad: bool = True
     """Whether to convert angles from degrees to radians."""
 
-    angle_signs: List[int] = field(default_factory=lambda: [1, 1, 1, 1, 1, 1])
+    angle_signs: list[int] = field(default_factory=lambda: [1, 1, 1, 1, 1, 1])
     """Sign corrections for each joint angle."""
 
-    angle_offsets: List[float] = field(
+    angle_offsets: list[float] = field(
         default_factory=lambda: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     )
     """Offset corrections for each joint angle (in degrees if deg_to_rad is True)."""

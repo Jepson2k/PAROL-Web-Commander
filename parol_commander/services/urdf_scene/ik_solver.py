@@ -1,17 +1,19 @@
 """
 IK Solver for editing mode.
 
-Uses the Robot protocol for forward and inverse kinematics,
+Uses the Robot ABC for forward and inverse kinematics,
 eliminating direct backend imports.
 """
 
 import time
 import logging
 from dataclasses import dataclass
-from typing import Any, List, Optional, Union
+from typing import Any
 import numpy as np
 
-from parol_commander.robot_interface import Robot
+from waldoctl import Robot
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -21,7 +23,7 @@ class EditingIKResult:
     success: bool
     """Whether the solver converged within tolerance."""
 
-    angles: List[float]
+    angles: list[float]
     """Computed joint angles in radians."""
 
     error: float
@@ -35,7 +37,7 @@ class EditingIKSolver:
     """
     IK solver for editing mode manipulation.
 
-    Uses the Robot protocol for forward and inverse kinematics.
+    Uses the Robot ABC for forward and inverse kinematics.
     """
 
     def __init__(self, robot: Robot, num_joints: int = 6):
@@ -57,7 +59,7 @@ class EditingIKSolver:
         self._last_solve_time = 0.0
         self._min_solve_interval = 0.033  # ~30Hz
 
-        logging.debug(
+        logger.debug(
             "EditingIKSolver initialized: %d joints",
             self.num_joints,
         )
@@ -80,7 +82,7 @@ class EditingIKSolver:
         robot = ui_state.active_robot
         return cls(robot=robot, num_joints=robot.joints.count)
 
-    def forward_kinematics(self, angles: Union[List[float], np.ndarray]) -> np.ndarray:
+    def forward_kinematics(self, angles: list[float] | np.ndarray) -> np.ndarray:
         """
         Compute end effector pose from joint angles.
 
@@ -91,17 +93,16 @@ class EditingIKSolver:
             End effector pose [x, y, z, rx, ry, rz] in meters and radians (world frame)
         """
         q = np.asarray(angles[: self.num_joints], dtype=np.float64)
-        result = self.robot.fk(q)
-        self._fk_result_buffer[:] = result
+        self.robot.fk(q, self._fk_result_buffer)
         return self._fk_result_buffer
 
     def solve(
         self,
         target_pos: np.ndarray,
-        current_angles: List[float],
+        current_angles: list[float],
         throttle: bool = True,
-        target_orientation: Optional[np.ndarray] = None,
-    ) -> Optional[EditingIKResult]:
+        target_orientation: np.ndarray | None = None,
+    ) -> EditingIKResult | None:
         """
         Solve IK for the target position and optionally orientation.
 
@@ -131,13 +132,13 @@ class EditingIKSolver:
             self._pose_buf[4] = target_orientation[1]
             self._pose_buf[5] = target_orientation[2]
         else:
-            current_fk = self.robot.fk(q_current)
+            self.robot.fk(q_current, self._fk_result_buffer)
             self._pose_buf[0] = target_pos[0]
             self._pose_buf[1] = target_pos[1]
             self._pose_buf[2] = target_pos[2]
-            self._pose_buf[3] = current_fk[3]
-            self._pose_buf[4] = current_fk[4]
-            self._pose_buf[5] = current_fk[5]
+            self._pose_buf[3] = self._fk_result_buffer[3]
+            self._pose_buf[4] = self._fk_result_buffer[4]
+            self._pose_buf[5] = self._fk_result_buffer[5]
 
         result = self.robot.ik(self._pose_buf, q_current)
 

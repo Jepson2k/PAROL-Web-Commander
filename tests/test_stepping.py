@@ -189,7 +189,7 @@ class TestGUIStepController:
 class TestSteppingClientWrapper:
     """Unit tests for SteppingClientWrapper.
 
-    Wraps a robot client to intercept motion commands, adding wait_until_stopped
+    Wraps a robot client to intercept motion commands, adding wait_motion_complete
     after each motion so the script pauses until the robot completes the move.
     """
 
@@ -203,8 +203,8 @@ class TestSteppingClientWrapper:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         mock_client = MagicMock()
-        mock_client.moveJ = MagicMock(return_value="result")
-        mock_client.wait_motion_complete = MagicMock()
+        mock_client.moveJ = MagicMock(return_value=42)
+        mock_client.wait_command_complete = MagicMock()
 
         step_io = StepIO("test_wrapper")
         # Set up control file so we don't pause (paused=False)
@@ -216,8 +216,8 @@ class TestSteppingClientWrapper:
         result = wrapper.moveJ([0, 0, 0, 0, 0, 0])
 
         mock_client.moveJ.assert_called_once_with([0, 0, 0, 0, 0, 0])
-        mock_client.wait_motion_complete.assert_called_once()
-        assert result == "result"
+        mock_client.wait_command_complete.assert_called_once_with(42)
+        assert result == 42
 
         # Verify events were emitted
         event_file = tmp_path / ".parol_events_test_wrapper"
@@ -245,7 +245,7 @@ class TestSteppingClientWrapper:
         result = wrapper.get_status()
 
         mock_client.get_status.assert_called_once()
-        mock_client.wait_until_stopped.assert_not_called()
+        mock_client.wait_command_complete.assert_not_called()
         assert result == "status"
 
         # No events should be emitted for non-motion methods
@@ -253,8 +253,8 @@ class TestSteppingClientWrapper:
         assert not event_file.exists()
 
     def test_motion_methods_list_is_correct(self):
-        """MOTION_METHODS contains expected robot motion commands."""
-        from parol_commander.services.stepping_client import MOTION_METHODS
+        """STEPPABLE_METHODS contains expected robot motion commands."""
+        from parol_commander.services.stepping_client import STEPPABLE_METHODS
 
         expected = {
             "home",
@@ -262,5 +262,7 @@ class TestSteppingClientWrapper:
             "moveL",
             "jogJ",
             "jogL",
+            "tool_action",
+            "delay",
         }
-        assert expected.issubset(MOTION_METHODS)
+        assert expected.issubset(STEPPABLE_METHODS)

@@ -9,15 +9,15 @@ repos:
       # Run the formatter
       - id: ruff-format
 
-  # MyPy for static type checking
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.1
+  # ty for static type checking
+  - repo: local
     hooks:
-      - id: mypy
-        additional_dependencies:
-          - types-requests
-          - pytest
-        args: [--install-types, --non-interactive]
+      - id: ty
+        name: ty (parol_commander)
+        entry: ty check parol_commander
+        language: system
+        files: ^parol_commander/
+        pass_filenames: false
 
   # Built-in hooks for file quality
   - repo: https://github.com/pre-commit/pre-commit-hooks

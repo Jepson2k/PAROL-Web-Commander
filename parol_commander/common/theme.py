@@ -1,7 +1,9 @@
 import logging
 from typing import Literal, cast, get_args
 
-from nicegui import app, ui  # type: ignore[no-redef]
+from nicegui import app, ui
+
+logger = logging.getLogger(__name__)
 
 ThemeMode = Literal["light", "dark", "system"]
 
@@ -23,6 +25,11 @@ class StatusColors:
     INFO = "var(--color-sky-500)"  # Information, neutral action
     ACCENT = "var(--color-sky-500)"  # Brand accent (same as info)
     MUTED = "var(--color-neutral-400)"  # Disabled, inactive
+
+
+# I/O indicator colors (Quasar color names for q-badge/q-icon)
+IO_COLOR_ON = "green-8"
+IO_COLOR_OFF = "grey-7"
 
 
 # 3D Scene / visualization colors (hex for Three.js)
@@ -58,6 +65,16 @@ class SceneColors:
 
     # Edit mode / inactive gray
     EDIT_GRAY_HEX = "#525252"
+
+    # Tool body colors (teal family — distinct from arm in every mode)
+    TOOL_BODY_HEX = "#2a9d8f"
+    TOOL_BODY_SIM_HEX: str = TOOL_BODY_HEX
+    TOOL_BODY_EDIT_HEX = "#3d6b65"
+
+    # Tool moving part colors (lighter/brighter teal variant)
+    TOOL_MOVING_HEX = "#4ecdc4"
+    TOOL_MOVING_SIM_HEX: str = TOOL_MOVING_HEX
+    TOOL_MOVING_EDIT_HEX = "#4d7e77"
 
     # Derived colors (reference base colors)
     ENVELOPE_HEX = AXIS_Z_HEX
@@ -374,7 +391,7 @@ def apply_theme(mode: ThemeMode) -> None:
     choice = mode
     if mode == "system":
         choice = "dark" if ui.dark_mode().client.page.dark else "light"
-        logging.debug(f"System theme: {choice}")
+        logger.debug("System theme: %s", choice)
 
     pal = get_palette(choice)
 
@@ -406,17 +423,22 @@ def apply_theme(mode: ThemeMode) -> None:
 def set_theme(mode: ThemeMode) -> ThemeMode:
     """Persist, set and apply theme mode."""
     # persist selection
-    app.storage.general["theme_mode"] = mode  # type: ignore[attr-defined]
+    app.storage.general["theme_mode"] = mode
     apply_theme(mode)
     return mode
 
 
 def get_theme() -> ThemeMode:
     """Return current requested mode ('light'/'dark'/'system')."""
-    mode = app.storage.general.get("theme_mode", "system")  # type: ignore[attr-defined]
+    mode = app.storage.general.get("theme_mode", "system")
     if isinstance(mode, str) and mode in get_args(ThemeMode):
         return cast("ThemeMode", mode)
     return cast("ThemeMode", "system")
+
+
+def is_dark_theme() -> bool:
+    """Return True if the effective theme is not light."""
+    return get_theme() != "light"
 
 
 def toggle_theme() -> ThemeMode:
@@ -536,6 +558,9 @@ def _generate_resize_handle_css() -> str:
                 )
 
     return "\n".join(css_parts)
+
+
+_RESIZE_HANDLE_CSS = _generate_resize_handle_css()
 
 
 def inject_layout_css() -> None:
@@ -840,7 +865,7 @@ html, body {
 .editor-tab.q-tab--active {
   background: var(--tab-bg-active);
 }
-# TODO: only half works
+/* TODO: only half works */
 /* Disable pointer events on active tab (prevent re-clicking), but allow input and close button */
 .editor-tab.q-tab--active,
 .editor-tab.q-tab--active .q-tab__content,
@@ -1126,11 +1151,70 @@ html, body {
 .keys-cell { padding: 6px 16px 6px 0 !important; }
 
 .keybindings-table tbody td { border: none !important; }
+
+
+/* ========== Robot Face Indicator ========== */
+
+/* Transition targets for hover animations */
+.robot-face .eye-full,
+.robot-face .eye-squint,
+.robot-face .eye-sad,
+.robot-face .mouth-straight,
+.robot-face .mouth-zigzag { transition: opacity 0.25s ease; }
+
+/* Happy: squint eyes on hover */
+.robot-face-happy .eye-squint { opacity: 0; }
+.robot-face-happy:hover .eye-full { opacity: 0; }
+.robot-face-happy:hover .eye-squint { opacity: 1; }
+
+/* Neutral: zigzag mouth on hover */
+.robot-face-neutral .mouth-zigzag { opacity: 0; }
+.robot-face-neutral:hover .mouth-straight { opacity: 0; }
+.robot-face-neutral:hover .mouth-zigzag { opacity: 1; }
+
+/* Sad: droopy eyes on hover */
+.robot-face-sad .eye-sad { opacity: 0; }
+.robot-face-sad:hover .eye-full { opacity: 0; }
+.robot-face-sad:hover .eye-sad { opacity: 1; }
+
+/* Help tab has no panel — hide its indicator to prevent stale marker at startup */
+.side-tab-bar.absolute.bottom-0 .q-tab:last-child .q-tab__indicator {
+    display: none !important;
+}
+
+
+/* ========== Action Log ========== */
+
+.action-log {
+  max-height: 22px;
+  transition: max-height 0.2s ease;
+  width: 0;
+  min-width: 100%;
+  cursor: pointer;
+}
+/* Collapsed: no padding, no scrollbars, no user scroll */
+.action-log:not(.action-log-expanded) .q-scrollarea__content { padding: 0 !important; }
+.action-log:not(.action-log-expanded) .q-scrollarea__container { overflow: hidden !important; }
+.action-log:not(.action-log-expanded) .q-scrollarea__thumb,
+.action-log:not(.action-log-expanded) .q-scrollarea__bar {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+/* Expanded: Quasar handles scrollbars natively, just override padding */
+.action-log.action-log-expanded {
+  max-height: 200px;
+}
+.action-log.action-log-expanded .q-scrollarea__content { padding: 2px 0 !important; }
+.action-log-entry {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 """
     )
 
     # Add generated resize handle CSS
-    ui.add_css(_generate_resize_handle_css())
+    ui.add_css(_RESIZE_HANDLE_CSS)
 
     # Load external JavaScript module for panel resize functionality
     ui.add_head_html('<script src="/static/js/panel-resize.js" defer></script>')

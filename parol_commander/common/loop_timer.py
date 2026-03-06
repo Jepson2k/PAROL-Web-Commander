@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING
 
 import numpy as np
-from numba import njit  # type: ignore[import-untyped]
+from numba import njit
 
 if TYPE_CHECKING:
     from typing import Self

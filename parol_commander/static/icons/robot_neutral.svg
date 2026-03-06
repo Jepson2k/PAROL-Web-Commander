@@ -1,0 +1,14 @@
+<svg viewBox="3 3 18 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- antennas -->
+  <rect x="7" y="4.5" width="1" height="3" rx="0.5" fill="#888"/>
+  <rect x="16" y="4.5" width="1" height="3" rx="0.5" fill="#888"/>
+  <!-- head filled -->
+  <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="#888"/>
+  <!-- eyes (white circles) -->
+  <circle cx="8" cy="12" r="1.8" fill="white"/>
+  <circle cx="16" cy="12" r="1.8" fill="white"/>
+  <!-- straight mouth (default) -->
+  <line class="mouth-straight" x1="9" y1="16" x2="15" y2="16" stroke="white" stroke-width="1" stroke-linecap="round"/>
+  <!-- zigzag mouth (hover) -->
+  <polyline class="mouth-zigzag" points="9,16 10.2,15.2 11.4,16.8 12.6,15.2 13.8,16.8 15,16" stroke="white" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

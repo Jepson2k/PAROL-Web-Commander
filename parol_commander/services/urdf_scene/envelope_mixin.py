@@ -13,10 +13,10 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
-from nicegui import app, ui, run  # type: ignore[no-redef]
+from nicegui import app, ui, run
 from nicegui.events import SceneClipPlane
 
 from parol_commander.common.theme import SceneColors
@@ -66,7 +66,7 @@ def _compute_cache_key(
             joint_limits_rad = ui_state.active_robot.joints.limits.position.rad
         data = joint_limits_rad.tobytes() + np.array([tool_offset_z]).tobytes()
         return hashlib.md5(data).hexdigest()[:12]
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return ""
 
 
@@ -108,7 +108,16 @@ class WorkspaceEnvelope:
         self._generated = False
         self._generating = False
         self._current_tool_offset_z: float = 0.0
-        self._static_files_registered = False
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether the envelope has been generated and is available."""
+        return self._generated
+
+    @property
+    def is_generating(self) -> bool:
+        """Whether envelope generation is currently in progress."""
+        return self._generating
 
     def _get_hull_params(self) -> tuple[str | None, list | None]:
         """Get URDF path and joint limits from the active robot."""
@@ -129,14 +138,13 @@ class WorkspaceEnvelope:
         if not CACHE_DIR.exists():
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            app.add_static_files("/parol-commander-cache", str(CACHE_DIR))  # type: ignore[attr-defined]
-            self._static_files_registered = True
+            app.add_static_files("/parol-commander-cache", str(CACHE_DIR))
             logger.debug(
                 "Registered static files: /parol-commander-cache -> %s", CACHE_DIR
             )
         except ValueError:
             # Route already registered (NiceGUI raises ValueError for duplicates)
-            self._static_files_registered = True
+            pass
 
     def _get_stl_url(self) -> str:
         """Get URL for the cached STL file."""
@@ -152,7 +160,7 @@ class WorkspaceEnvelope:
             True if cache was valid and loaded
         """
         try:
-            cache = app.storage.general.get(STORAGE_KEY)  # type: ignore[attr-defined]
+            cache = app.storage.general.get(STORAGE_KEY)
             if not cache:
                 logger.debug("No hull cache found")
                 return False
@@ -191,7 +199,7 @@ class WorkspaceEnvelope:
         """Save hull metadata to cache."""
         try:
             cache_key = _compute_cache_key(tool_offset_z)
-            app.storage.general[STORAGE_KEY] = {  # type: ignore[attr-defined]
+            app.storage.general[STORAGE_KEY] = {
                 "cache_key": cache_key,
                 "max_reach": max_reach,
                 "tool_offset_z": tool_offset_z,
@@ -199,6 +207,42 @@ class WorkspaceEnvelope:
             logger.debug("Saved hull cache metadata: key=%s", cache_key)
         except Exception as e:
             logger.warning("Failed to save hull cache: %s", e)
+
+    def _process_hull_result(
+        self, result: dict[str, Any] | None, tool_offset_z: float
+    ) -> bool:
+        """Process hull generation result: save STL, register static files, update cache.
+
+        Args:
+            result: Dict with max_reach, vertices, faces from _generate_hull_cpu_bound,
+                    or None if generation failed.
+            tool_offset_z: Tool TCP Z offset in meters.
+
+        Returns:
+            True if hull was saved and registered successfully.
+        """
+        if result is None:
+            logger.warning("Workspace generation returned no data")
+            return False
+
+        self.max_reach = result["max_reach"]
+        vertices = np.array(result["vertices"])
+        faces = np.array(result["faces"])
+
+        if not _save_hull_as_stl(vertices, faces, HULL_STL_PATH):
+            logger.warning("Failed to save hull STL")
+            return False
+
+        self._ensure_static_files_registered()
+        self.stl_url = self._get_stl_url()
+        self._save_to_cache(self.max_reach, tool_offset_z)
+        self._generated = True
+        logger.info(
+            "Workspace hull generation complete: max_reach=%.4fm, %d triangles",
+            self.max_reach,
+            len(faces),
+        )
+        return True
 
     def generate(
         self,
@@ -241,7 +285,7 @@ class WorkspaceEnvelope:
 
         urdf_path, joint_limits_rad = self._get_hull_params()
         if urdf_path is None or joint_limits_rad is None:
-            logger.warning("Cannot generate hull: no profile loaded")
+            logger.warning("Cannot generate hull: no robot loaded")
             self._generating = False
             return False
 
@@ -270,28 +314,8 @@ class WorkspaceEnvelope:
                     logger.error("Sync hull generation also failed: %s", e2)
 
             try:
-                if result is not None:
-                    self.max_reach = result["max_reach"]
-                    vertices = np.array(result["vertices"])
-                    faces = np.array(result["faces"])
-
-                    # Save STL file
-                    if _save_hull_as_stl(vertices, faces, HULL_STL_PATH):
-                        self._ensure_static_files_registered()
-                        self.stl_url = self._get_stl_url()
-                        self._save_to_cache(self.max_reach, tool_offset_z)
-                        self._generated = True
-                        logger.info(
-                            "Workspace hull generation complete: "
-                            "max_reach=%.4fm, %d triangles",
-                            self.max_reach,
-                            len(faces),
-                        )
-                        await simulation_state.notify_changed()
-                    else:
-                        logger.warning("Failed to save hull STL")
-                else:
-                    logger.warning("Workspace generation returned no data")
+                if self._process_hull_result(result, tool_offset_z):
+                    simulation_state.notify_changed()
             finally:
                 self._generating = False
 
@@ -333,7 +357,7 @@ class WorkspaceEnvelope:
 
         urdf_path, joint_limits_rad = self._get_hull_params()
         if urdf_path is None or joint_limits_rad is None:
-            logger.warning("Cannot generate hull: no profile loaded")
+            logger.warning("Cannot generate hull: no robot loaded")
             self._generating = False
             return False
 
@@ -344,27 +368,7 @@ class WorkspaceEnvelope:
                 urdf_path,
                 joint_limits_rad,
             )
-            if result is not None:
-                self.max_reach = result["max_reach"]
-                vertices = np.array(result["vertices"])
-                faces = np.array(result["faces"])
-
-                if _save_hull_as_stl(vertices, faces, HULL_STL_PATH):
-                    self._ensure_static_files_registered()
-                    self.stl_url = self._get_stl_url()
-                    self._save_to_cache(self.max_reach, tool_offset_z)
-                    self._generated = True
-                    logger.info(
-                        "Workspace hull generation complete: max_reach=%.4fm",
-                        self.max_reach,
-                    )
-                    return True
-                else:
-                    logger.warning("Failed to save hull STL")
-                    return False
-            else:
-                logger.warning("Workspace generation returned no data")
-                return False
+            return self._process_hull_result(result, tool_offset_z)
         except Exception as e:
             logger.error("Workspace generation failed: %s", e)
             return False
@@ -381,8 +385,8 @@ class WorkspaceEnvelope:
     def invalidate_cache(self) -> None:
         """Invalidate cache and delete STL file."""
         try:
-            if STORAGE_KEY in app.storage.general:  # type: ignore[attr-defined]
-                del app.storage.general[STORAGE_KEY]  # type: ignore[attr-defined]
+            if STORAGE_KEY in app.storage.general:
+                del app.storage.general[STORAGE_KEY]
             if HULL_STL_PATH.exists():
                 HULL_STL_PATH.unlink()
             logger.info("Invalidated workspace hull cache")
@@ -416,7 +420,7 @@ class WorkspaceEnvelope:
         if not self._generated:
             return True
         current_key = _compute_cache_key(tool_offset_z)
-        cache = app.storage.general.get(STORAGE_KEY, {})  # type: ignore[attr-defined]
+        cache = app.storage.general.get(STORAGE_KEY, {})
         return cache.get("cache_key") != current_key
 
 
@@ -425,7 +429,7 @@ def _generate_hull_cpu_bound(
     tool_offset_z: float,
     urdf_path: str | None = None,
     joint_limits_rad: list | None = None,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """CPU-bound function to calculate workspace convex hull.
 
     This function runs in a separate process via run.cpu_bound.
@@ -467,8 +471,9 @@ def _generate_hull_cpu_bound(
         limits_arr = np.array(joint_limits_rad)
 
         # Generate evenly spaced joint configurations using a grid
-        samples_per_joint = max(2, int(round(samples ** (1 / 6))))
-        actual_samples = samples_per_joint**6
+        num_joints = len(joint_limits_rad)
+        samples_per_joint = max(2, int(round(samples ** (1 / num_joints))))
+        actual_samples = samples_per_joint**num_joints
         sub_logger.info(
             "Using %d samples per joint (%d total grid points)",
             samples_per_joint,
@@ -477,7 +482,7 @@ def _generate_hull_cpu_bound(
 
         joint_ranges = [
             np.linspace(limits_arr[i, 0], limits_arr[i, 1], samples_per_joint)
-            for i in range(6)
+            for i in range(num_joints)
         ]
 
         grids = np.meshgrid(*joint_ranges, indexing="ij")
@@ -501,8 +506,11 @@ def _generate_hull_cpu_bound(
         # Compute convex hull
         try:
             hull = ConvexHull(pos)
-            vertices = pos.tolist()  # All points (hull uses indices into this)
-            faces = hull.simplices.tolist()  # Triangle indices
+            hull_verts = pos[hull.vertices]
+            idx_map = np.empty(len(pos), dtype=np.intp)
+            idx_map[hull.vertices] = np.arange(len(hull.vertices))
+            faces = idx_map[hull.simplices].tolist()
+            vertices = hull_verts.tolist()
 
             sub_logger.info(
                 "Convex hull: %d hull vertices, %d faces, max_reach=%.4fm",
@@ -559,7 +567,7 @@ class EnvelopeMixin:
     @staticmethod
     def _is_near_boundary(x_m: float, y_m: float, z_m: float) -> bool:
         """Check if a point (in meters) is within proximity threshold of the workspace boundary."""
-        if not workspace_envelope._generated or workspace_envelope.max_reach <= 0:
+        if not workspace_envelope.is_ready or workspace_envelope.max_reach <= 0:
             return False
         dist = math.sqrt(x_m * x_m + y_m * y_m + z_m * z_m)
         return dist >= workspace_envelope.max_reach - ENVELOPE_PROXIMITY_THRESHOLD
@@ -583,7 +591,7 @@ class EnvelopeMixin:
             self._envelope_visible = True
             return True
         except Exception as e:
-            logging.error("Failed to create envelope hull: %s", e)
+            logger.error("Failed to create envelope hull: %s", e)
             return False
 
     def _update_envelope_from_robot_state(self) -> None:
@@ -634,7 +642,7 @@ class EnvelopeMixin:
                     self.scene.clear_clipping_planes(envelope_id)
 
     def _update_envelope_in_simulation_view(
-        self, approaching_positions: List[Tuple[float, float, float]]
+        self, approaching_positions: list[tuple[float, float, float]]
     ) -> None:
         """Update envelope visibility based on simulation state.
 
@@ -654,11 +662,11 @@ class EnvelopeMixin:
 
         if show_envelope:
             # Trigger generation if needed (checks cache first)
-            if not workspace_envelope._generated:
+            if not workspace_envelope.is_ready:
                 workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
 
             # Create hull mesh if ready
-            if not self.envelope_object and workspace_envelope._generated:
+            if not self.envelope_object and workspace_envelope.is_ready:
                 self._create_envelope_object()
             elif self.envelope_object and not self._envelope_visible:
                 self.envelope_object.visible(True)
@@ -692,9 +700,9 @@ class EnvelopeMixin:
 
     def _calculate_envelope_clipping_planes(
         self,
-        approaching_positions: List[Tuple[float, float, float]],
+        approaching_positions: list[tuple[float, float, float]],
         max_reach: float,
-    ) -> List[SceneClipPlane]:
+    ) -> list[SceneClipPlane]:
         """Calculate clipping planes to show only nearby portions of the envelope.
 
         For each approaching object, creates a clipping plane that reveals a
@@ -707,7 +715,7 @@ class EnvelopeMixin:
         Returns:
             List of plane definitions for set_clipping_planes()
         """
-        planes: List[SceneClipPlane] = []
+        planes: list[SceneClipPlane] = []
 
         for pos in approaching_positions:
             x, y, z = pos
@@ -762,8 +770,8 @@ class EnvelopeMixin:
             if self.envelope_object:
                 try:
                     self.envelope_object.delete()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Envelope cleanup: %s", e)
                 self.envelope_object = None
                 self._envelope_visible = False
 

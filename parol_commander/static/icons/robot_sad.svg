@@ -1,0 +1,19 @@
+<svg viewBox="3 3 18 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- antennas -->
+  <rect x="7" y="4.5" width="1" height="3" rx="0.5" fill="#e53935"/>
+  <rect x="16" y="4.5" width="1" height="3" rx="0.5" fill="#e53935"/>
+  <!-- head filled -->
+  <rect x="4.5" y="8.5" width="15" height="10" rx="2" fill="#e53935"/>
+  <!-- eyes default (white circles) -->
+  <g class="eye-full">
+    <circle cx="8" cy="12" r="1.8" fill="white"/>
+    <circle cx="16" cy="12" r="1.8" fill="white"/>
+  </g>
+  <!-- sad eyes (hover) - droopy arcs -->
+  <g class="eye-sad">
+    <path d="M6.2 11.8 Q8 13.5 9.8 11.8" stroke="white" stroke-width="1" stroke-linecap="round" fill="none"/>
+    <path d="M14.2 11.8 Q16 13.5 17.8 11.8" stroke="white" stroke-width="1" stroke-linecap="round" fill="none"/>
+  </g>
+  <!-- frown -->
+  <path d="M9 16.8 Q12 14.5 15 16.8" stroke="white" stroke-width="1" stroke-linecap="round" fill="none"/>
+</svg>

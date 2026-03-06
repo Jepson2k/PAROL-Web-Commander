@@ -6,10 +6,9 @@ import uuid
 from dataclasses import dataclass
 
 import numpy as np
-from pinokin import so3_rpy
+from pinokin import se3_rpy
 
 from parol_commander.state import (
-    editor_tabs_state,
     recording_state,
     robot_state,
     ui_state,
@@ -18,11 +17,10 @@ from parol_commander.common.logging_config import TRACE_ENABLED
 
 logger = logging.getLogger(__name__)
 
-# Actions that receive TARGET:uuid markers in recorded code for interactive 3D editing.
-# Only actions with editable position parameters (list literals) benefit from markers.
-# Related: MOVE_TYPE_COLORS in theme.py maps move types to path colors.
-# TODO: Consolidate action metadata into a central registry (actions.py)
-_MOTION_ACTIONS = ("moveJ", "moveL")
+# Methods whose recorded code gets TARGET:uuid markers for interactive 3D editing.
+# Only methods with literal list arguments (positions/angles) benefit from markers,
+# since those can be interactively edited by dragging targets in the 3D scene.
+EDITABLE_TARGET_METHODS = frozenset({"moveJ", "moveL"})
 
 
 @dataclass
@@ -44,58 +42,33 @@ class MotionRecorder:
 
     def __init__(self):
         self._active_jog: ActiveJog | None = None
-        self._last_action_time: float = 0.0
+        self._estimated_done_time: float = 0.0
 
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
 
         Returns [x, y, z, rx, ry, rz] in mm/deg with RPY order='xyz'.
         """
-        pose = robot_state.pose
-        if len(pose) >= 12:
-            # Extract translation (column 4 of 4x4 matrix, indices 3, 7, 11)
-            x_mm = float(pose[3])
-            y_mm = float(pose[7])
-            z_mm = float(pose[11])
-
-            # Extract rotation matrix (3x3 upper-left)
-            R = np.array(
-                [
-                    [float(pose[0]), float(pose[1]), float(pose[2])],
-                    [float(pose[4]), float(pose[5]), float(pose[6])],
-                    [float(pose[8]), float(pose[9]), float(pose[10])],
-                ],
-                dtype=np.float64,
-            )
-            rpy_rad = np.zeros(3, dtype=np.float64)
-            so3_rpy(R, rpy_rad)
-            rpy_deg = np.degrees(rpy_rad)
-            return [
-                x_mm,
-                y_mm,
-                z_mm,
-                float(rpy_deg[0]),
-                float(rpy_deg[1]),
-                float(rpy_deg[2]),
-            ]
-
-        # Fallback to current displayed values
-        logger.warning(
-            "_get_wrf_pose: falling back to display values (pose data incomplete)"
-        )
+        T = robot_state.pose.reshape(4, 4)
+        rpy_rad = np.zeros(3, dtype=np.float64)
+        se3_rpy(T, rpy_rad)
+        rpy_deg = np.degrees(rpy_rad)
         return [
-            robot_state.x or 0.0,
-            robot_state.y or 0.0,
-            robot_state.z or 0.0,
-            robot_state.rx or 0.0,
-            robot_state.ry or 0.0,
-            robot_state.rz or 0.0,
+            float(T[0, 3]),
+            float(T[1, 3]),
+            float(T[2, 3]),
+            float(rpy_deg[0]),
+            float(rpy_deg[1]),
+            float(rpy_deg[2]),
         ]
 
     def _get_current_angles(self) -> list[float]:
         """Get current joint angles as list."""
+        n = ui_state.active_robot.joints.count
         return (
-            list(robot_state.angles.deg) if len(robot_state.angles) >= 6 else [0.0] * 6
+            list(robot_state.angles.deg[:n])
+            if len(robot_state.angles) >= n
+            else [0.0] * n
         )
 
     def toggle_recording(self) -> None:
@@ -105,91 +78,38 @@ class MotionRecorder:
         else:
             self._start_recording()
 
-    def _should_insert_anchor(self) -> bool:
-        """Check if anchor moveJ is needed using cached simulation results.
-
-        Uses the pre-computed final_joints_rad from the active tab's simulation
-        instead of running a blocking subprocess. This makes recording start instant.
-
-        Returns:
-            True if anchor should be inserted (positions differ), False otherwise.
-        """
-        if len(robot_state.angles) < 6:
-            return True
-
-        current_angles_deg = self._get_current_angles()
-
-        # Get cached final position from active tab
-        active_tab = editor_tabs_state.get_active_tab()
-        if not active_tab:
-            return True
-
-        if active_tab.final_joints_rad is None:
-            return True
-
-        simulated_angles_deg = np.rad2deg(active_tab.final_joints_rad).tolist()
-        return self._compare_positions(simulated_angles_deg, current_angles_deg)
-
-    def _compare_positions(
-        self, script_end_deg: list[float], current_deg: list[float]
-    ) -> bool:
-        """Compare script end position with current robot position.
-
-        Returns:
-            True if anchor is needed (positions differ), False otherwise.
-        """
-        deltas = [script - cur for script, cur in zip(script_end_deg, current_deg)]
-        max_delta = max(abs(d) for d in deltas)
-
-        logger.debug(
-            "Anchor check:\n"
-            "  Script ends at: [%s]\n"
-            "  Robot now at:   [%s]\n"
-            "  Deltas:         [%s]\n"
-            "  Max delta: %.2f deg (threshold: 0.5)",
-            ", ".join(f"{a:.1f}" for a in script_end_deg),
-            ", ".join(f"{a:.1f}" for a in current_deg),
-            ", ".join(f"{d:+.2f}" for d in deltas),
-            max_delta,
-        )
-
-        return bool(max_delta > 0.5)
-
     def _start_recording(self) -> None:
         """Start a new recording session."""
         recording_state.is_recording = True
         self._active_jog = None
-        self._last_action_time = 0.0
+        self._estimated_done_time = 0.0
 
         # Log the initial position for reference
-        if len(robot_state.angles) >= 6:
+        if len(robot_state.angles) >= ui_state.active_robot.joints.count:
             logger.info(
                 "Recording started - initial joints: %s deg",
                 [f"{a:.1f}" for a in robot_state.angles.deg],
             )
-        if (
-            robot_state.x is not None
-            and robot_state.y is not None
-            and robot_state.z is not None
-        ):
-            logger.info(
-                "Recording started - initial pose: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] (mm/deg)",
-                robot_state.x,
-                robot_state.y,
-                robot_state.z,
-                robot_state.rx or 0.0,
-                robot_state.ry or 0.0,
-                robot_state.rz or 0.0,
-            )
+        logger.info(
+            "Recording started - initial pose: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] (mm/deg)",
+            robot_state.x,
+            robot_state.y,
+            robot_state.z,
+            robot_state.rx,
+            robot_state.ry,
+            robot_state.rz,
+        )
 
-        # Insert anchor moveJ command only if current position differs from
-        # where the script would end (simulated using dry run client)
-        if len(robot_state.angles) >= 6 and self._should_insert_anchor():
+        # Always insert anchor moveJ to establish the recording start position.
+        # This ensures the path visualizer shows correct transitions — without it,
+        # the viz draws a line from the script's last move directly to the first
+        # recorded move, even if the robot was jogged elsewhere in between.
+        if len(robot_state.angles) >= ui_state.active_robot.joints.count:
             angles = self._get_current_angles()
             args = ", ".join(f"{a:.2f}" for a in angles)
-            anchor_snippet = (
-                f"rbt.moveJ([{args}], duration=0.50)  # Recording start position"
-            )
+            spd = ui_state.jog_speed / 100.0
+            acc = ui_state.jog_accel / 100.0
+            anchor_snippet = f"rbt.moveJ([{args}], speed={spd}, accel={acc})  # Recording start position"
             self._insert_snippet(anchor_snippet)
             logger.info(
                 "Inserted recording start anchor at joints: %s",
@@ -203,7 +123,7 @@ class MotionRecorder:
             self.on_jog_end()
 
         recording_state.is_recording = False
-        self._last_action_time = 0.0
+        self._estimated_done_time = 0.0
         logger.info("Recording stopped")
 
     def record_action(self, action_type: str, **params) -> None:
@@ -216,12 +136,14 @@ class MotionRecorder:
         """
         if not recording_state.is_recording:
             return
+        self._record_action_impl(action_type, **params)
 
+    def _record_action_impl(self, action_type: str, **params) -> None:
+        """Core recording logic (no is_recording guard)."""
         # Auto-insert delay if significant time gap (>0.5s)
-        # Gap is measured from when the LAST action completed to when THIS action started
         now = time.time()
-        if self._last_action_time > 0:
-            gap = now - self._last_action_time
+        if self._estimated_done_time > 0:
+            gap = now - self._estimated_done_time
             if gap > 0.5:
                 delay_snippet = f"time.sleep({gap:.2f})"
                 self._insert_snippet(delay_snippet)
@@ -232,14 +154,14 @@ class MotionRecorder:
 
         # Get duration for motion commands (to estimate when action completes)
         duration = params.get("duration", 0.0)
-        is_motion_action = action_type in _MOTION_ACTIONS
+        is_motion_action = action_type in EDITABLE_TARGET_METHODS
 
-        # Update _last_action_time to estimated completion time for motion commands
-        # For instant commands (home, gripper, io), use current time
+        # Update timestamp to estimated completion time for motion commands,
+        # or current time for instant commands (home, gripper, io)
         if is_motion_action and duration > 0:
-            self._last_action_time = now + duration
+            self._estimated_done_time = now + duration
         else:
-            self._last_action_time = now
+            self._estimated_done_time = now
 
         # Generate marker for motion commands (for interactive targets)
         marker_id = uuid.uuid4().hex[:8] if is_motion_action else None
@@ -270,39 +192,49 @@ class MotionRecorder:
         marker = f"  # TARGET:{marker_id}" if marker_id else ""
 
         if action_type == "moveJ":
-            angles = params.get("angles", [0.0] * 6)
-            dur = params.get("duration", 1.0)
-            # Ensure minimum duration for safety
-            dur = max(0.5, dur)
+            angles = params["angles"]
+            spd = ui_state.jog_speed / 100.0
+            acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{a:.2f}" for a in angles)
-            return f"rbt.moveJ([{args}], duration={dur:.2f}){marker}"
+            return f"rbt.moveJ([{args}], speed={spd}, accel={acc}){marker}"
 
         elif action_type == "moveL":
-            pose = params.get("pose", [0.0] * 6)
-            dur = params.get("duration", 1.0)
-            # Ensure minimum duration for safety
-            dur = max(0.5, dur)
+            pose = params["pose"]
+            spd = ui_state.jog_speed / 100.0
+            acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{p:.3f}" for p in pose)
-            return f"rbt.moveL([{args}], duration={dur:.2f}){marker}"
+            return f"rbt.moveL([{args}], speed={spd}, accel={acc}){marker}"
 
         elif action_type == "home":
             return "rbt.home()"
 
         elif action_type == "gripper":
             if params.get("calibrate"):
-                return 'rbt.control_electric_gripper("calibrate")'
-            pos = params.get("position", 0)
-            spd = params.get("speed", 50)
-            cur = params.get("current", 100)
-            return f'rbt.control_electric_gripper("move", position={pos}, speed={spd}, current={cur})'
+                return "rbt.tool.calibrate()"
+            pos = params["position"]
+            if pos <= 0.0:
+                return "rbt.tool.open()"
+            if pos >= 1.0:
+                return "rbt.tool.close()"
+            kwargs = []
+            spd = params.get("speed")
+            cur = params.get("current")
+            if spd is not None:
+                kwargs.append(f"speed={spd}")
+            if cur is not None:
+                kwargs.append(f"current={cur}")
+            kwargs_str = ", ".join(kwargs)
+            if kwargs_str:
+                return f"rbt.tool.set_position({pos}, {kwargs_str})"
+            return f"rbt.tool.set_position({pos})"
 
         elif action_type == "io":
-            action = "open" if params.get("state") else "close"
-            port = params.get("port", 1)
-            return f'rbt.control_pneumatic_gripper("{action}", {port})'
+            port = params["port"]
+            state = params["state"]
+            return f"rbt.set_io({port}, {state})"
 
         elif action_type == "delay":
-            seconds = params.get("seconds", 1.0)
+            seconds = params["seconds"]
             return f"time.sleep({seconds:.2f})"
 
         else:
@@ -366,17 +298,13 @@ class MotionRecorder:
         Args:
             move_type: "cartesian" or "joints"
         """
-        # Temporarily enable recording for single capture
-        was_recording = recording_state.is_recording
-        recording_state.is_recording = True
-
+        self._estimated_done_time = 0.0
         if move_type == "joints":
-            self.record_action("moveJ", angles=self._get_current_angles(), duration=1.0)
+            self._record_action_impl(
+                "moveJ", angles=self._get_current_angles(), duration=1.0
+            )
         else:
-            self.record_action("moveL", pose=self._get_wrf_pose(), duration=1.0)
-
-        # Restore recording state
-        recording_state.is_recording = was_recording
+            self._record_action_impl("moveL", pose=self._get_wrf_pose(), duration=1.0)
 
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code snippet into the editor and flash the new line."""

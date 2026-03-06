@@ -13,9 +13,10 @@ from typing import Any
 
 import numpy as np
 
-from parol_commander.robot_interface import DryRunResult
+from waldoctl import DryRunResult
 
 from parol_commander.common.theme import get_color_for_move_type
+from parol_commander.state import ToolAction
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ _LITERAL_LIST_RE = re.compile(
 _DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
 
 # Methods that produce trajectory segments for visualization.
-_MOTION_METHODS: dict[str, str] = {
+MOTION_METHODS: dict[str, str] = {
     "moveJ": "joints",
     "moveL": "cartesian",
     "moveC": "smooth_arc",
@@ -46,10 +47,33 @@ _MOTION_METHODS: dict[str, str] = {
 # the same way they would on real hardware.
 
 
+class _ToolCollectionProxy:
+    """Wraps DryRunRobotClient.tool with collection + visualization metadata.
+
+    Intercepts tool action method calls, delegates to the dry-run tool
+    (which dispatches through the planner), collects the DryRunResult,
+    and augments with tool visualization metadata for 3D arrow rendering.
+    """
+
+    def __init__(self, preview_client: "PathPreviewClient"):
+        self._preview = preview_client
+
+    def __getattr__(self, name: str) -> Any:
+        dry_run_tool = self._preview._client.tool
+
+        def interceptor(*args: Any, **kwargs: Any) -> Any:
+            method = getattr(dry_run_tool, name)
+            result = method(*args, **kwargs)
+            self._preview._record_tool_action(name, args, kwargs, result)
+            return result
+
+        return interceptor
+
+
 class PathPreviewClient:
     """Wraps DryRunRobotClient with visualization metadata collection.
 
-    Delegates all commands to the parol6 DryRunRobotClient (which runs
+    Delegates all commands to the backend's DryRunClient (which runs
     through the real command pipeline with ControllerState). After each
     motion, collects path segment dicts for 3D visualization.
 
@@ -64,9 +88,9 @@ class PathPreviewClient:
         dry_run_client_cls: type,
         segment_collector: list[dict] | None = None,
         target_collector: list[dict] | None = None,
+        tool_action_collector: list[ToolAction] | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
-        host: str = "127.0.0.1",
-        port: int = 5001,
+        tool_metadata: dict | None = None,
     ):
         self.segment_collector: list[dict] = (
             [] if segment_collector is None else segment_collector
@@ -74,12 +98,17 @@ class PathPreviewClient:
         self.target_collector: list[dict] = (
             [] if target_collector is None else target_collector
         )
+        self.tool_action_collector: list[ToolAction] = (
+            [] if tool_action_collector is None else tool_action_collector
+        )
+        self._tool_metadata = tool_metadata
 
         init_deg: list[float] | None = None
         if initial_joints is not None:
             init_deg = np.degrees(np.asarray(initial_joints, dtype=np.float64)).tolist()
 
         self._client = dry_run_client_cls(initial_joints_deg=init_deg)
+        self._tool_proxy = _ToolCollectionProxy(self)
         self.last_joints_rad: list[float] | None = None
         self._blend_move_type: str = ""
 
@@ -93,6 +122,53 @@ class PathPreviewClient:
 
     def close(self):
         self._flush_blend()
+
+    @property
+    def tool(self) -> _ToolCollectionProxy:
+        """Return a proxy that delegates to DryRunRobotClient.tool and collects results."""
+        return self._tool_proxy
+
+    def _record_tool_action(
+        self,
+        method_name: str,
+        args: tuple,
+        kwargs: dict,
+        result: DryRunResult | None = None,
+    ) -> None:
+        """Record a tool action with TCP pose for path preview visualization."""
+        if self._tool_metadata is None:
+            return
+
+        line_no = self._get_caller_line_number()
+
+        # Determine target positions from the method call
+        if method_name == "set_position" and args:
+            target_pos = (float(args[0]),)
+        elif method_name == "open":
+            target_pos = (0.0,)
+        elif method_name == "close":
+            target_pos = (1.0,)
+        else:
+            return
+
+        # Get TCP position from the DryRunResult (preferred) or last segment
+        tcp_pose = None
+        if result is not None and result.tcp_poses.shape[0] > 0:
+            tcp_pose = result.tcp_poses[-1, :3].tolist()
+        elif self.segment_collector:
+            last_seg = self.segment_collector[-1]
+            if last_seg.get("points"):
+                tcp_pose = last_seg["points"][-1]
+
+        action = ToolAction(
+            tcp_pose=tcp_pose,
+            motions=self._tool_metadata["motions"],
+            target_positions=target_pos,
+            activation_type=self._tool_metadata["activation_type"],
+            line_number=line_no,
+            method=method_name,
+        )
+        self.tool_action_collector.append(action)
 
     def _flush_blend(self) -> None:
         """Flush pending blend buffer from the underlying dry-run client."""
@@ -110,7 +186,7 @@ class PathPreviewClient:
                 if frame.f_code.co_filename == "simulation_script.py":
                     return frame.f_lineno
                 frame = frame.f_back
-        except Exception:
+        except (AttributeError, RuntimeError):
             pass
         return 0
 
@@ -119,7 +195,7 @@ class PathPreviewClient:
             line = linecache.getline("simulation_script.py", line_no)
             if line:
                 return line.strip()
-        except Exception:
+        except (OSError, ValueError, IndexError):
             pass
         return ""
 
@@ -157,9 +233,7 @@ class PathPreviewClient:
         valid = result.valid
         has_error = result.error is not None
 
-        end_joints = (
-            result.end_joints_rad.tolist() if result.end_joints_rad.size > 0 else []
-        )
+        end_joints = self.last_joints_rad if self.last_joints_rad else []
 
         estimated = result.duration if result.duration else None
         requested = self._extract_requested_duration(source_line)
@@ -269,20 +343,16 @@ class PathPreviewClient:
 
             i = j
 
-    # ---- Explicit: home (special first-move logic) ----
+    # ---- Explicit: home ----
 
     def home(self, **kw: Any) -> bool:
         self._flush_blend()
-        has_prior_segments = len(self.segment_collector) > 0
         try:
             result = self._client.home(**kw)
         except Exception as e:
             logger.warning("home failed: %s", e)
             return True
-        if has_prior_segments:
-            self._collect_from_result(result, "joints")
-        elif result is not None and result.end_joints_rad.size > 0:
-            self.last_joints_rad = result.end_joints_rad.tolist()
+        self._collect_from_result(result, "joints")
         return True
 
     # ---- Dynamic dispatch ----
@@ -292,7 +362,7 @@ class PathPreviewClient:
             raise AttributeError(name)
 
         # Motion methods: dispatch through _client + collect visualization
-        move_type = _MOTION_METHODS.get(name)
+        move_type = MOTION_METHODS.get(name)
         if move_type is not None:
 
             def motion_method(*args: Any, **kwargs: Any) -> bool:
@@ -329,17 +399,17 @@ class AsyncPathPreviewClient:
         dry_run_client_cls: type,
         segment_collector: list[dict] | None = None,
         target_collector: list[dict] | None = None,
+        tool_action_collector: list[ToolAction] | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
-        host: str = "127.0.0.1",
-        port: int = 5001,
+        tool_metadata: dict | None = None,
     ):
         self._sync_client = PathPreviewClient(
             dry_run_client_cls=dry_run_client_cls,
-            segment_collector=[] if segment_collector is None else segment_collector,
-            target_collector=[] if target_collector is None else target_collector,
+            segment_collector=segment_collector,
+            target_collector=target_collector,
+            tool_action_collector=tool_action_collector,
             initial_joints=initial_joints,
-            host=host,
-            port=port,
+            tool_metadata=tool_metadata,
         )
 
     async def __aenter__(self):
@@ -359,6 +429,10 @@ class AsyncPathPreviewClient:
     def target_collector(self) -> list[dict]:
         return self._sync_client.target_collector
 
+    @property
+    def tool_action_collector(self) -> list[ToolAction]:
+        return self._sync_client.tool_action_collector
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._sync_client, name)
         if callable(attr) and name != "close":
@@ -366,5 +440,6 @@ class AsyncPathPreviewClient:
             async def wrapper(*args: Any, **kwargs: Any) -> Any:
                 return attr(*args, **kwargs)
 
+            object.__setattr__(self, name, wrapper)
             return wrapper
         return attr

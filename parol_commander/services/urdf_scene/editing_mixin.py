@@ -12,7 +12,7 @@ Provides target editing functionality:
 import asyncio
 import logging
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 from nicegui import ui
@@ -29,6 +29,8 @@ from .config import RobotAppearanceMode
 from .ik_solver import EditingIKSolver
 from .loader import normalize_axis
 
+logger = logging.getLogger(__name__)
+
 
 class EditingMixin:
     """Mixin providing target editing functionality for UrdfScene."""
@@ -37,53 +39,56 @@ class EditingMixin:
     scene: Any
     urdf_model: Any
     urdf_path: Any
-    joint_names: List[str]
-    joint_axes: Dict[str, np.ndarray]
-    joint_groups: Dict[str, Any]
-    joint_trafos: Dict
-    joint_pos_limits: Dict[str, Dict[str, Optional[float]]]
+    joint_names: list[str]
+    joint_axes: dict[str, np.ndarray]
+    joint_groups: dict[str, Any]
+    joint_trafos: dict
+    joint_pos_limits: dict[str, dict[str, float | None]]
     _stl_scale: float
-    _robot_meshes: List[Any]
+    _robot_meshes: list[Any]
     _appearance_mode: RobotAppearanceMode
-    _editing_angles: List[float]
-    _pre_edit_angles: List[float]
+    _editing_angles: list[float]
+    _pre_edit_angles: list[float]
     _tcp_ball: Any
     _tcp_ball_dragging: bool
-    _tcp_fk_solver: Optional[EditingIKSolver]
+    _tcp_fk_solver: EditingIKSolver | None
     config: Any
     targets_group: Any
-    _target_objects: Dict[str, Dict[str, Any]]
+    _target_objects: dict[str, dict[str, Any]]
     context_menu: Any
     _scene_wrapper: Any
-    _editing_rotation: List[float]
+    _current_tool_offset_z: float
+    _editing_rotation: list[float]
     _editing_rotation_set: bool
-    _editing_target_id: Optional[str]
-    _right_click_start_pos: Optional[Tuple[float, float]]
+    _editing_target_id: str | None
+    _right_click_start_pos: tuple[float, float] | None
 
     # Methods from other mixins / main class
+    set_editing_angles: Any
+    get_editing_angles: Any
     set_appearance_mode: Any
     _ensure_tcp_ball: Any
     _update_tcp_ball_position: Any
     enable_tcp_transform_controls: Any
-    get_editing_angles: Any
     _update_envelope_from_robot_state: Any
     _apply_joint_angles: Any
+    _ensure_ik_solver: Any
 
     def _init_editing_state(self) -> None:
         """Initialize all editing state variables."""
         # Joint transform control groups
-        self._joint_control_groups: Dict[int, Any] = {}
+        self._joint_control_groups: dict[int, Any] = {}
         self._joint_controls_suspended: bool = False
 
         # Context menu
         self.context_menu: Any | None = None
-        self._last_click_coords: Tuple[float, float, float] | None = None
-        self._right_click_start_pos: Tuple[float, float] | None = None
+        self._last_click_coords: tuple[float, float, float] | None = None
+        self._right_click_start_pos: tuple[float, float] | None = None
         self._right_click_drag_threshold: float = 5.0
         self._pending_context_menu_event: Any | None = None
 
         # Target objects
-        self._target_objects: Dict[str, Dict[str, Any]] = {}
+        self._target_objects: dict[str, dict[str, Any]] = {}
 
         # Unified target editor state
         self._editing_unified_target: bool = False
@@ -93,8 +98,8 @@ class EditingMixin:
         self._editing_target_type: str = "cartesian"
 
         # Original values for delta display
-        self._original_editing_pose: List[float] | None = None
-        self._original_editing_joints: List[float] | None = None
+        self._original_editing_pose: list[float] | None = None
+        self._original_editing_joints: list[float] | None = None
 
         # Edit bar UI
         self._edit_bar: Any | None = None
@@ -111,17 +116,15 @@ class EditingMixin:
     # Core editing mode
     # -------------------------------------------------------------------------
 
-    def enter_editing_mode(self, joint_angles: List[float]) -> None:
+    def enter_editing_mode(self, joint_angles: list[float]) -> None:
         """Enter editing mode at specified joint angles."""
+        n = len(self.joint_names)
         # Save current angles for restoration
-        if len(robot_state.angles) >= 6:
-            self._pre_edit_angles = list(robot_state.angles.rad[:6])
-        else:
-            self._pre_edit_angles = [0.0] * 6
+        self._pre_edit_angles = list(robot_state.angles.rad[:n])
 
-        # Set editing angles
-        self._editing_angles = list(joint_angles) + [0.0] * (6 - len(joint_angles))
-        self._editing_angles = self._editing_angles[:6]
+        # Set editing angles (pad or truncate to joint count)
+        self._editing_angles = list(joint_angles) + [0.0] * (n - len(joint_angles))
+        self._editing_angles = self._editing_angles[:n]
 
         # Reset state
         self._editing_target_type = "cartesian"
@@ -175,7 +178,7 @@ class EditingMixin:
             return self._cached_joint_axes_letters
 
         axis_letters: list[str] = []
-        for joint_name in self.joint_names[:6]:
+        for joint_name in self.joint_names:
             if joint_name in self.joint_axes:
                 vec = self.joint_axes[joint_name]
             else:
@@ -193,7 +196,7 @@ class EditingMixin:
     def _get_joint_limits(self) -> list[tuple[float, float]]:
         """Get joint limits in radians."""
         limits = []
-        for joint_name in self.joint_names[:6]:
+        for joint_name in self.joint_names:
             joint_limits = self.joint_pos_limits.get(joint_name, {})
             min_val = joint_limits.get("min", -math.pi)
             max_val = joint_limits.get("max", math.pi)
@@ -213,19 +216,17 @@ class EditingMixin:
         axes = self._get_joint_axes_letters()
         rotation_snap = math.radians(5.0)
 
-        for i, joint_name in enumerate(self.joint_names[:6]):
+        for i, joint_name in enumerate(self.joint_names):
             group = self.joint_groups.get(joint_name)
             if not group:
                 continue
-            if hasattr(group, "with_name"):
-                group.with_name(f"edit_joint_group:{i}")
+            group.with_name(f"edit_joint_group:{i}")
             axis = axes[i] if i < len(axes) else "Z"
             group_id = str(group.id)
             self.scene.enable_transform_controls(
                 group_id, mode="rotate", size=0.6, visible_axes=[axis]
             )
-            if hasattr(self.scene, "set_transform_space"):
-                self.scene.set_transform_space(group_id, "local")
+            self.scene.set_transform_space(group_id, "local")
             self.scene.set_transform_rotation_snap(group_id, rotation_snap)
             self._joint_control_groups[i] = group
 
@@ -234,15 +235,14 @@ class EditingMixin:
         if not self.scene or not self._joint_control_groups:
             return
         for _, group in list(self._joint_control_groups.items()):
-            if hasattr(self.scene, "disable_transform_controls"):
-                self.scene.disable_transform_controls(str(group.id))
+            self.scene.disable_transform_controls(str(group.id))
         self._joint_control_groups.clear()
 
     def _on_joint_group_transform(self, e) -> None:
         """Handle joint ring rotation events."""
         if self._appearance_mode != RobotAppearanceMode.EDITING:
             return
-        if not self.scene or getattr(self, "_joint_controls_suspended", False):
+        if not self.scene or self._joint_controls_suspended:
             return
 
         if not self._joint_ring_touched:
@@ -285,32 +285,29 @@ class EditingMixin:
         if args.get("chain_id") != "ghost_ik":
             return
         angles = args.get("angles", [])
-        if angles is not None and len(angles) >= 6:
+        if angles is not None and len(angles) >= len(self.joint_names):
             self._editing_angles = list(angles)
             self._sync_robot_state_from_editing()
             if self._current_editing_type:
                 self._update_edit_bar_values(self._current_editing_type)
 
+    def apply_editing_home(self) -> None:
+        """Move editing robot to home position and sync state/UI."""
+        home_rad = ui_state.active_robot.joints.home.rad.tolist()
+        self.set_editing_angles(home_rad)
+        self._sync_robot_state_from_editing()
+        if self._current_editing_type:
+            self._update_edit_bar_values(self._current_editing_type)
+
     # -------------------------------------------------------------------------
     # IK
     # -------------------------------------------------------------------------
 
-    def _init_ik_solver(self) -> None:
-        """Initialize the IK solver."""
-        if self._tcp_fk_solver is None:
-            try:
-                self._tcp_fk_solver = EditingIKSolver.from_urdf_scene(self)
-            except Exception as e:
-                logging.error("Failed to initialize IK solver: %s", e)
-
-    def _ik_for_position(self, target_pos: List[float]) -> Optional[List[float]]:
+    def _ik_for_position(self, target_pos: list[float]) -> list[float] | None:
         """Solve IK for target position. Returns joint angles in radians."""
-        if not self._tcp_fk_solver:
-            try:
-                self._tcp_fk_solver = EditingIKSolver.from_urdf_scene(self)
-            except Exception as e:
-                logging.error("Failed to initialize IK solver: %s", e)
-                return None
+        if not self._ensure_ik_solver():
+            return None
+        assert self._tcp_fk_solver is not None
 
         current_angles = self._get_robot_angles_rad()
         result = self._tcp_fk_solver.solve(
@@ -395,7 +392,7 @@ class EditingMixin:
 
     def _is_envelope_hit(self, object_name: str) -> bool:
         """Check if object is the workspace envelope."""
-        return object_name == "envelope:sphere"
+        return object_name == "envelope:hull"
 
     def _delete_target(self, target_id: str) -> None:
         """Delete a target after confirmation."""
@@ -457,7 +454,7 @@ class EditingMixin:
             await asyncio.sleep(0.15)
             if not self._editing_unified_target:
                 return
-            self._init_ik_solver()
+            self._ensure_ik_solver()
             self.enable_tcp_transform_controls("translate")
             self._enable_joint_transform_controls()
             self._sync_robot_state_from_editing()
@@ -480,7 +477,7 @@ class EditingMixin:
                 if self._editing_target_id in self._target_objects:
                     group = self._target_objects[self._editing_target_id].get("group")
                     if group:
-                        group.move(pose[0] * 1000, pose[1] * 1000, pose[2] * 1000)
+                        group.move(pose[0], pose[1], pose[2])
                 target.pose = pose
                 ui_state.editor_panel.sync_code_from_target(
                     self._editing_target_id, pose
@@ -527,7 +524,7 @@ class EditingMixin:
 
         if not self._edit_bar_container:
             parent: Any = self._scene_wrapper if self._scene_wrapper else ui
-            with parent:
+            with parent:  # ty: ignore[invalid-context-manager]
                 self._edit_bar_container = ui.element("div").classes(
                     "absolute bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-auto"
                 )
@@ -591,9 +588,10 @@ class EditingMixin:
 
             if show_joints:
                 # Use pre-computed degrees from robot_state (synced from editing angles)
-                angles_deg = list(robot_state.angles.deg[:6])
-                orig_deg = self._original_editing_joints or [0.0] * 6
-                for i, angle in enumerate(angles_deg[:6]):
+                n = len(self.joint_names)
+                angles_deg = list(robot_state.angles.deg[:n])
+                orig_deg = self._original_editing_joints or [0.0] * n
+                for i, angle in enumerate(angles_deg):
                     delta = angle - orig_deg[i]
                     ui.label(f"ΔJ{i + 1}: {fmt(delta, '°')}").classes(
                         f"text-xs font-mono whitespace-nowrap {color(delta)}"
@@ -605,7 +603,7 @@ class EditingMixin:
                         self.get_editing_angles()
                     )
                     if fk is not None:
-                        offset = getattr(self, "_current_tool_offset_z", 0.0)
+                        offset = self._current_tool_offset_z
                         tcp_pos_mm = [
                             fk[0] * 1000,
                             fk[1] * 1000,
@@ -650,28 +648,27 @@ class EditingMixin:
     # Helpers
     # -------------------------------------------------------------------------
 
-    def _find_target_by_id(self, target_id: str) -> Optional[ProgramTarget]:
+    def _find_target_by_id(self, target_id: str) -> ProgramTarget | None:
         """Find a target by ID in simulation_state.targets."""
         for t in simulation_state.targets:
             if t.id == target_id:
                 return t
         return None
 
-    def _get_robot_angles_rad(self) -> List[float]:
+    def _get_robot_angles_rad(self) -> list[float]:
         """Get robot angles in radians."""
-        if len(robot_state.angles) >= 6:
-            return list(robot_state.angles.rad[:6])
-        return [0.0] * 6
+        n = len(self.joint_names)
+        if len(robot_state.angles) >= n:
+            return list(robot_state.angles.rad[:n])
+        return [0.0] * n
 
-    def _get_editing_tcp_pose(self) -> Optional[List[float]]:
+    def _get_editing_tcp_pose(self) -> list[float] | None:
         """Get TCP pose from robot_state (already synced from editing angles).
 
         Returns [x, y, z, rx, ry, rz] with position in meters and rotation in degrees.
         """
-        if robot_state.x is None:
-            return None
         # Subtract tool offset since sync adds it to z
-        offset = getattr(self, "_current_tool_offset_z", 0.0)
+        offset = self._current_tool_offset_z
         return [
             robot_state.x / 1000,  # mm -> m
             robot_state.y / 1000,
@@ -681,7 +678,7 @@ class EditingMixin:
             robot_state.rz,
         ]
 
-    def _add_target_with_pose(self, pose: List[float], move_type: str) -> None:
+    def _add_target_with_pose(self, pose: list[float], move_type: str) -> None:
         """Add target and insert code."""
         pose_mm = [
             pose[0] * 1000,
@@ -702,12 +699,13 @@ class EditingMixin:
                 scene_object_id="",
             )
             simulation_state.targets.append(new_target)
-            asyncio.create_task(simulation_state.notify_changed())
+            simulation_state.notify_changed()
 
     def _insert_joint_target_from_editing(self) -> None:
         """Insert joint target code."""
         # Use pre-computed degrees from robot_state (synced from editing angles)
-        ui_state.editor_panel.add_joint_target_code(list(robot_state.angles.deg[:6]))
+        n = len(self.joint_names)
+        ui_state.editor_panel.add_joint_target_code(list(robot_state.angles.deg[:n]))
 
     def _sync_robot_state_from_editing(self) -> None:
         """Sync robot_state with editing values."""
@@ -721,17 +719,17 @@ class EditingMixin:
             if self._tcp_fk_solver:
                 fk = self._tcp_fk_solver.forward_kinematics(angles_rad)
                 if fk is not None:
-                    offset = getattr(self, "_current_tool_offset_z", 0.0)
+                    offset = self._current_tool_offset_z
                     robot_state.x = fk[0] * 1000
                     robot_state.y = fk[1] * 1000
                     robot_state.z = (fk[2] + offset) * 1000
                     if len(fk) >= 6:
-                        # Set OrientationArray from radians (computes degrees internally)
+                        # Set orientation from radians (computes degrees internally)
                         robot_state.orientation.set_rad(np.asarray(fk[3:6]))
                         # Also set scalar fields for UI binding
                         robot_state.rx = robot_state.orientation.deg[0]
                         robot_state.ry = robot_state.orientation.deg[1]
                         robot_state.rz = robot_state.orientation.deg[2]
                     self._update_envelope_from_robot_state()
-        except (TypeError, ValueError, AttributeError):
-            pass
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.debug("_sync_robot_state_from_editing failed: %s", e)

@@ -385,61 +385,23 @@ def reset_state(request: pytest.FixtureRequest):
 
     from parol_commander import state as state_module
     from parol_commander.components.help_menu import HelpMenu
-    from parol_commander.state import readiness_state
+    from parol_commander.state import reset_all_state
 
     # Mark first visit and safety as acknowledged so dialogs don't appear
     ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
     ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
 
-    # Reset readiness events
-    readiness_state.reset()
+    reset_all_state()
 
-    # Reset robot state - use proper array types
+    # Test-specific overrides (differ from zero defaults)
     state_module.robot_state.angles.set_deg(np.array(HOME_ANGLES_DEG, dtype=np.float64))
-    state_module.robot_state.orientation.set_deg(np.zeros(3, dtype=np.float64))
-    state_module.robot_state.pose = np.zeros(16, dtype=np.float64)
     state_module.robot_state.io = np.array([0, 0, 0, 0, 1], dtype=np.int32)  # ESTOP OK
-    state_module.robot_state.gripper = np.zeros(6, dtype=np.int32)
-    state_module.robot_state.connected = False
-    state_module.robot_state.x = 0.0
-    state_module.robot_state.y = 0.0
-    state_module.robot_state.z = 0.0
-    state_module.robot_state.rx = 0.0
-    state_module.robot_state.ry = 0.0
-    state_module.robot_state.rz = 0.0
-    state_module.robot_state.io_in1 = 0
-    state_module.robot_state.io_in2 = 0
-    state_module.robot_state.io_out1 = 0
-    state_module.robot_state.io_out2 = 0
-    state_module.robot_state.io_estop = 1
-    state_module.robot_state.joint_en = np.ones(12, dtype=np.int32)
+    state_module.robot_state.io_inputs = [0, 0]
+    state_module.robot_state.io_outputs = [0, 0]
     state_module.robot_state.cart_en = {
         "WRF": np.ones(12, dtype=np.int32),
         "TRF": np.ones(12, dtype=np.int32),
     }
-    state_module.robot_state.last_update_ts = 0.0
-    state_module.robot_state.action_state = ""
-    state_module.robot_state.action_current = ""
-
-    # Reset simulation state
-    state_module.simulation_state.targets.clear()
-    state_module.simulation_state.path_segments.clear()
-    state_module.simulation_state.current_step_index = 0
-    state_module.simulation_state.total_steps = 0
-    state_module.simulation_state.is_playing = False
-    state_module.simulation_state.playback_speed = 1.0
-    state_module.simulation_state.preview_mode = False
-    state_module.simulation_state.paths_visible = True
-    state_module.simulation_state.envelope_visible = False
-    state_module.simulation_state.envelope_mode = "auto"
-
-    # Reset recording state
-    state_module.recording_state.is_recording = False
-
-    # Reset editor/UI state
-    state_module.editor_tabs_state.tabs = []
-    state_module.editor_tabs_state.active_tab_id = None
-    state_module.ui_state.urdf_scene = None
 
     # Clear NiceGUI log handler targets to prevent deadlocks when logging
     # triggers widget.push() on stale widgets outside a NiceGUI context
@@ -469,7 +431,7 @@ def kill_stale_controllers() -> Generator[None, None, None]:
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
     # Pre-session cleanup
@@ -486,7 +448,7 @@ def kill_stale_controllers() -> Generator[None, None, None]:
             probe = Robot(host=config.controller_host, port=controller_port)
             if probe.is_available():
                 _kill()
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             pass
 
 

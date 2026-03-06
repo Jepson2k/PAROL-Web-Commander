@@ -15,11 +15,41 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git",
+  "opencv-python-headless>=4.8",
+
+  # pinokin: Pinocchio-based FK/IK bindings
+  # https://github.com/Jepson2k/pinokin/releases/tag/v0.1.5
+
+  # macOS ARM64 (Apple Silicon)
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-macosx_15_0_arm64.whl ; python_version == '3.11' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-macosx_15_0_arm64.whl ; python_version == '3.12' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-macosx_15_0_arm64.whl ; python_version == '3.13' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-macosx_15_0_arm64.whl ; python_version == '3.14' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+
+  # Windows AMD64
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-win_amd64.whl ; python_version == '3.11' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-win_amd64.whl ; python_version == '3.12' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-win_amd64.whl ; python_version == '3.13' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-win_amd64.whl ; python_version == '3.14' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+
+  # Linux x86_64
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-manylinux_2_39_x86_64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-manylinux_2_39_x86_64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-manylinux_2_39_x86_64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-manylinux_2_39_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+
+  # Linux aarch64 (ARM64)
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-manylinux_2_39_aarch64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-manylinux_2_39_aarch64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-manylinux_2_39_aarch64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-manylinux_2_39_aarch64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'aarch64'",
 ]
 
 [project.optional-dependencies]
 parol6 = ["parol6>=0.1.0"]
-dev = ["parol6>=0.1.0", "ruff", "mypy", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
+v4l2 = ["linuxpy>=0.24"]
+dev = ["parol6>=0.1.0", "ruff", "ty", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
 
 [project.scripts]
 parol-commander = "parol_commander.main:main"
@@ -31,18 +61,8 @@ include = ["parol_commander*"]
 [tool.setuptools.package-data]
 parol_commander = ["static/**/*"]
 
-[tool.mypy]
-files = ["parol_commander"]
-ignore_missing_imports = true
-namespace_packages = false
-
-[[tool.mypy.overrides]]
-module = ["parol6", "parol6.*", "pinokin", "pinokin.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["nicegui", "nicegui.*"]
-ignore_errors = true
+[tool.ty.environment]
+extra-paths = ["PAROL6-python-API"]
 
 # ---- Pytest configuration ----
 [tool.pytest.ini_options]

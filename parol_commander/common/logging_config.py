@@ -1,10 +1,11 @@
 import logging
-import sys
 import os
+import sys
 import threading
 import weakref
+from typing import Any
 
-from nicegui import ui
+from nicegui import ui, Client
 
 _LEVEL_COLORS = {
     "TRACE": "\033[32m",  # green
@@ -31,14 +32,18 @@ _DIM = "\033[2m"
 TRACE = 5
 logging.addLevelName(TRACE, "TRACE")
 
-# Add Logger.trace if missing
-if not hasattr(logging.Logger, "trace"):
 
-    def _trace(self, msg, *args, **kwargs):
+class TraceLogger(logging.Logger):
+    """Logger subclass with a ``trace()`` method for sub-DEBUG verbosity."""
+
+    def trace(self, msg: object, *args: object, **kwargs: Any) -> None:
         if self.isEnabledFor(TRACE):
             self._log(TRACE, msg, args, **kwargs)
 
-    logging.Logger.trace = _trace  # type: ignore[attr-defined]
+
+# Install trace on the base Logger class so *all* loggers support it
+if not hasattr(logging.Logger, "trace"):
+    logging.Logger.trace = TraceLogger.trace  # type: ignore[attr-defined]
     logging.TRACE = TRACE  # type: ignore[attr-defined]
 
 # Environment guard to make hot-path trace zero-cost unless explicitly enabled
@@ -106,7 +111,7 @@ class NiceGuiLogHandler(logging.Handler):
                 # This prevents the "Client has been deleted" warning from NiceGUI
                 try:
                     client_ref = widget._client()
-                    if client_ref is None or client_ref._deleted:
+                    if client_ref is None or client_ref.id not in Client.instances:
                         stale.append(ref)
                         continue
                 except (RuntimeError, AttributeError):
@@ -131,16 +136,6 @@ def attach_ui_log(log_widget) -> None:
         return
     with _ui_lock:
         _ui_log_targets.add(ref)
-
-
-def detach_ui_log(log_widget) -> None:
-    """Unregister a ui.log widget."""
-    try:
-        ref = weakref.ref(log_widget)
-    except TypeError:
-        return
-    with _ui_lock:
-        _ui_log_targets.discard(ref)
 
 
 def _have_console_handler(logger: logging.Logger) -> bool:

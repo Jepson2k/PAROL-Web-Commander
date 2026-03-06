@@ -145,8 +145,11 @@ class TestMotionRecorder:
         mock_textarea.value = "# Initial code\n"
         mock_editor.program_textarea = mock_textarea
         ui_state.editor_panel = mock_editor
+        old_robot = ui_state.robot
+        ui_state.robot = get_robot()
         yield mock_editor
         ui_state.editor_panel = None
+        ui_state.robot = old_robot
 
     def _set_robot_pose(self, x, y, z, rx=0.0, ry=0.0, rz=0.0):
         """Helper to set both robot_state pose values and pose matrix."""
@@ -158,24 +161,27 @@ class TestMotionRecorder:
         robot_state.rz = rz
         # Set pose as flattened 4x4 identity-based matrix with translation
         # Row-major: [r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz, 0, 0, 0, 1]
-        robot_state.pose = [
-            1.0,
-            0.0,
-            0.0,
-            x,
-            0.0,
-            1.0,
-            0.0,
-            y,
-            0.0,
-            0.0,
-            1.0,
-            z,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        ]
+        robot_state.pose = np.array(
+            [
+                1.0,
+                0.0,
+                0.0,
+                x,
+                0.0,
+                1.0,
+                0.0,
+                y,
+                0.0,
+                0.0,
+                1.0,
+                z,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
+            dtype=np.float64,
+        )
 
     def test_capture_current_pose_inserts_code(self, mock_editor):
         """capture_current_pose should insert moveL code into editor."""
@@ -186,7 +192,8 @@ class TestMotionRecorder:
 
         inserted_code = mock_editor.program_textarea.value
         assert "rbt.moveL([150.000, 250.000, 350.000" in inserted_code
-        assert "duration=" in inserted_code
+        assert "speed=" in inserted_code
+        assert "accel=" in inserted_code
 
     def test_capture_current_pose_joints_mode(self, mock_editor):
         """capture_current_pose with joints mode should insert moveJ code."""
@@ -267,33 +274,42 @@ class TestMotionRecorder:
         assert "rbt.home()" in inserted_code
 
     def test_record_action_gripper_commands(self, mock_editor):
-        """record_action for gripper should generate calibrate and move code."""
+        """record_action for gripper should generate tool access + method calls."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         # Part 1: Calibrate command
         recorder.record_action("gripper", calibrate=True)
         inserted_code = mock_editor.program_textarea.value
-        assert 'rbt.control_electric_gripper("calibrate")' in inserted_code
+        assert "rbt.tool.calibrate()" in inserted_code
 
-        # Part 2: Move command with params
-        mock_editor.program_textarea.value = ""  # Reset
-        recorder.record_action("gripper", position=100, speed=50, current=200)
+        # Part 2: Move command with params (partial position → set_position)
+        mock_editor.program_textarea.value = ""
+        recorder.record_action("gripper", position=0.5, speed=50, current=200)
         inserted_code = mock_editor.program_textarea.value
-        assert 'rbt.control_electric_gripper("move"' in inserted_code
-        assert "position=100" in inserted_code
-        assert "speed=50" in inserted_code
-        assert "current=200" in inserted_code
+        assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
+
+        # Part 3: Full open (position=0.0 in new convention)
+        mock_editor.program_textarea.value = ""
+        recorder.record_action("gripper", position=0.0)
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.tool.open()" in inserted_code
+
+        # Part 4: Full close (position=1.0 in new convention)
+        mock_editor.program_textarea.value = ""
+        recorder.record_action("gripper", position=1.0)
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.tool.close()" in inserted_code
 
     def test_record_action_io(self, mock_editor):
-        """record_action for io should generate pneumatic gripper code."""
+        """record_action for io should generate set_io code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         recorder.record_action("io", port=1, state=1)
 
         inserted_code = mock_editor.program_textarea.value
-        assert 'rbt.control_pneumatic_gripper("open", 1)' in inserted_code
+        assert "rbt.set_io(1, 1)" in inserted_code
 
     def test_record_action_ignored_when_not_recording(self, mock_editor):
         """record_action should be ignored when not recording."""
@@ -537,22 +553,17 @@ class TestWorkspaceEnvelope:
 class TestEditorAutoSimulation:
     """Tests for editor auto-simulation on code change."""
 
-    @pytest.fixture
-    def mock_client(self):
-        """Create mock AsyncRobotClient."""
-        return MagicMock()
-
-    def test_debounce_defaults(self, mock_client):
+    def test_debounce_defaults(self):
         """EditorPanel should have correct debounce defaults."""
         from parol_commander.components.editor import EditorPanel
 
-        panel = EditorPanel(mock_client)
+        panel = EditorPanel()
 
         assert panel._debounce_delay == 1.0
         # Timer starts as None
         assert panel._simulation_debounce_timer is None
 
-    def test_schedule_debounced_simulation_creates_timer(self, mock_client):
+    def test_schedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
         from parol_commander.components.editor import EditorPanel
         from parol_commander.state import editor_tabs_state
@@ -564,7 +575,7 @@ class TestEditorAutoSimulation:
             # Set up active tab so scheduling doesn't return early
             editor_tabs_state.active_tab_id = "test-tab"
 
-            panel = EditorPanel(mock_client)
+            panel = EditorPanel()
             panel._schedule_debounced_simulation()
 
             # Verify timer was created with correct parameters
@@ -573,7 +584,7 @@ class TestEditorAutoSimulation:
             assert call_args[0][0] == 1.0  # debounce delay
             assert call_args[1]["once"] is True
 
-    def test_schedule_debounced_simulation_cancels_previous_timer(self, mock_client):
+    def test_schedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
         from parol_commander.components.editor import EditorPanel
         from parol_commander.state import editor_tabs_state
@@ -586,7 +597,7 @@ class TestEditorAutoSimulation:
             # Set up active tab so scheduling doesn't return early
             editor_tabs_state.active_tab_id = "test-tab"
 
-            panel = EditorPanel(mock_client)
+            panel = EditorPanel()
 
             # First call creates timer1
             panel._schedule_debounced_simulation()
@@ -598,7 +609,7 @@ class TestEditorAutoSimulation:
             assert panel._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio
-    async def test_run_simulation_notify_modes(self, mock_client):
+    async def test_run_simulation_notify_modes(self):
         """_run_simulation notify parameter controls ui.notify behavior."""
         from parol_commander.components.editor import EditorPanel
 
@@ -612,7 +623,7 @@ class TestEditorAutoSimulation:
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel(mock_client)
+                panel = EditorPanel()
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = "# some code"
 
@@ -625,7 +636,7 @@ class TestEditorAutoSimulation:
                 assert mock_ui.notify.call_count >= 1
 
     @pytest.mark.asyncio
-    async def test_run_simulation_calls_path_visualizer(self, mock_client):
+    async def test_run_simulation_calls_path_visualizer(self):
         """_run_simulation should call path_visualizer.update_path_visualization."""
         from parol_commander.components.editor import EditorPanel
 
@@ -644,7 +655,7 @@ class TestEditorAutoSimulation:
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel(mock_client)
+                panel = EditorPanel()
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = "rbt.moveJ([0,0,0,0,0,0])"
 
@@ -654,7 +665,7 @@ class TestEditorAutoSimulation:
                 assert update_content == "rbt.moveJ([0,0,0,0,0,0])"
 
     @pytest.mark.asyncio
-    async def test_run_simulation_empty_content_skips_visualization(self, mock_client):
+    async def test_run_simulation_empty_content_skips_visualization(self):
         """_run_simulation should skip visualization when content is empty."""
         from parol_commander.components.editor import EditorPanel
 
@@ -664,13 +675,13 @@ class TestEditorAutoSimulation:
             ) as mock_visualizer:
                 update_called = False
 
-                async def mock_update(content):
+                async def mock_update(content, tab_id=None):
                     nonlocal update_called
                     update_called = True
 
                 mock_visualizer.update_path_visualization = mock_update
 
-                panel = EditorPanel(mock_client)
+                panel = EditorPanel()
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = ""  # Empty content
 
@@ -691,7 +702,7 @@ class TestSimulationCaching:
     """
 
     @pytest.fixture(autouse=True)
-    def _set_profile(self):
+    def _set_robot(self):
         old_robot = ui_state.robot
         ui_state.robot = get_robot()
         yield
@@ -701,8 +712,7 @@ class TestSimulationCaching:
         """_is_default_script returns True for default content, skipping simulation."""
         from parol_commander.components.editor import EditorPanel
 
-        mock_client = MagicMock()
-        panel = EditorPanel(mock_client)
+        panel = EditorPanel()
 
         default_content = panel._default_python_snippet()
         assert panel._is_default_script(default_content) is True
@@ -712,37 +722,6 @@ class TestSimulationCaching:
 
         # Non-default content should not match
         assert panel._is_default_script("rbt.moveJ([0,0,0,0,0,0])") is False
-
-    def test_anchor_check_uses_cached_final_joints(self):
-        """Anchor check reads from tab.final_joints_rad without blocking."""
-        from parol_commander.state import editor_tabs_state, robot_state, EditorTab
-
-        test_tab = EditorTab(
-            id="test_tab",
-            filename="test.py",
-            file_path=None,
-            content="print('test')",
-            saved_content="print('test')",
-        )
-        editor_tabs_state.tabs.append(test_tab)
-        editor_tabs_state.active_tab_id = "test_tab"
-
-        recorder = MotionRecorder()
-
-        # Robot at home position (degrees)
-        robot_state.angles.set_deg(np.array([90.0, -90.0, 180.0, 0.0, 0.0, 180.0]))
-
-        # Set cached final joints (matching position in radians)
-        test_tab.final_joints_rad = [1.5708, -1.5708, 3.1416, 0.0, 0.0, 3.1416]
-
-        # Should NOT insert anchor (positions match within tolerance)
-        result = recorder._should_insert_anchor()
-        assert not result, "Anchor should be skipped when robot matches cached position"
-
-        # No cached result -> should insert anchor
-        test_tab.final_joints_rad = None
-        result = recorder._should_insert_anchor()
-        assert result, "Anchor should be inserted when no cached position"
 
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):

@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 from nicegui.testing import User
+from waldoctl import ActionState
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -145,6 +146,30 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
         )
 
 
+async def wait_for_tool_key(
+    robot_state,
+    tool_key: str,
+    timeout_s: float = 2.0,
+) -> None:
+    """Wait for robot_state.tool_key to match expected value.
+
+    After calling client.set_tool(), the backend must broadcast a status
+    update before robot_state.tool_key reflects the change.
+
+    Raises:
+        TimeoutError: If tool_key doesn't match within timeout
+    """
+    interval = 0.05
+    for _ in range(int(timeout_s / interval)):
+        if robot_state.tool_key == tool_key:
+            return
+        await asyncio.sleep(interval)
+    raise TimeoutError(
+        f"tool_key did not become '{tool_key}' within {timeout_s}s, "
+        f"still '{robot_state.tool_key}'"
+    )
+
+
 async def wait_for_app_ready(timeout_s: float = 20.0) -> None:
     """Wait for app to be fully ready (startup + backend + page).
 
@@ -237,7 +262,7 @@ async def wait_for_motion_start(
         await asyncio.sleep(interval)
 
         # Check if action_state indicates motion
-        if robot_state.action_state == "EXECUTING":
+        if robot_state.action_state == ActionState.EXECUTING:
             return True
 
         # Check if timestamp updated since we started

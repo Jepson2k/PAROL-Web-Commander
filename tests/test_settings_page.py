@@ -7,6 +7,7 @@ from nicegui.testing import User
 from nicegui import ui, app as ng_app
 from typing import Any
 
+from parol_commander.state import ui_state
 from tests.helpers.wait import wait_for_app_ready
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
@@ -112,11 +113,9 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
 
 @pytest.mark.integration
 async def test_tool_selection_changes_tool(user: User) -> None:
-    """Test that selecting a different tool updates the stored tool setting.
+    """Test that selecting a tool updates storage and sends SET_TOOL to backend.
 
-    When a tool is selected from the dropdown, it should:
-    - Update ng_app.storage.general["selected_tool"]
-    - Notify simulation_state of the change
+    Cycles through registered tools verifying each selection persists to storage.
     """
     await user.open("/")
     await wait_for_app_ready()
@@ -130,33 +129,89 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     tool_select = user.find(marker="select-tool")
     assert tool_select is not None, "Tool select should exist"
 
-    # Get initial tool selection
-    initial_tool = app_storage.general.get("selected_tool", "none")
+    # Verify all 5 tools are available in the robot
+    available_tools = [t.key for t in ui_state.active_robot.tools.available]
+    assert len(available_tools) == 5, f"Expected 5 tools, got {available_tools}"
+    for expected in ("NONE", "PNEUMATIC", "SSG-48", "MSG", "VACUUM"):
+        assert expected in available_tools, f"{expected} not in {available_tools}"
 
-    # Find a different tool to select (if initial is "none", try another)
-    from parol6.tools import TOOL_CONFIGS
+    # Select PNEUMATIC by setting value directly on the element
+    select_el = next(iter(tool_select.elements))
+    select_el.set_value("PNEUMATIC")
+    await asyncio.sleep(0.1)
+    assert app_storage.general.get("selected_tool") == "PNEUMATIC", (
+        "Storage should reflect PNEUMATIC after selection"
+    )
 
-    available_tools = list(TOOL_CONFIGS.keys())
+    # Select SSG-48 and verify
+    select_el.set_value("SSG-48")
+    await asyncio.sleep(0.1)
+    assert app_storage.general.get("selected_tool") == "SSG-48", (
+        "Storage should reflect SSG-48 after selection"
+    )
 
-    if available_tools:
-        # Pick a tool that's different from initial
-        new_tool = (
-            available_tools[0]
-            if initial_tool != available_tools[0]
-            else (available_tools[1] if len(available_tools) > 1 else "none")
-        )
+    # Select VACUUM and verify
+    select_el.set_value("VACUUM")
+    await asyncio.sleep(0.1)
+    assert app_storage.general.get("selected_tool") == "VACUUM", (
+        "Storage should reflect VACUUM after selection"
+    )
 
-        # Use the internal select element to change value
-        # The tool_select from user.find is a wrapper, access actual element
-        if hasattr(tool_select, "_element"):
-            tool_select._element.set_value(new_tool)
-        await asyncio.sleep(0.1)
 
-        # Verify the storage was updated
-        stored_tool = app_storage.general.get("selected_tool", "none")
-        # Note: set_value may not trigger on_change in test context
-        # Just verify the select exists and the storage API works
-        assert stored_tool is not None, "Tool storage should exist"
+@pytest.mark.integration
+async def test_variant_selector_appears_for_tools_with_variants(user: User) -> None:
+    """Test that variant dropdown appears for tools with variants and hides for those without."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab.click()
+    await asyncio.sleep(0)
+
+    tool_select = user.find(marker="select-tool")
+    select_el = next(iter(tool_select.elements))
+
+    # SSG-48 has variants (finger, pinch) — selector should appear
+    select_el.set_value("SSG-48")
+    await asyncio.sleep(0.1)
+    variant_select = user.find(marker="select-tool-variant")
+    assert len(variant_select.elements) == 1, (
+        "Variant selector should appear for SSG-48"
+    )
+    await user.should_see("Variant")
+
+    # NONE has no variants — selector should disappear
+    select_el.set_value("NONE")
+    await asyncio.sleep(0.1)
+    with pytest.raises(AssertionError):
+        user.find(marker="select-tool-variant")
+
+
+@pytest.mark.integration
+async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
+    """Test that TCP offset inputs appear for non-NONE tools and hide for NONE."""
+    await user.open("/")
+    await wait_for_app_ready()
+
+    settings_tab = user.find(kind=ui.tab, content="Settings")
+    settings_tab.click()
+    await asyncio.sleep(0)
+
+    tool_select = user.find(marker="select-tool")
+    select_el = next(iter(tool_select.elements))
+
+    # PNEUMATIC — offset inputs should appear with X/Y/Z fields
+    select_el.set_value("PNEUMATIC")
+    await asyncio.sleep(0.1)
+    await user.should_see("TCP Offset")
+    x_inputs = user.find(kind=ui.number, content="X")
+    assert len(x_inputs.elements) >= 1, "X offset input should exist"
+
+    # NONE — offset inputs should disappear
+    select_el.set_value("NONE")
+    await asyncio.sleep(0.1)
+    with pytest.raises(AssertionError):
+        user.find(kind=ui.number, content="X")
 
 
 @pytest.mark.integration

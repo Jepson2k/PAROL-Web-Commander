@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
 from tests.helpers.browser_helpers import click_tab, wait_for_codemirror_ready
@@ -135,25 +136,35 @@ def _get_path_colors(driver) -> list[str]:
     return driver.execute_script(f"return {_GET_PATH_COLORS_JS}") or []
 
 
-class HasWhitePathObjects:
-    """WebDriverWait condition: some path objects are white (ffffff)."""
+class HasGlowPathObjects:
+    """WebDriverWait condition: some path objects changed color (glow highlight).
+
+    Compares current colors against a baseline snapshot. Returns the number
+    of changed objects if any differ, False otherwise.
+    """
+
+    def __init__(self, baseline: list[str]):
+        self._baseline = baseline
 
     def __call__(self, driver):
         colors = _get_path_colors(driver)
-        if not colors:
+        if not colors or len(colors) != len(self._baseline):
             return False
-        white_count = sum(1 for c in colors if c == "ffffff")
-        return white_count if white_count > 0 else False
+        changed = sum(1 for a, b in zip(colors, self._baseline) if a != b)
+        return changed if changed > 0 else False
 
 
-class NoWhitePathObjects:
-    """WebDriverWait condition: no path objects are white."""
+class NoGlowPathObjects:
+    """WebDriverWait condition: path colors returned to their baseline."""
+
+    def __init__(self, baseline: list[str]):
+        self._baseline = baseline
 
     def __call__(self, driver):
         colors = _get_path_colors(driver)
         if not colors:
-            return True  # No objects at all → no white objects
-        return all(c != "ffffff" for c in colors)
+            return False  # no path objects yet — keep waiting
+        return colors == self._baseline
 
 
 class PathColorsStableAfterChange:
@@ -234,7 +245,7 @@ class TestEditorVisualization:
                 lambda d: d.find_elements(By.CSS_SELECTOR, ".cm-timing-warning-mark")
                 or False
             )
-        except Exception:
+        except TimeoutException:
             # Capture diagnostic info on failure
             cm_content = class_screen.selenium.execute_script(
                 "const c = document.querySelector('.cm-content');"
@@ -263,7 +274,7 @@ class TestEditorVisualization:
         )
 
     def test_cursor_line_highlights_path_in_scene(self, class_screen: "Screen") -> None:
-        """Moving cursor to a move-command line highlights its path segment white."""
+        """Moving cursor to a move-command line applies a glow highlight to its path segment."""
         # Ensure scene and editor are ready (idempotent if already done by prev test)
         screen_wait_for_scene_ready(class_screen)
         click_tab(class_screen, "program")
@@ -279,10 +290,10 @@ class TestEditorVisualization:
         # Wait for path colors to change from baseline and then stabilize
         # (debounce 1s + simulation + TARGET annotation cycle + second simulation)
         try:
-            WebDriverWait(class_screen.selenium, 30, poll_frequency=0.5).until(
-                PathColorsStableAfterChange(baseline_colors)
-            )
-        except Exception:
+            stable_colors = WebDriverWait(
+                class_screen.selenium, 30, poll_frequency=0.5
+            ).until(PathColorsStableAfterChange(baseline_colors))
+        except TimeoutException:
             current_colors = _get_path_colors(class_screen.selenium)
             cm_content = class_screen.selenium.execute_script(
                 "const c = document.querySelector('.cm-content');"
@@ -295,17 +306,22 @@ class TestEditorVisualization:
                 f"CM content starts with: {(cm_content or '')[:120]!r}"
             )
 
-        # Move cursor to line 5 (first moveJ) — should highlight that segment
+        # Snapshot the stable (unhighlighted) colors for comparison
+        pre_highlight_colors = list(stable_colors)
+
+        # Move cursor to line 5 (first moveJ) — should glow-highlight that segment
         move_cursor_to_line(class_screen, 5)
 
-        # Wait for some path objects to turn white (highlight applied via
+        # Wait for some path objects to change color (glow highlight applied via
         # JS → websocket → Python → websocket → JS round-trip)
-        white_count = WebDriverWait(class_screen.selenium, 10).until(
-            HasWhitePathObjects()
+        glow_count = WebDriverWait(class_screen.selenium, 10).until(
+            HasGlowPathObjects(pre_highlight_colors)
         )
-        assert white_count > 0, "Expected highlighted (white) path objects"
+        assert glow_count > 0, "Expected glow-highlighted path objects"
 
         # Move cursor to line 1 (import — no segment) — should revert highlight
         move_cursor_to_line(class_screen, 1)
 
-        WebDriverWait(class_screen.selenium, 10).until(NoWhitePathObjects())
+        WebDriverWait(class_screen.selenium, 10).until(
+            NoGlowPathObjects(pre_highlight_colors)
+        )

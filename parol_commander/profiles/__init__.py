@@ -1,13 +1,11 @@
 """Robot registry — maps robot names to concrete Robot instances.
 
-Each backend provides a ``Robot`` class that structurally satisfies the
-web commander's ``Robot`` Protocol.  This module is the only place that
-imports backend-specific packages.
+Each backend provides a concrete ``Robot`` subclass (inheriting from the
+``waldoctl.Robot`` ABC).  This module is the only place that imports
+backend-specific packages.
 """
 
-from __future__ import annotations
-
-from parol_commander.robot_interface import Robot
+from waldoctl import Robot
 
 DEFAULT_ROBOT = "parol6"
 

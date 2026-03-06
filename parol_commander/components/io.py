@@ -2,10 +2,12 @@ import logging
 from functools import partial
 
 from nicegui import ui
-from parol_commander.robot_interface import RobotClient
+from waldoctl import RobotClient
 
 from parol_commander.services.motion_recorder import motion_recorder
-from parol_commander.state import robot_state
+from parol_commander.state import robot_state, ui_state
+
+logger = logging.getLogger(__name__)
 
 
 class IoPage:
@@ -14,85 +16,65 @@ class IoPage:
     def __init__(self, client: RobotClient) -> None:
         self.client = client
 
-        # Labels updated by status polling
-        self.io_in1_label: ui.label | None = None
-        self.io_in2_label: ui.label | None = None
-        self.io_estop_label2: ui.label | None = None
-        self.io_out1_label: ui.label | None = None
-        self.io_out2_label: ui.label | None = None
-        # Readouts card IO summary (shown on Move tab, but we expose here for consistency)
-        self.io_summary_label: ui.label | None = None
-
-    async def set_output(self, port: int, state: int) -> None:
-        """Map Output 1/2 via pneumatic gripper actions through the UDP API."""
+    async def set_output(self, index: int, state: int) -> None:
+        """Set digital output via the robot client (0-based index)."""
         try:
-            action = "open" if state else "close"
-            _ = await self.client.control_pneumatic_gripper(action, port)
-            motion_recorder.record_action("io", port=port, state=state)
-            # Show SET_IO command format in notification
-            io_idx = 1 if port == 1 else 2  # OUTPUT 1 = index 1, OUTPUT 2 = index 2
-            ui.notify(f"Sent SET_IO|{io_idx}|{state}", color="primary")
-            logging.info("OUTPUT%s -> %s", port, action.upper())
+            await self.client.set_io(index, state)
+            motion_recorder.record_action("io", port=index, state=state)
+            logger.info("OUTPUT%s -> %s", index + 1, "HIGH" if state else "LOW")
         except Exception as e:
-            logging.error("Set output failed: %s", e)
+            logger.error("Set output failed: %s", e)
+            ui.notify(f"Set output failed: {e}", color="negative")
 
     def build(self) -> None:
-        """Build the I/O page content."""
+        """Build the I/O page content dynamically from robot IO pin counts."""
+        n_in = ui_state.active_robot.digital_inputs
+        n_out = ui_state.active_robot.digital_outputs
+
         with ui.column().classes("gap-2"):
+            # Input rows + E-STOP
             with ui.row().classes("items-center gap-4"):
-                self.io_in1_label = (
-                    ui.label("INPUT 1: -")
-                    .bind_text_from(
-                        robot_state, "io_in1", backward=lambda v: f"INPUT 1: {v}"
+                for i in range(n_in):
+                    (
+                        ui.label(f"INPUT {i + 1}: -")
+                        .bind_text_from(
+                            robot_state,
+                            "io_inputs",
+                            backward=lambda v, j=i: (
+                                f"INPUT {j + 1}: {v[j] if len(v) > j else '-'}"
+                            ),
+                        )
+                        .classes("text-sm")
                     )
-                    .classes("text-sm")
-                )
-                self.io_in2_label = (
-                    ui.label("INPUT 2: -")
-                    .bind_text_from(
-                        robot_state, "io_in2", backward=lambda v: f"INPUT 2: {v}"
-                    )
-                    .classes("text-sm")
-                )
-                self.io_estop_label2 = (
+                (
                     ui.label("ESTOP: unknown")
                     .bind_text_from(
                         robot_state,
                         "io_estop",
-                        backward=lambda v: f"ESTOP: {'OK' if int(v) else 'TRIGGERED'}",
+                        backward=lambda v: f"ESTOP: {'OK' if v else 'TRIGGERED'}",
                     )
                     .classes("text-sm")
                 )
+
             ui.separator()
-            with ui.row().classes("items-center gap-4"):
-                self.io_out1_label = (
-                    ui.label("OUTPUT 1 is: -")
-                    .bind_text_from(
-                        robot_state,
-                        "io_out1",
-                        backward=lambda v: f"OUTPUT 1 is: {v}",
+
+            # Output rows with toggle buttons
+            for i in range(n_out):
+                with ui.row().classes("items-center gap-4"):
+                    (
+                        ui.label(f"OUTPUT {i + 1}: -")
+                        .bind_text_from(
+                            robot_state,
+                            "io_outputs",
+                            backward=lambda v, j=i: (
+                                f"OUTPUT {j + 1}: {v[j] if len(v) > j else '-'}"
+                            ),
+                        )
+                        .classes("text-sm")
                     )
-                    .classes("text-sm")
-                )
-                ui.button("LOW", on_click=partial(self.set_output, 1, 0)).props(
-                    "unelevated"
-                )
-                ui.button("HIGH", on_click=partial(self.set_output, 1, 1)).props(
-                    "unelevated"
-                )
-            with ui.row().classes("items-center gap-4"):
-                self.io_out2_label = (
-                    ui.label("OUTPUT 2 is: -")
-                    .bind_text_from(
-                        robot_state,
-                        "io_out2",
-                        backward=lambda v: f"OUTPUT 2 is: {v}",
+                    ui.button("LOW", on_click=partial(self.set_output, i, 0)).props(
+                        "unelevated"
                     )
-                    .classes("text-sm")
-                )
-                ui.button("LOW", on_click=partial(self.set_output, 2, 0)).props(
-                    "unelevated"
-                )
-                ui.button("HIGH", on_click=partial(self.set_output, 2, 1)).props(
-                    "unelevated"
-                )
+                    ui.button("HIGH", on_click=partial(self.set_output, i, 1)).props(
+                        "unelevated"
+                    )

@@ -1,34 +1,48 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
-import asyncio
 import logging
+from contextlib import contextmanager
 from typing import Literal, cast
 
 from nicegui import app as ng_app
 from nicegui import ui
 
 from parol_commander.common.theme import set_theme
+from parol_commander.services.camera_service import (
+    camera_service,
+    enumerate_video_devices,
+)
 from parol_commander.state import simulation_state, ui_state
-from parol_commander.robot_interface import RobotClient
+from waldoctl import RobotClient
+
+logger = logging.getLogger(__name__)
 
 
 def get_available_serial_ports() -> list[str]:
-    """Detect available serial ports on the system.
-
-    Returns:
-        List of port device names (e.g., ['/dev/ttyACM0', '/dev/ttyUSB0', 'COM3'])
-    """
+    """Detect available serial ports on the system."""
     try:
         import serial.tools.list_ports
 
         ports = serial.tools.list_ports.comports()
         return [port.device for port in ports]
     except ImportError:
-        logging.warning("pyserial not installed - cannot detect serial ports")
+        logger.warning("pyserial not installed - cannot detect serial ports")
         return []
-    except Exception as e:
-        logging.error(f"Error detecting serial ports: {e}")
+    except OSError as e:
+        logger.error("Error detecting serial ports: %s", e)
         return []
+
+
+@contextmanager
+def _setting_row(title: str, description: str):
+    """Standard layout for a settings row: label column + yielded control widget."""
+    with ui.row().classes("items-center justify-between w-full overflow-hidden"):
+        with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
+            ui.label(title).classes("text-sm font-medium truncate")
+            ui.label(description).classes(
+                "text-xs text-gray-500 dark:text-gray-400 truncate"
+            )
+        yield
 
 
 class SettingsContent:
@@ -37,18 +51,22 @@ class SettingsContent:
     def __init__(self, client: RobotClient) -> None:
         self.client = client
         self._port_select: ui.select | None = None
-        self._envelope_buttons: dict[str, ui.button] = {}
-        self._theme_buttons: dict[str, ui.button] = {}
         self._refresh_timer: ui.timer | None = None
+        self._variant_container: ui.column | None = None
+        self._tcp_offset_container: ui.column | None = None
 
     def _load_preferences(self) -> dict:
         """Load persisted preferences from storage."""
+        valid_profiles = ui_state.active_robot.motion_profiles
+        stored_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
+        if stored_profile not in valid_profiles and valid_profiles:
+            stored_profile = valid_profiles[0]
         return {
             "com_port": ng_app.storage.general.get("com_port", ""),
             "show_route": ng_app.storage.general.get("show_route", True),
             "envelope_mode": ng_app.storage.general.get("envelope_mode", "auto"),
             "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
-            "motion_profile": ng_app.storage.general.get("motion_profile", "TOPPRA"),
+            "motion_profile": stored_profile,
         }
 
     def _refresh_serial_ports(self) -> None:
@@ -63,38 +81,127 @@ class SettingsContent:
         if self._refresh_timer is not None:
             self._refresh_timer.cancel()
 
-    def _update_envelope_button_styles(self, active_mode: str) -> None:
-        """Update envelope button group styling based on active mode."""
-        for mode, btn in self._envelope_buttons.items():
-            if mode == active_mode:
-                btn.props("color=primary")
-            else:
-                btn.props("color=grey-6")
+    # ── Tool helpers (promoted from closures) ────────────────────────
 
-    def _update_theme_button_styles(self, active_mode: str) -> None:
-        """Update theme button group styling based on active mode."""
-        for mode, btn in self._theme_buttons.items():
-            if mode == active_mode:
-                btn.props("color=primary")
-            else:
-                btn.props("color=grey-6")
+    def _get_variant_key(self, tool_key: str) -> str | None:
+        """Get stored variant key for a tool, or first variant key."""
+        try:
+            tool_spec = ui_state.active_robot.tools[tool_key]
+        except (KeyError, AttributeError):
+            return None
+        variants = tool_spec.variants
+        if not variants:
+            return None
+        stored = ng_app.storage.general.get(f"tool_variant_{tool_key}")
+        if stored and any(v.key == stored for v in variants):
+            return stored
+        return variants[0].key
 
-    def build_embedded(self) -> None:
-        """Build the settings content for embedding in control panel."""
-        prefs = self._load_preferences()
+    def _get_tcp_offset(self, tool_key: str) -> dict:
+        """Get stored TCP offset for a tool (mm)."""
+        return ng_app.storage.general.get(
+            f"tcp_offset_{tool_key}", {"x": 0, "y": 0, "z": 0}
+        )
 
-        # Serial Port Selection
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Serial Port").classes("text-sm font-medium truncate")
-                ui.label("Select robot communication port").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+    def _tcp_offset_m(self, tool_key: str) -> tuple[float, float, float] | None:
+        """Get stored TCP offset in meters, or None if zero."""
+        o = self._get_tcp_offset(tool_key)
+        x, y, z = o.get("x", 0), o.get("y", 0), o.get("z", 0)
+        if x == 0 and y == 0 and z == 0:
+            return None
+        return (x / 1000, y / 1000, z / 1000)
 
-            available_ports = get_available_serial_ports()
-            stored_port = prefs["com_port"]
+    def _apply_tool_scene(self, tool_key: str, variant_key: str | None = None) -> None:
+        """Apply tool to local FK/IK model and 3D scene."""
+        ui_state.active_robot.set_active_tool(
+            tool_key,
+            tcp_offset_m=self._tcp_offset_m(tool_key),
+            variant_key=variant_key,
+        )
+        if ui_state.urdf_scene:
+            ui_state.urdf_scene.update_tcp_pose_from_tool(
+                tool_key, variant_key=variant_key
+            )
+            ui_state.urdf_scene.swap_tool_mesh(tool_key, variant_key=variant_key)
+            ui_state.urdf_scene.invalidate_fk_cache()
 
-            # Use select with new_value_mode to allow custom input
+    def _rebuild_variant_selector(self, tool_key: str) -> None:
+        """Rebuild variant sub-selector for the current tool."""
+        assert self._variant_container is not None
+        self._variant_container.clear()
+        try:
+            tool_spec = ui_state.active_robot.tools[tool_key]
+        except (KeyError, AttributeError):
+            tool_spec = None
+        variants = tool_spec.variants if tool_spec else ()
+        if not variants or tool_key == "NONE":
+            return
+
+        variant_options = {v.key: v.display_name for v in variants}
+        current_vk = self._get_variant_key(tool_key) or variants[0].key
+
+        async def _on_variant_change(e):
+            vk = e.value
+            ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
+            self._apply_tool_scene(tool_key, variant_key=vk)
+            simulation_state.notify_changed()
+
+        with self._variant_container:
+            with _setting_row("Variant", "Tool configuration variant"):
+                ui.select(
+                    options=variant_options,
+                    value=current_vk,
+                    on_change=_on_variant_change,
+                ).classes("w-32").props("dense").mark("select-tool-variant")
+
+    def _rebuild_tcp_offset(self, tool_key: str) -> None:
+        """Rebuild per-tool TCP offset inputs."""
+        assert self._tcp_offset_container is not None
+        self._tcp_offset_container.clear()
+        if tool_key == "NONE":
+            return
+        offset = self._get_tcp_offset(tool_key)
+
+        async def _on_offset_change(_e=None):
+            vals = {
+                "x": x_input.value or 0,
+                "y": y_input.value or 0,
+                "z": z_input.value or 0,
+            }
+            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
+            vk = self._get_variant_key(tool_key)
+            self._apply_tool_scene(tool_key, variant_key=vk)
+            simulation_state.notify_changed()
+
+        with self._tcp_offset_container:
+            with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
+                with ui.row().classes("gap-1"):
+                    x_input = (
+                        ui.number(label="X", value=offset.get("x", 0), step=0.5)
+                        .classes("w-16")
+                        .props("dense")
+                        .on("update:model-value", _on_offset_change)
+                    )
+                    y_input = (
+                        ui.number(label="Y", value=offset.get("y", 0), step=0.5)
+                        .classes("w-16")
+                        .props("dense")
+                        .on("update:model-value", _on_offset_change)
+                    )
+                    z_input = (
+                        ui.number(label="Z", value=offset.get("z", 0), step=0.5)
+                        .classes("w-16")
+                        .props("dense")
+                        .on("update:model-value", _on_offset_change)
+                    )
+
+    # ── Section builders ─────────────────────────────────────────────
+
+    def _build_serial_port(self, prefs: dict) -> None:
+        available_ports = get_available_serial_ports()
+        stored_port = prefs["com_port"]
+
+        with _setting_row("Serial Port", "Select robot communication port"):
             self._port_select = (
                 ui.select(
                     options=available_ports,
@@ -107,103 +214,82 @@ class SettingsContent:
                 .props("dense")
             )
 
-            # If stored port isn't in the list but exists, set it
-            if stored_port and stored_port not in available_ports:
-                self._port_select.value = stored_port
+        if stored_port and stored_port not in available_ports:
+            self._port_select.value = stored_port
 
-            # Capture reference for closure
-            port_select_ref = self._port_select
+        port_select_ref = self._port_select
 
-            async def _apply_port():
-                port_val = port_select_ref.value or ""
-                ng_app.storage.general["com_port"] = port_val
+        async def _apply_port():
+            port_val = port_select_ref.value or ""
+            try:
                 await self.client.set_serial_port(port_val)
-                ui.notify(f"SET_PORT {port_val}", color="primary")
+            except Exception as exc:
+                logger.warning("set_serial_port(%s) failed: %s", port_val, exc)
+                ui.notify(f"Port change failed: {exc}", color="negative")
+                return
+            ng_app.storage.general["com_port"] = port_val
+            ui.notify(f"SET_PORT {port_val}", color="primary")
 
-            port_select_ref.on("update:model-value", lambda e: _apply_port())
-
-        # Auto-refresh serial ports every 10 seconds
+        port_select_ref.on("update:model-value", lambda e: _apply_port())
         self._refresh_timer = ui.timer(10.0, self._refresh_serial_ports)
 
-        ui.separator().classes("my-1")
-
-        # Show Route Switch
+    def _build_show_route(self, prefs: dict) -> None:
         async def _on_show_route_change(e):
-            val = bool(e.value) if hasattr(e, "value") else bool(e.args)
+            val = bool(e.value)
             simulation_state.paths_visible = val
             ng_app.storage.general["show_route"] = val
-            await simulation_state.notify_changed()
+            simulation_state.notify_changed()
 
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden"):
-                ui.label("Show Route").classes("text-sm font-medium truncate")
-                ui.label("Display path visualization in 3D view").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+        with _setting_row("Show Route", "Display path visualization in 3D view"):
             ui.switch(
                 value=prefs["show_route"],
                 on_change=_on_show_route_change,
             ).props("dense").mark("switch-show-route")
 
-        # Sync initial state
         simulation_state.paths_visible = prefs["show_route"]
-        asyncio.create_task(simulation_state.notify_changed())
 
-        ui.separator().classes("my-1")
-
-        # Workspace Envelope Selection - dropdown
+    def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
-            mode = e.value if hasattr(e, "value") else str(e.args)
+            mode = e.value
             simulation_state.envelope_mode = mode
             ng_app.storage.general["envelope_mode"] = mode
-            # Update envelope_visible based on mode
             if mode == "off":
                 simulation_state.envelope_visible = False
             elif mode == "on":
                 simulation_state.envelope_visible = True
-            # "auto" is handled in urdf_scene update logic
-            await simulation_state.notify_changed()
+            simulation_state.notify_changed()
 
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Workspace Envelope").classes("text-sm font-medium truncate")
-                ui.label("Show reachable workspace boundary").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+        with _setting_row("Workspace Envelope", "Show reachable workspace boundary"):
             ui.select(
                 options={"auto": "Auto", "on": "On", "off": "Off"},
                 value=prefs["envelope_mode"],
                 on_change=_on_envelope_mode_change,
             ).classes("w-24").props("dense").mark("select-envelope-mode")
 
-        # Sync initial state
         simulation_state.envelope_mode = prefs["envelope_mode"]
         if prefs["envelope_mode"] == "off":
             simulation_state.envelope_visible = False
         elif prefs["envelope_mode"] == "on":
             simulation_state.envelope_visible = True
-        asyncio.create_task(simulation_state.notify_changed())
 
-        ui.separator().classes("my-1")
-
-        # Tool Selection - dropdown
+    def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
-            tool = e.value if hasattr(e, "value") else str(e.args)
+            tool = e.value
+            try:
+                await self.client.set_tool(tool)
+            except Exception as exc:
+                logger.warning("set_tool(%s) failed: %s", tool, exc)
+                ui.notify(f"Tool change failed: {exc}", color="negative")
+                return
+
             ng_app.storage.general["selected_tool"] = tool
-
-            # Update TCP pose (gizmo position) via urdf_scene
-            if ui_state.urdf_scene and hasattr(
-                ui_state.urdf_scene, "update_tcp_pose_from_tool"
-            ):
-                ui_state.urdf_scene.update_tcp_pose_from_tool(tool)
-
-            # Update envelope sphere radius if tool changes TCP Z offset
-            # The envelope sphere will be updated on next simulation state change
-            await simulation_state.notify_changed()
-
+            vk = self._get_variant_key(tool)
+            self._apply_tool_scene(tool, variant_key=vk)
+            self._rebuild_variant_selector(tool)
+            self._rebuild_tcp_offset(tool)
+            simulation_state.notify_changed()
             ui.notify(f"Tool: {tool}", color="primary")
 
-        # Build tool options from robot tools
         tool_options = {}
         for tool in ui_state.active_robot.tools.available:
             tool_options[tool.key] = tool.display_name
@@ -213,98 +299,96 @@ class SettingsContent:
         if stored_tool not in tool_options:
             stored_tool = default_tool
 
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Tool").classes("text-sm font-medium truncate")
-                ui.label("Select end effector tool").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+        with _setting_row("Tool", "Select end effector tool"):
             ui.select(
                 options=tool_options,
                 value=stored_tool,
                 on_change=_on_tool_change,
             ).classes("w-32").props("dense").mark("select-tool")
 
-        # Sync initial tool state
-        if stored_tool and stored_tool != default_tool:
-            if ui_state.urdf_scene and hasattr(
-                ui_state.urdf_scene, "update_tcp_pose_from_tool"
-            ):
-                ui_state.urdf_scene.update_tcp_pose_from_tool(stored_tool)
+        self._variant_container = ui.column().classes("w-full gap-1")
+        self._rebuild_variant_selector(stored_tool)
 
-        ui.separator().classes("my-1")
+        self._tcp_offset_container = ui.column().classes("w-full gap-1")
+        self._rebuild_tcp_offset(stored_tool)
 
-        # Motion Profile Selection - dropdown
+        vk_initial = self._get_variant_key(stored_tool)
+        if stored_tool:
+            self._apply_tool_scene(stored_tool, variant_key=vk_initial)
+
+    def _build_camera(self) -> None:
+        stored_cam = ng_app.storage.general.get("camera_device", -1)
+        ui_state.camera_device = stored_cam
+
+        cam_devices = enumerate_video_devices()
+        cam_options: dict[int | str, str] = {-1: "Disabled"}
+        for dev in cam_devices:
+            cam_options[dev["index"]] = str(dev["label"])
+
+        def _on_camera_change(e):
+            val = e.value
+            ng_app.storage.general["camera_device"] = val
+            ui_state.camera_device = val
+            if val == -1:
+                camera_service.stop()
+            else:
+                camera_service.start(val)
+
+        with _setting_row("Camera", "Video device for gripper panel"):
+            ui.select(
+                options=cam_options,
+                value=stored_cam,
+                on_change=_on_camera_change,
+            ).classes("w-32").props("dense").mark("select-camera")
+
+        if stored_cam != -1:
+            camera_service.start(stored_cam)
+
+    def _build_motion_profile(self, prefs: dict) -> None:
         async def _on_motion_profile_change(e):
-            profile = e.value if hasattr(e, "value") else str(e.args)
+            profile = e.value
+            try:
+                await self.client.set_profile(profile)
+            except Exception as exc:
+                logger.warning("set_profile(%s) failed: %s", profile, exc)
+                ui.notify(f"Profile change failed: {exc}", color="negative")
+                return
             ng_app.storage.general["motion_profile"] = profile
-            await self.client.set_profile(profile)
 
-        # Build profile options from the robot profile
         motion_profile_options = {}
         for p in ui_state.active_robot.motion_profiles:
             motion_profile_options[p] = p.replace("_", " ").title()
 
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Motion Profile").classes("text-sm font-medium truncate")
-                ui.label("Trajectory generation algorithm").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+        with _setting_row("Motion Profile", "Trajectory generation algorithm"):
             ui.select(
                 options=motion_profile_options,
                 value=prefs["motion_profile"],
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
 
-        ui.separator().classes("my-1")
-
-        # Robot Backend Selection
+    def _build_backend(self) -> None:
         backend_options = {"parol6": "PAROL6"}
         stored_backend = ui_state.active_robot.backend_package
 
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Robot Backend").classes("text-sm font-medium truncate")
-                ui.label("Robot control library").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+        with _setting_row("Robot Backend", "Robot control library"):
             ui.select(
                 options=backend_options,
                 value=stored_backend,
             ).classes("w-32").props("dense disable").mark("select-robot-backend")
 
-        ui.separator().classes("my-1")
-
-        # Theme Selection - dropdown
+    def _build_theme(self, prefs: dict) -> None:
         def _on_theme_change(e):
-            mode = e.value if hasattr(e, "value") else str(e.args)
-            set_theme(
-                cast(Literal["system", "light", "dark"], mode)
-            )  # persists and applies
+            set_theme(cast(Literal["system", "light", "dark"], e.value))
 
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Theme").classes("text-sm font-medium truncate")
-                ui.label("Application color scheme").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
+        with _setting_row("Theme", "Application color scheme"):
             ui.select(
                 options={"system": "Auto", "light": "Light", "dark": "Dark"},
                 value=prefs["theme_mode"],
                 on_change=_on_theme_change,
             ).classes("w-24").props("dense")
 
-        ui.separator().classes("my-1")
-
-        # Translation Reference Frame (locked to WRF)
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Translation RF").classes("text-sm font-medium truncate")
-                ui.label("Reference frame for translation moves").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
-            # Wrap in span so tooltip works on disabled element
+    def _build_reference_frames(self) -> None:
+        with _setting_row("Translation RF", "Reference frame for translation moves"):
             with ui.element("span").tooltip(
                 "Mode is currently locked but will be configurable in a future update"
             ):
@@ -315,14 +399,7 @@ class SettingsContent:
 
         ui.separator().classes("my-1")
 
-        # Rotation Reference Frame (locked to TRF)
-        with ui.row().classes("items-center justify-between w-full overflow-hidden"):
-            with ui.column().classes("gap-0 overflow-hidden flex-shrink"):
-                ui.label("Rotation RF").classes("text-sm font-medium truncate")
-                ui.label("Reference frame for rotation moves").classes(
-                    "text-xs text-gray-500 dark:text-gray-400 truncate"
-                )
-            # Wrap in span so tooltip works on disabled element
+        with _setting_row("Rotation RF", "Reference frame for rotation moves"):
             with ui.element("span").tooltip(
                 "Mode is currently locked but will be configurable in a future update"
             ):
@@ -330,3 +407,28 @@ class SettingsContent:
                     options={"WRF": "World", "TRF": "Tool"},
                     value="TRF",
                 ).classes("w-24").props("dense disable")
+
+    # ── Main entry point ─────────────────────────────────────────────
+
+    def build_embedded(self) -> None:
+        """Build the settings content for embedding in control panel."""
+        prefs = self._load_preferences()
+
+        sections = [
+            lambda: self._build_serial_port(prefs),
+            lambda: self._build_show_route(prefs),
+            lambda: self._build_envelope(prefs),
+            self._build_tool_section,
+            self._build_camera,
+            lambda: self._build_motion_profile(prefs),
+            self._build_backend,
+            lambda: self._build_theme(prefs),
+            self._build_reference_frames,
+        ]
+
+        for i, section in enumerate(sections):
+            section()
+            if i < len(sections) - 1:
+                ui.separator().classes("my-1")
+
+        simulation_state.notify_changed()

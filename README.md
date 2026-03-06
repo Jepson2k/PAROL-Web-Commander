@@ -50,7 +50,7 @@ Note: To run a real robot, you must have a PAROL6 control board: https://source-
 
 ### Robot backends
 
-The web commander communicates with robot hardware through a backend that satisfies the `Robot` Protocol defined in `parol_commander/robot_interface.py`. The default (and currently only) backend is [PAROL6 Python API](https://github.com/Jepson2k/PAROL6-python-API), installed as an optional dependency (`pip install parol-commander[parol6]`). Other backends can be used as long as they implement the same Protocol.
+The web commander communicates with robot hardware through a backend that satisfies the `Robot` ABC defined in the [`waldoctl`](https://github.com/Jepson2k/waldoctl) package. The default (and currently only) backend is [PAROL6 Python API](https://github.com/Jepson2k/PAROL6-python-API), installed as an optional dependency (`pip install parol-commander[parol6]`). Other backends can be used as long as they extend the same base classes.
 
 ## Requirements
 
