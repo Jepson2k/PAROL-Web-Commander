@@ -21,7 +21,9 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies for pre-commit hooks
         run: |
-          pip install ty "parol6 @ git+https://github.com/Jepson2k/PAROL6-python-API.git"
+          python -m pip install --upgrade pip
+          pip install "parol6 @ git+https://github.com/Jepson2k/PAROL6-python-API.git"
+          pip install -e ".[dev]"
           mkdir -p PAROL6-python-API
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
