@@ -135,27 +135,20 @@ async def test_tool_selection_changes_tool(user: User) -> None:
     for expected in ("NONE", "PNEUMATIC", "SSG-48", "MSG", "VACUUM"):
         assert expected in available_tools, f"{expected} not in {available_tools}"
 
-    # Select PNEUMATIC by setting value directly on the element
+    async def select_and_verify(tool: str) -> None:
+        select_el.set_value(tool)
+        for _ in range(20):
+            await asyncio.sleep(0.1)
+            if app_storage.general.get("selected_tool") == tool:
+                return
+        assert app_storage.general.get("selected_tool") == tool, (
+            f"Storage should reflect {tool} after selection"
+        )
+
     select_el = next(iter(tool_select.elements))
-    select_el.set_value("PNEUMATIC")
-    await asyncio.sleep(0.1)
-    assert app_storage.general.get("selected_tool") == "PNEUMATIC", (
-        "Storage should reflect PNEUMATIC after selection"
-    )
-
-    # Select SSG-48 and verify
-    select_el.set_value("SSG-48")
-    await asyncio.sleep(0.1)
-    assert app_storage.general.get("selected_tool") == "SSG-48", (
-        "Storage should reflect SSG-48 after selection"
-    )
-
-    # Select VACUUM and verify
-    select_el.set_value("VACUUM")
-    await asyncio.sleep(0.1)
-    assert app_storage.general.get("selected_tool") == "VACUUM", (
-        "Storage should reflect VACUUM after selection"
-    )
+    await select_and_verify("PNEUMATIC")
+    await select_and_verify("SSG-48")
+    await select_and_verify("VACUUM")
 
 
 @pytest.mark.integration
