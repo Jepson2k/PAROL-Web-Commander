@@ -68,7 +68,7 @@ class LinuxpyBackend:
 
     def open(self, device: int | str, width: int, height: int) -> bool:
         try:
-            from linuxpy.video.device import Device, VideoCapture
+            from linuxpy.video.device import Device, VideoCapture  # ty: ignore[unresolved-import]
         except ImportError:
             log.debug("linuxpy not installed — skipping v4l2 backend")
             return False

@@ -115,7 +115,7 @@ class UrdfScene(
 
         # Scene-related state
         self.joint_groups: dict[str, Any] = {}
-        self.joint_pos_limits: dict = {}
+        self.joint_pos_limits: dict[str, dict[str, float | None]] = {}
         self.joint_trafos: dict = {}
         self.scene: Any | None = None
         # Persist normalized joint axes (from URDF) by joint name
