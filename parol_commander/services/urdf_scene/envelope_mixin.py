@@ -49,25 +49,19 @@ STORAGE_KEY = "workspace_hull_cache"
 
 
 def _compute_cache_key(
-    tool_offset_z: float = 0.0,
-    joint_limits_rad: np.ndarray | None = None,
+    tool_offset_z: float,
+    joint_limits_rad: np.ndarray,
+    urdf_path: str,
 ) -> str:
-    """Compute cache key from joint limits and tool offset.
+    """Compute cache key from joint limits, tool offset, and URDF content.
 
-    Args:
-        tool_offset_z: Tool TCP Z offset in meters
-        joint_limits_rad: Joint limits in radians, shape (num_joints, 2).
-            If None, reads from ui_state.robot.
+    All parameters are required — callers must supply them explicitly.
+    Raises on bad input instead of returning a fallback key.
     """
-    try:
-        if joint_limits_rad is None:
-            from parol_commander.state import ui_state
-
-            joint_limits_rad = ui_state.active_robot.joints.limits.position.rad
-        data = joint_limits_rad.tobytes() + np.array([tool_offset_z]).tobytes()
-        return hashlib.md5(data).hexdigest()[:12]
-    except (AttributeError, TypeError, ValueError):
-        return ""
+    data = np.asarray(joint_limits_rad).tobytes() + np.array([tool_offset_z]).tobytes()
+    urdf_bytes = Path(urdf_path).read_bytes()
+    data += hashlib.md5(urdf_bytes).digest()
+    return hashlib.md5(data).hexdigest()[:12]
 
 
 def _save_hull_as_stl(vertices: np.ndarray, faces: np.ndarray, path: Path) -> bool:
@@ -108,6 +102,10 @@ class WorkspaceEnvelope:
         self._generated = False
         self._generating = False
         self._current_tool_offset_z: float = 0.0
+        self._pending_tool_offset: float | None = None
+        # Stored from _get_hull_params() so cache key computation never reads ui_state
+        self._urdf_path: str | None = None
+        self._joint_limits_rad: np.ndarray | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -120,14 +118,21 @@ class WorkspaceEnvelope:
         return self._generating
 
     def _get_hull_params(self) -> tuple[str | None, list | None]:
-        """Get URDF path and joint limits from the active robot."""
+        """Get URDF path and joint limits from the active robot.
+
+        Also stores them on the instance for subsequent cache key computations.
+        This is the ONLY method that reads ui_state.
+        """
         from parol_commander.state import ui_state
 
         if ui_state.robot is None:
             return None, None
         urdf_path = ui_state.active_robot.urdf_path
-        joint_limits_rad = ui_state.active_robot.joints.limits.position.rad.tolist()
-        return urdf_path, joint_limits_rad
+        joint_limits_rad = ui_state.active_robot.joints.limits.position.rad
+        # Store for cache key use — avoids TOCTOU race
+        self._urdf_path = urdf_path
+        self._joint_limits_rad = joint_limits_rad
+        return urdf_path, joint_limits_rad.tolist()
 
     def _ensure_static_files_registered(self) -> None:
         """Register static files directory for serving STL.
@@ -153,20 +158,28 @@ class WorkspaceEnvelope:
     def _load_from_cache(self, tool_offset_z: float) -> bool:
         """Try to load hull from cache.
 
+        Requires _get_hull_params() to have been called first (stores
+        _urdf_path and _joint_limits_rad on the instance).
+
         Args:
             tool_offset_z: Current tool Z offset in meters
 
         Returns:
             True if cache was valid and loaded
         """
+        if self._urdf_path is None or self._joint_limits_rad is None:
+            logger.debug("No hull params stored, cannot check cache")
+            return False
+
         try:
             cache = app.storage.general.get(STORAGE_KEY)
             if not cache:
                 logger.debug("No hull cache found")
                 return False
 
-            # Check cache key matches current config
-            current_key = _compute_cache_key(tool_offset_z)
+            current_key = _compute_cache_key(
+                tool_offset_z, self._joint_limits_rad, self._urdf_path
+            )
             if cache.get("cache_key") != current_key:
                 logger.info(
                     "Hull cache key mismatch (cached=%s, current=%s), will regenerate",
@@ -175,12 +188,10 @@ class WorkspaceEnvelope:
                 )
                 return False
 
-            # Check STL file exists
             if not HULL_STL_PATH.exists():
                 logger.info("Hull STL file missing, will regenerate")
                 return False
 
-            # Load cached values
             self.max_reach = cache.get("max_reach", 0.0)
             self._current_tool_offset_z = tool_offset_z
             self._ensure_static_files_registered()
@@ -196,9 +207,14 @@ class WorkspaceEnvelope:
             return False
 
     def _save_to_cache(self, max_reach: float, tool_offset_z: float) -> None:
-        """Save hull metadata to cache."""
+        """Save hull metadata to cache. Uses stored params from _get_hull_params()."""
+        if self._urdf_path is None or self._joint_limits_rad is None:
+            logger.warning("Cannot save cache: hull params not stored")
+            return
         try:
-            cache_key = _compute_cache_key(tool_offset_z)
+            cache_key = _compute_cache_key(
+                tool_offset_z, self._joint_limits_rad, self._urdf_path
+            )
             app.storage.general[STORAGE_KEY] = {
                 "cache_key": cache_key,
                 "max_reach": max_reach,
@@ -260,8 +276,15 @@ class WorkspaceEnvelope:
         Returns:
             True if generation started or already complete
         """
+        # Resolve hull params once (stores on instance for cache key use)
+        urdf_path, joint_limits_rad = self._get_hull_params()
+        if urdf_path is None or joint_limits_rad is None:
+            logger.warning("Cannot generate hull: no robot loaded")
+            return False
+
         # Try loading from cache first
         if self._load_from_cache(tool_offset_z):
+            simulation_state.notify_changed()
             return True
 
         if self._generated:
@@ -282,12 +305,6 @@ class WorkspaceEnvelope:
         logger.info(
             "Starting background workspace hull generation with %d samples...", samples
         )
-
-        urdf_path, joint_limits_rad = self._get_hull_params()
-        if urdf_path is None or joint_limits_rad is None:
-            logger.warning("Cannot generate hull: no robot loaded")
-            self._generating = False
-            return False
 
         async def start_background_generation():
             result = None
@@ -318,6 +335,12 @@ class WorkspaceEnvelope:
                     simulation_state.notify_changed()
             finally:
                 self._generating = False
+                # Check for pending tool offset change queued during generation
+                pending = self._pending_tool_offset
+                if pending is not None:
+                    self._pending_tool_offset = None
+                    self.reset()
+                    self.generate(tool_offset_z=pending)
 
         ui.timer(0.0, start_background_generation, once=True)
         return True
@@ -338,8 +361,15 @@ class WorkspaceEnvelope:
         Returns:
             True if generation successful
         """
+        # Resolve hull params once (stores on instance for cache key use)
+        urdf_path, joint_limits_rad = self._get_hull_params()
+        if urdf_path is None or joint_limits_rad is None:
+            logger.warning("Cannot generate hull: no robot loaded")
+            return False
+
         # Try loading from cache first
         if self._load_from_cache(tool_offset_z):
+            simulation_state.notify_changed()
             return True
 
         if self._generated:
@@ -354,12 +384,6 @@ class WorkspaceEnvelope:
         logger.info(
             "Generating workspace hull synchronously with %d samples...", samples
         )
-
-        urdf_path, joint_limits_rad = self._get_hull_params()
-        if urdf_path is None or joint_limits_rad is None:
-            logger.warning("Cannot generate hull: no robot loaded")
-            self._generating = False
-            return False
 
         try:
             result = _generate_hull_cpu_bound(
@@ -381,6 +405,8 @@ class WorkspaceEnvelope:
         self.stl_url = ""
         self._generated = False
         self._generating = False
+        self._urdf_path = None
+        self._joint_limits_rad = None
 
     def invalidate_cache(self) -> None:
         """Invalidate cache and delete STL file."""
@@ -414,12 +440,20 @@ class WorkspaceEnvelope:
         Returns:
             True if regeneration needed
         """
-        # If generation is in progress, don't trigger another one
+        # If generation is in progress, queue for regeneration after completion
         if self._generating:
+            if abs(tool_offset_z - self._current_tool_offset_z) > 1e-6:
+                self._pending_tool_offset = tool_offset_z
             return False
         if not self._generated:
             return True
-        current_key = _compute_cache_key(tool_offset_z)
+        # Refresh stored params from ui_state
+        self._get_hull_params()
+        if self._urdf_path is None or self._joint_limits_rad is None:
+            return True
+        current_key = _compute_cache_key(
+            tool_offset_z, self._joint_limits_rad, self._urdf_path
+        )
         cache = app.storage.general.get(STORAGE_KEY, {})
         return cache.get("cache_key") != current_key
 
@@ -427,8 +461,8 @@ class WorkspaceEnvelope:
 def _generate_hull_cpu_bound(
     samples: int,
     tool_offset_z: float,
-    urdf_path: str | None = None,
-    joint_limits_rad: list | None = None,
+    urdf_path: str,
+    joint_limits_rad: list,
 ) -> dict[str, Any] | None:
     """CPU-bound function to calculate workspace convex hull.
 
@@ -462,10 +496,6 @@ def _generate_hull_cpu_bound(
     try:
         from scipy.spatial import ConvexHull
         from pinokin import Robot
-
-        if urdf_path is None or joint_limits_rad is None:
-            sub_logger.warning("urdf_path and joint_limits_rad are required")
-            return None
 
         robot = Robot(urdf_path)
         limits_arr = np.array(joint_limits_rad)

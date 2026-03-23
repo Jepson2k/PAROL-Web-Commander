@@ -82,6 +82,7 @@ class TCPControlsMixin:
         self._last_fk_angles_raw: np.ndarray | None = (
             None  # For fast LIVE mode comparison
         )
+        self._last_fk_pose: tuple[float, ...] | None = None  # cached FK result
 
     def _ensure_ik_solver(self) -> EditingIKSolver | None:
         """Lazy-initialize the FK/IK solver, returning it or None on failure."""
@@ -288,7 +289,7 @@ class TCPControlsMixin:
             return
         with self.scene:
             ball = ui.scene.sphere(
-                radius=0.015,
+                radius=0.008,
                 width_segments=16,
                 height_segments=16,
                 wireframe=False,
@@ -299,57 +300,52 @@ class TCPControlsMixin:
         self._update_tcp_ball_position()
 
     def _update_tcp_ball_position(self) -> None:
-        """Update TCP ball position using FK.
+        """Update TCP ball position from FK, with drift correction.
 
-        The position source depends on the appearance mode:
-        - LIVE/SIMULATOR: Uses robot_state.angles (live robot position)
-        - EDITING: Uses _editing_angles (editing target position)
-
-        Uses dirty checking to skip expensive FK computation when angles unchanged.
+        Recomputes FK only when joint angles change.  If angles are
+        unchanged but the ball was moved (e.g. by a drag), the cached
+        pose is re-applied without recomputing FK.
         """
-        if not self._tcp_ball or self._tcp_ball_dragging:
+        if self._tcp_ball_dragging or not self._tcp_ball:
             return
 
-        # Get current angles for dirty checking (before FK solver init)
+        # Determine whether angles changed since last FK
         n = len(self.joint_names)
+        angles_changed = False
         if self._appearance_mode == RobotAppearanceMode.EDITING:
-            # EDITING mode: _editing_angles is already in radians
-            if len(self._editing_angles) < n:
-                return
             angles_rad: list[float] | np.ndarray = self._editing_angles
-            # Use tuple for cache comparison (editing angles are a list)
-            angles_tuple = tuple(angles_rad[:n])
-            if angles_tuple == self._last_fk_angles_tuple:
-                return
-            self._last_fk_angles_tuple = angles_tuple
+            key = tuple(angles_rad[:n])
+            if key != self._last_fk_angles_tuple:
+                self._last_fk_angles_tuple = key
+                angles_changed = True
         else:
-            # LIVE/SIMULATOR mode: use pre-computed radians from AngleArray
-            if len(robot_state.angles) < n:
-                return
             angles_deg = robot_state.angles.deg
-            if self._last_fk_angles_raw is not None and arrays_equal_n(
+            if self._last_fk_angles_raw is None or not arrays_equal_n(
                 angles_deg[:n], self._last_fk_angles_raw
             ):
+                self._last_fk_angles_raw = angles_deg[:n].copy()
+                angles_rad = robot_state.angles.rad
+                angles_changed = True
+
+        if angles_changed:
+            if not self._ensure_ik_solver() or self._tcp_fk_solver is None:
                 return
-            # Cache current angles for dirty checking
-            self._last_fk_angles_raw = angles_deg[:n].copy()
-            angles_rad = robot_state.angles.rad
+            try:
+                ee = self._tcp_fk_solver.forward_kinematics(angles_rad)
+                self._last_fk_pose = tuple(float(v) for v in ee[:6])
+            except Exception as e:
+                logger.debug("FK failed: %s", e)
+                return
 
-        # Lazy-init FK solver
-        if not self._ensure_ik_solver():
-            return
-        assert self._tcp_fk_solver is not None
-
-        try:
-            ee_pose = self._tcp_fk_solver.forward_kinematics(angles_rad)
-            # FK returns [x, y, z, rx, ry, rz] in meters and radians (XYZ Euler)
-            self._tcp_ball.move(float(ee_pose[0]), float(ee_pose[1]), float(ee_pose[2]))
-            # Use rotate_euler to set XYZ Euler angles directly, avoiding matrix conversion issues
-            self._tcp_ball.rotate_euler(
-                float(ee_pose[3]), float(ee_pose[4]), float(ee_pose[5]), "XYZ"
-            )
-        except Exception as e:
-            logger.debug("FK update for TCP ball failed: %s", e)
+        # Apply pose if ball drifted (or FK just computed a new one)
+        p = self._last_fk_pose
+        if p and (
+            self._tcp_ball.x != p[0]
+            or self._tcp_ball.y != p[1]
+            or self._tcp_ball.z != p[2]
+        ):
+            self._tcp_ball.move(p[0], p[1], p[2])
+            self._tcp_ball.rotate_euler(p[3], p[4], p[5], "XYZ")
 
     def _update_jog_ball_from_robot_state(self) -> None:
         """Position the TCP ball using live robot state (LIVE/SIMULATOR modes)."""

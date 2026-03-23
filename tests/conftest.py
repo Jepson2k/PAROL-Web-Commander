@@ -18,7 +18,6 @@ from nicegui.testing.general_fixtures import (
 )
 from nicegui.testing.screen import Screen
 from nicegui.testing.screen_plugin import (
-    capabilities,  # noqa: F401
     nicegui_driver,  # noqa: F401 - default driver (per-test browser)
     nicegui_remove_all_screenshots,  # noqa: F401 - clears screenshots before session
     pytest_runtest_makereport,  # noqa: F401
@@ -54,28 +53,25 @@ def _get_test_ports() -> tuple[int, int]:
     return CONTROLLER_PORT, MULTICAST_PORT
 
 
-@pytest.fixture
-def chrome_options():
-    """Base Chrome options required by nicegui screen_plugin."""
-    return _webdriver.ChromeOptions()
-
-
-@pytest.fixture
+@pytest.fixture(scope="session")
 def nicegui_chrome_options():
-    """Chrome options fixture for local nicegui's screen_plugin.
+    """Chrome options for screen tests (overrides NiceGUI default).
 
-    The local nicegui/ checkout expects this fixture name.
+    Differs from NiceGUI's built-in:
+    - HEADED=1 env var skips headless (NiceGUI always adds it)
+    - GL via ANGLE for WebGL/three.js tests (NiceGUI disables GPU in CI)
     """
     options = _webdriver.ChromeOptions()
+    options.add_argument("disable-dev-shm-usage")
+    options.add_argument("disable-search-engine-choice-screen")
+    options.add_argument("no-sandbox")
     if not os.environ.get("HEADED"):
         options.add_argument("headless=new")
-    options.add_argument("disable-search-engine-choice-screen")
     options.add_argument("--use-gl=angle")
-    # Use SwiftShader for software WebGL in CI, hardware GL locally
     if "GITHUB_ACTIONS" in os.environ:
         options.add_argument("--use-angle=swiftshader-webgl")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(f"window-size={TEST_WINDOW_WIDTH},{TEST_WINDOW_HEIGHT}")
+    options.set_capability("goog:loggingPrefs", {"browser": "ALL"})
     return options
 
 

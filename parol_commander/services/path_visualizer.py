@@ -106,7 +106,7 @@ def _run_simulation_isolated(
     max_segments: int = MAX_PATH_SEGMENTS,
     backend_package: str = "parol6",
     dry_run_client_cls: type | None = None,
-    tool_metadata: dict | None = None,
+    tool_meta_registry: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -115,13 +115,16 @@ def _run_simulation_isolated(
     isolation. It returns serializable results (dicts) rather than modifying
     global state.
 
+    The simulation starts with no tool attached. The script must call
+    set_tool() explicitly to configure the correct tool and variant.
+
     Args:
         program_text: The Python program to simulate
         initial_joints_rad: Initial joint angles in radians (robot's current position)
         max_segments: Maximum path segments to collect (prevents memory exhaustion)
         backend_package: Backend package name for module shimming
         dry_run_client_cls: Concrete DryRunRobotClient class for path preview
-        tool_metadata: Serializable tool info dict for tool action recording
+        tool_meta_registry: Mapping of tool_key → {motions, variants, activation_type}
 
     Returns:
         Dict with keys:
@@ -165,7 +168,7 @@ def _run_simulation_isolated(
                     tool_action_collector=local_tool_actions,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
-                    tool_metadata=tool_metadata,
+                    tool_meta_registry=tool_meta_registry,
                 )
                 created_clients.append(self)
 
@@ -177,7 +180,7 @@ def _run_simulation_isolated(
                     tool_action_collector=local_tool_actions,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
-                    tool_metadata=tool_metadata,
+                    tool_meta_registry=tool_meta_registry,
                 )
                 created_clients.append(self._sync_client)
 
@@ -202,9 +205,12 @@ def _run_simulation_isolated(
             def __getattr__(self, name):
                 return getattr(self._real_time, name)
 
-            @staticmethod
-            def sleep(seconds):
-                pass  # No-op in simulation
+            def sleep(self, seconds):
+                # Only accumulate sleep after non-blocking moves —
+                # after a blocking move the arm is already stationary.
+                for client in created_clients:
+                    if client._last_move_non_blocking:
+                        client._pending_sleep += seconds
 
             @staticmethod
             def time():
@@ -313,11 +319,18 @@ def _run_simulation_isolated(
     for c in created_clients:
         c.close()
 
-    # Extract final joints from the last created client instance
+    # Extract final joints and accumulated errors from client instances
     if created_clients:
         last_client = created_clients[-1]
         if last_client.last_joints_rad is not None:
             final_state["joints_rad"] = last_client.last_joints_rad
+        for c in created_clients:
+            if c.accumulated_errors:
+                errors_text = "\n".join(c.accumulated_errors)
+                if error_message:
+                    error_message += "\n" + errors_text
+                else:
+                    error_message = errors_text
 
     # Enforce segment limit
     if len(local_segments) > max_segments:
@@ -407,21 +420,39 @@ class PathVisualizer:
                 simulation_state.notify_changed()
                 return None
 
-            # Build serializable tool metadata for subprocess tool action recording
-            tool_meta: dict | None = None
-            tool_key = robot_state.tool_key
-            if tool_key and tool_key != "NONE":
+            # Build serializable tool metadata registry for all tools.
+            # Scripts can call set_tool() to switch tools mid-program, so we
+            # need metadata for every tool — not just the currently active one.
+            # Each entry includes base motions + per-variant motions.
+            tool_meta_registry: dict[str, dict] = {}
+
+            def _serialize_motions(motion_list):
+                return [
+                    {"type": "linear", **asdict(m)}
+                    if isinstance(m, LinearMotion)
+                    else {"type": "rotary", **asdict(m)}
+                    for m in motion_list
+                ]
+
+            for spec in robot.tools.available:
+                if spec.key == "NONE":
+                    continue
                 try:
-                    tool_spec = robot.tools[tool_key]
-                    motions = [
-                        {"type": "linear", **asdict(m)}
-                        if isinstance(m, LinearMotion)
-                        else {"type": "rotary", **asdict(m)}
-                        for m in tool_spec.motions
-                    ]
-                    tool_meta = {
-                        "motions": motions,
-                        "activation_type": tool_spec.activation_type.value,
+                    base_motions = (
+                        _serialize_motions(spec.motions) if spec.motions else []
+                    )
+                    variants_dict: dict[str, dict] = {}
+                    for v in spec.variants:
+                        if v.motions:
+                            variants_dict[v.key] = {
+                                "motions": _serialize_motions(v.motions),
+                            }
+                    if not base_motions and not variants_dict:
+                        continue
+                    tool_meta_registry[spec.key] = {
+                        "motions": base_motions,
+                        "variants": variants_dict,
+                        "activation_type": spec.activation_type.value,
                     }
                 except (KeyError, AttributeError):
                     pass
@@ -436,7 +467,7 @@ class PathVisualizer:
                         MAX_PATH_SEGMENTS,
                         backend_pkg,
                         dr_cls,
-                        tool_meta,
+                        tool_meta_registry or None,
                     ),
                     timeout=SIMULATION_TIMEOUT_S
                     + 2.0,  # Extra buffer for process overhead
@@ -459,7 +490,7 @@ class PathVisualizer:
                         MAX_PATH_SEGMENTS,
                         backend_pkg,
                         dr_cls,
-                        tool_meta,
+                        tool_meta_registry or None,
                     )
                 except Exception as e2:
                     logger.error("Sync simulation also failed: %s", e2)
@@ -521,11 +552,8 @@ class PathVisualizer:
                         tab_id,
                     )
 
-            # Reset scene tracking counter and clear old path objects
-            if ui_state.urdf_scene:
-                ui_state.urdf_scene.invalidate_paths()
-
-            # Trigger scene update via event-driven notification
+            # Trigger scene update via event-driven notification (diff rendering
+            # handles add/remove/change without needing invalidate_paths)
             simulation_state.notify_changed()
 
             # Return error message if any

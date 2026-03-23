@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 from nicegui import Client, app as ng_app, ui
-from waldoctl import RobotClient, ToolType
+from waldoctl import GripperTool, LinearMotion, RobotClient
 
 from parol_commander.common.logging_config import (
     attach_ui_log,
@@ -25,7 +25,6 @@ from parol_commander.common.logging_config import (
 from parol_commander.common.loop_timer import LoopMetrics, format_hz_summary
 from parol_commander.common.theme import (
     apply_theme,
-    get_theme,
     inject_layout_css,
     is_dark_theme,
     PANEL_RESIZE_CONFIG,
@@ -43,6 +42,7 @@ from parol_commander.numba_pipelines import (
     warmup_pipelines,
 )
 from parol_commander.profiles import get_robot
+from parol_commander.services.camera_service import camera_service
 from parol_commander.services.path_visualizer import warm_process_pool
 from parol_commander.services.urdf_scene import (
     UrdfScene,
@@ -51,10 +51,12 @@ from parol_commander.services.urdf_scene import (
     init_angle_buffers,
     update_urdf_angles,
 )
+from parol_commander.services.urdf_scene.envelope_mixin import workspace_envelope
 from parol_commander.state import (
     action_log,
     robot_state,
     controller_state,
+    simulation_state,
     ui_state,
     readiness_state,
     global_phase_timer,
@@ -184,16 +186,13 @@ async def initialize_urdf_scene() -> None:
         background_color=scene_config.background_color,
     )
 
-    ui_state.urdf_scene.set_gizmo_visible(ui_state.gizmo_visible)
-
     # Align TCP and load tool mesh from controller's active tool
     try:
         result = await client.get_tool()
         if result and result.tool:
             vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
-            ui_state.urdf_scene.update_tcp_pose_from_tool(result.tool, variant_key=vk)
-            ui_state.urdf_scene.swap_tool_mesh(result.tool, variant_key=vk)
             ui_state.active_robot.set_active_tool(result.tool, variant_key=vk)
+            ui_state.urdf_scene.apply_tool(result.tool, variant_key=vk)
     except Exception as e:
         logger.error("Failed to sync TCP tool pose: %s", e)
 
@@ -226,6 +225,22 @@ async def initialize_urdf_scene() -> None:
 
     # Signal URDF scene ready for tests
     readiness_state.signal_urdf_scene_ready()
+
+    # Ensure stored tool is fully applied (settings page may have built before scene was ready)
+    stored_tool = ng_app.storage.general.get("selected_tool")
+    if stored_tool and stored_tool != "NONE" and ui_state.urdf_scene:
+        vk = ng_app.storage.general.get(f"tool_variant_{stored_tool}")
+        ui_state.active_robot.set_active_tool(stored_tool, variant_key=vk)
+        ui_state.urdf_scene.apply_tool(stored_tool, variant_key=vk)
+    else:
+        # Invalidate FK cache even without tool change (gizmo sync needs fresh FK)
+        ui_state.urdf_scene.invalidate_fk_cache()
+
+    # Generate workspace hull with correct tool offset (after tool is applied)
+    if not os.environ.get("PAROL_SKIP_ENVELOPE") and not workspace_envelope.is_ready:
+        workspace_envelope.generate(
+            tool_offset_z=ui_state.urdf_scene._current_tool_offset_z
+        )
 
     # Sync gizmo settings to URDF scene now that it's ready
     control_panel.sync_gizmo_to_urdf()
@@ -311,13 +326,30 @@ async def check_ping() -> None:
     global last_ping_ok
     try:
         result = await client.ping()
-        last_ping_ok = result.hardware_connected if result else False
+        new_ok = result.hardware_connected if result else False
+        if new_ok != last_ping_ok:
+            logger.debug(
+                "ping: connected %s → %s (hw_connected=%s, result=%s)",
+                last_ping_ok,
+                new_ok,
+                getattr(result, "hardware_connected", "N/A"),
+                result,
+            )
+        last_ping_ok = new_ok
     except Exception as e:
         logger.debug("ping failed: %s", e)
+        if last_ping_ok:
+            logger.debug("ping: connected True → False (exception)")
         last_ping_ok = False
 
     # Update robot connectivity status
     robot_state.connected = last_ping_ok
+    if readout_panel is not None:
+        readout_panel.update_conn_io()
+    if control_panel is not None:
+        control_panel.refresh_joint_enablement()
+        control_panel.sync_cartesian_button_states()
+        control_panel.sync_gizmo_for_jog_state()
 
 
 # --------------- UI Update Functions ---------------
@@ -325,9 +357,11 @@ def update_ui_from_status() -> None:
     """Update UI elements from robot_state (called from multicast consumer)"""
     # Skip position/angle updates when in editing mode (editing sync handles these)
     skip_position_updates = robot_state.editing_mode
+    # Skip URDF scene updates during sim playback/scrubbing (teleport syncs backend)
+    skip_scene_updates = skip_position_updates or simulation_state.sim_pose_override
 
     # Update URDF scene with new angles and TCP ball
-    if not skip_position_updates:
+    if not skip_scene_updates:
         with global_phase_timer.phase("scene"):
             update_urdf_angles(robot_state.angles.deg)
             if ui_state.urdf_scene:
@@ -367,13 +401,22 @@ def update_ui_from_status() -> None:
     tool_key_changed = ts.key != robot_state.tool_key
     robot_state.tool_key = ts.key
     robot_state.tool_position = ts.positions[0] if ts.positions else 0.0
-    robot_state.tool_force = ts.channels[0] if len(ts.channels) > 0 else 0.0
     robot_state.tool_engaged = ts.engaged
     robot_state.tool_part_detected = ts.part_detected
-    robot_state.tool_current = ts.channels[1] if len(ts.channels) > 1 else 0.0
-    robot_state.tool_time_series.maybe_push(
-        robot_state.tool_position, robot_state.tool_force, robot_state.tool_current
+    robot_state.tool_current = ts.channels[0] if len(ts.channels) > 0 else 0.0
+    robot_state.tool_time_series.push(
+        robot_state.tool_position, robot_state.tool_current
     )
+
+    # Build gripper tab on first tool detection
+    if tool_key_changed and robot_state.tool_key != "NONE":
+        try:
+            if ui_state._build_gripper_content is not None:
+                ui_state._build_gripper_content()
+            if ui_state._gripper_tab is not None:
+                ui_state._gripper_tab.props(remove="disable")
+        except RuntimeError:
+            pass
 
     # Update control panel tool quick-action visuals
     if control_panel.tool_actions:
@@ -413,9 +456,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui.image("/static/icons/robotic-claw.svg").classes("gripper-icon").style(
                 "width: 24px; height: 24px; transform: rotate(180deg); filter: brightness(0) invert(1) opacity(0.8);"
             )
-        if ToolType.GRIPPER not in ui_state.active_robot.tools:
-            gripper_tab.props("disable")
+        gripper_tab.props("disable")
         gripper_tab.mark("tab-gripper")
+        ui_state._gripper_tab = gripper_tab
 
     # ---- Top panels container ----
     with (
@@ -441,7 +484,7 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui.element("div").classes("resize-handle-bottom")
             ui.element("div").classes("resize-handle-corner")
 
-        with ui.tab_panel("io").classes("overlay-card overflow-hidden"):
+        with ui.tab_panel("io").classes("gap-2 overlay-card overflow-hidden"):
             with ui.row().classes("w-full"):
                 ui.label("I/O").classes("text-lg font-medium")
                 ui.space()
@@ -451,15 +494,64 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
             ui_state.io_page = IoPage(client)
             ui_state.io_page.build()
 
-        with ui.tab_panel("gripper").classes("overlay-card overflow-hidden"):
-            with ui.row().classes("w-full"):
-                ui.label("Gripper").classes("text-lg font-medium")
-                ui.space()
-                ui.button(icon="close", on_click=close_top_panels).props(
-                    "flat round dense color=white"
-                )
-            ui_state.gripper_page = GripperPage(client)
-            ui_state.gripper_page.build()
+        with ui.tab_panel("gripper").classes(
+            "gap-2 overlay-card gripper-panel overflow-hidden"
+        ) as gripper_panel_container:
+            gripper_content_built = False
+
+            def _build_gripper_content() -> None:
+                nonlocal gripper_content_built
+                if gripper_content_built:
+                    return
+                gripper_content_built = True
+                with gripper_panel_container:
+                    with ui.row().classes("w-full items-center"):
+                        (
+                            ui.label("Gripper")
+                            .bind_text_from(
+                                robot_state,
+                                "tool_key",
+                                backward=lambda k: f"Gripper: {k}"
+                                if k != "NONE"
+                                else "Gripper",
+                            )
+                            .classes("text-lg font-medium")
+                        )
+                        gripper_features_label = ui.label("").classes(
+                            "text-xs text-[var(--ctk-muted)]"
+                        )
+
+                        def _update_features(k: str) -> str:
+                            if k == "NONE":
+                                return ""
+                            parts: list[str] = []
+                            try:
+                                tool = client.tool
+                            except (RuntimeError, KeyError, NotImplementedError):
+                                return ""
+                            if not isinstance(tool, GripperTool):
+                                return ""
+                            for m in tool.motions:
+                                if isinstance(m, LinearMotion):
+                                    gap = m.travel_m * 1000 * (2 if m.symmetric else 1)
+                                    parts.append(f"{gap:.1f}mm gap")
+                                    break
+                            channels = {ch.name for ch in tool.channel_descriptors}
+                            if "Current" in channels:
+                                parts.append("Current")
+                            return " · ".join(parts)
+
+                        gripper_features_label.bind_text_from(
+                            robot_state, "tool_key", backward=_update_features
+                        )
+                        ui.space()
+                        ui.button(icon="close", on_click=close_top_panels).props(
+                            "flat round dense color=white"
+                        )
+                    ui_state.gripper_page = GripperPage(client)
+                    ui_state.gripper_page.build()
+
+            ui_state._build_gripper_content = _build_gripper_content
 
         def update_top_layout(e=None):
             new_tab = e.args if e and e.args else side_tabs.value or ""
@@ -568,6 +660,8 @@ def _setup_panel_persistence(refs: dict) -> None:
     update_bottom_layout = refs["update_bottom_layout"]
 
     ui.run_javascript(f"PanelResize.configure({json.dumps(PANEL_RESIZE_CONFIG)})")
+    _gripper_preset = "camera" if camera_service.active else "default"
+    ui.run_javascript(f'PanelResize.resizePanel("gripper", "{_gripper_preset}")')
 
     ui_client = ui.context.client
 
@@ -578,6 +672,8 @@ def _setup_panel_persistence(refs: dict) -> None:
                 if saved_tabs:
                     if "top" in saved_tabs:
                         top_tab = saved_tabs["top"]
+                        if top_tab == "gripper" and ui_state.gripper_page is None:
+                            top_tab = None
                         side_tabs.value = top_tab
                         top_panels.value = top_tab
                         update_top_layout()
@@ -611,6 +707,8 @@ def build_page_content() -> None:
     )
     # Add keybindings focus detection script
     ui.add_head_html('<script src="/static/js/keybindings.js" defer></script>')
+    # Add animated robot face script
+    ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
 
     with ui.column().classes("relative w-screen h-screen overflow-hidden gap-0"):
         with ui.column().classes("absolute inset-0 z-0"):
@@ -633,6 +731,33 @@ def build_page_content() -> None:
                     return
 
                 await initialize_urdf_scene()
+
+                # By now the serial transport has had time to receive
+                # frames.  If hardware is detected, switch to robot mode.
+                try:
+                    result = await client.ping()
+                    hw_now = bool(result.hardware_connected) if result else False
+                except Exception:
+                    hw_now = False
+                if hw_now and robot_state.simulator_active:
+                    logger.info("Hardware detected — switching to robot mode")
+                    robot_state.simulator_active = False
+                    try:
+                        await client.simulator_off()
+                        await client.resume()
+                    except Exception as e:
+                        logger.warning("auto robot-mode switch failed: %s", e)
+                robot_state.connected = hw_now
+
+                control_panel.update_robot_btn_visual()
+                readout_panel.update_conn_io()
+
+                # Enable gripper tab if a tool is already active
+                if robot_state.tool_key and robot_state.tool_key != "NONE":
+                    if ui_state._build_gripper_content is not None:
+                        ui_state._build_gripper_content()
+                    if ui_state._gripper_tab is not None:
+                        ui_state._gripper_tab.props(remove="disable")
 
                 scene_loading_overlay.classes("opacity-0 pointer-events-none")
                 await asyncio.sleep(0.4)
@@ -697,8 +822,8 @@ def _register_handlers() -> None:
     if ng_app.is_started:
         return
 
-    async def _init_and_wait(port: str) -> bool:
-        """Start controller, wait for readiness, ping. Returns hw_connected."""
+    async def _init_and_wait(port: str) -> None:
+        """Start controller and wait for readiness."""
         if not controller_state.running:
             await start_controller(port)
 
@@ -707,47 +832,24 @@ def _register_handlers() -> None:
         except (TimeoutError, ConnectionError, OSError) as e:
             logger.debug("startup: wait_ready failed: %s", e)
 
-        hw_connected = False
-        try:
-            result = await client.ping()
-            hw_connected = result.hardware_connected if result else False
-        except Exception as e:
-            logger.debug("startup: ping failed: %s", e)
+    async def _set_initial_mode(port: str) -> None:
+        """Start streaming; defer mode decision to page load.
 
-        robot_state.connected = bool(hw_connected)
-        return hw_connected
-
-    async def _set_initial_mode(port: str, hw_connected: bool) -> None:
-        """Enable simulator or robot mode based on port/hardware state."""
-        # Startup policy:
-        # - If no serial port specified -> start simulator
-        # - If serial port specified and hardware connected -> start robot
-        # - If serial port specified but not connected -> start simulator
-        if not port or not hw_connected:
-            if not robot_state.simulator_active:
-                logger.debug(
-                    "startup: enabling simulator (no port or serial not connected)"
-                )
-                try:
-                    await client.simulator_on()
-                except Exception as e:
-                    logger.error("startup: simulator_on failed: %s", e)
+        When a port is configured the controller already has a real serial
+        transport — don't replace it with simulator.  The page-load ping
+        in ``_init`` will set ``robot_state.simulator_active`` based on
+        whether hardware is actually connected.
+        """
+        if not port:
+            try:
+                await client.simulator_on()
+            except Exception as e:
+                logger.error("startup: simulator_on failed: %s", e)
             robot_state.simulator_active = True
-            try:
-                await client.resume()
-            except Exception as e:
-                logger.warning("startup: resume failed (may retry): %s", e)
-        else:
-            # Robot mode (physical serial connected)
-            robot_state.simulator_active = False
-            try:
-                # Explicit simulator_off ensures transport is fully
-                # initialized and _wait_for_first_frame runs, so
-                # Position_in is valid before we accept commands.
-                await client.simulator_off()
-                await client.resume()
-            except Exception as e:
-                logger.warning("startup: resume failed (may retry): %s", e)
+        try:
+            await client.resume()
+        except Exception as e:
+            logger.warning("startup: resume failed (may retry): %s", e)
 
     async def _restore_settings() -> None:
         """Restore persisted motion profile and tool selection."""
@@ -783,9 +885,12 @@ def _register_handlers() -> None:
             except Exception:
                 port = ""
 
-            hw_connected = await _init_and_wait(port)
-            await _set_initial_mode(port, hw_connected)
+            await _init_and_wait(port)
+            await _set_initial_mode(port)
             await _restore_settings()
+            # Sync editor slider mode now that simulator_active is known
+            if editor_panel:
+                editor_panel.playback.sync_mode()
         except Exception as e:
             logger.error("App startup init failed: %s", e)
             robot = ui_state.robot
@@ -800,6 +905,7 @@ def _register_handlers() -> None:
     async def _on_shutdown() -> None:
         """NiceGUI shutdown hook - ensure controller and child processes are stopped."""
         logger.debug("Nicegui Shutting Down...")
+        camera_service.stop()
 
         # Wait for startup to complete first (with timeout to avoid hanging forever)
         try:
@@ -851,7 +957,25 @@ def _register_handlers() -> None:
             from nicegui import run as ng_run
 
             if ng_run.process_pool is not None:
-                ng_run.process_pool.shutdown(wait=False, cancel_futures=True)
+                pool = ng_run.process_pool
+                # Log worker state before shutdown
+                for pid, proc in list(pool._processes.items()):
+                    logger.debug(
+                        "Pool worker pid=%d name=%s alive=%s exitcode=%s",
+                        pid,
+                        proc.name,
+                        proc.is_alive(),
+                        proc.exitcode,
+                    )
+                pool.shutdown(wait=False, cancel_futures=True)
+                # Log worker state after shutdown(wait=False)
+                for pid, proc in list(pool._processes.items()):
+                    logger.debug(
+                        "Post-shutdown worker pid=%d alive=%s exitcode=%s",
+                        pid,
+                        proc.is_alive(),
+                        proc.exitcode,
+                    )
                 ng_run.process_pool = None
         except Exception as e:
             logger.debug("Error shutting down process pool: %s", e)
@@ -861,6 +985,24 @@ def _register_handlers() -> None:
             await client.close()
         except Exception as e:
             logger.debug("Error closing client: %s", e)
+
+        # Log all multiprocessing active children and alive threads
+        import multiprocessing
+
+        for child in multiprocessing.active_children():
+            logger.debug(
+                "Active child: pid=%d name=%s alive=%s exitcode=%s daemon=%s",
+                child.pid,
+                child.name,
+                child.is_alive(),
+                child.exitcode,
+                child.daemon,
+            )
+        import threading
+
+        for t in threading.enumerate():
+            if t is not threading.current_thread():
+                logger.debug("Alive thread: name=%s daemon=%s", t.name, t.daemon)
 
 
 # Register handlers at module load
@@ -903,9 +1045,20 @@ atexit.register(_cleanup_script_processes_sync)
 @ui.page("/")
 async def index_page():
     global ping_timer, _page_client
-    _page_client = ui.context.client
+    this_client = ui.context.client
+    # Don't set _page_client yet — wait until panels are built so the
+    # status consumer never touches stale panel references from a
+    # previous (deleted) client.
+
+    async def _on_disconnect():
+        global _page_client
+        # Only clear if this is still the active client (avoid race on refresh)
+        if _page_client is this_client:
+            _page_client = None
+
+    this_client.on_disconnect(_on_disconnect)
     # Theme and layout
-    apply_theme(get_theme())
+    apply_theme("dark")
     ui.query(".nicegui-content").classes("p-0")
     inject_layout_css()
 
@@ -923,13 +1076,6 @@ async def index_page():
     except Exception as e:
         logger.warning("Connectivity check failed: %s", e)
 
-    with contextlib.suppress(RuntimeError):
-        if ui_state.urdf_scene:
-            ui_state.urdf_scene.set_simulator_appearance(
-                bool(robot_state.simulator_active)
-            )
-        control_panel.update_robot_btn_visual()
-
     # Create jog timers and wire to ui_state so control panel can access them
     ui_state.joint_jog_timer = ui.timer(
         interval=config.webapp_control_interval_s,
@@ -945,6 +1091,9 @@ async def index_page():
     # Attach logging handler to response log
     if ui_state.response_log:
         attach_ui_log(ui_state.response_log)
+
+    # All panels built — now allow the status consumer to update UI
+    _page_client = this_client
 
     # Page-scoped connectivity check (1 Hz)
     ping_timer = ui.timer(interval=1.0, callback=check_ping, active=True)
@@ -987,15 +1136,21 @@ async def _status_consumer() -> None:
 
                 with global_phase_timer.phase("status"):
                     # Copy status data (in-place fills to avoid allocations)
-                    if not robot_state.editing_mode:
+                    if (
+                        not robot_state.editing_mode
+                        and not simulation_state.sim_pose_override
+                    ):
                         robot_state.angles.set_deg(status.angles)
                     robot_state.pose[:] = status.pose
                     robot_state.io[:] = status.io
-                    robot_state.tool_status = status.tool_status
+                    if not simulation_state.sim_pose_override:
+                        robot_state.tool_status = status.tool_status
 
                     # Speeds arrive as rad/s from backend — convert to deg/s for display
                     np.rad2deg(status.speeds, out=robot_state.speeds)
-                    robot_state.tcp_speed = status.tcp_speed
+                    robot_state.tcp_speed = (
+                        0.3 * status.tcp_speed + 0.7 * robot_state.tcp_speed
+                    )
 
                     # Mark backend ready on first valid STATUS
                     readiness_state.mark_backend_done()
@@ -1013,9 +1168,21 @@ async def _status_consumer() -> None:
                     robot_state.completed_index = status.completed_index
                     robot_state.last_update_ts = time.time()
 
-                    # Update UI only if the page client is still alive
+                    # Auto-clear scrub override after teleport has had time to propagate
+                    if (
+                        simulation_state.sim_pose_override
+                        and not simulation_state.sim_playback_active
+                        and simulation_state.last_teleport_ts > 0
+                        and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+                    ):
+                        simulation_state.sim_pose_override = False
+                        simulation_state.last_teleport_ts = 0.0
+
+                    # Both checks needed: _deleted guards the brief window
+                    # between NiceGUI marking the client dead and removing it
+                    # from Client.instances.
                     pc = _page_client
-                    if pc is not None and pc.id in Client.instances:
+                    if pc is not None and not pc._deleted and pc.id in Client.instances:
                         with pc:
                             # Update UI from status
                             update_ui_from_status()
@@ -1032,6 +1199,10 @@ async def _status_consumer() -> None:
                             readout_panel.update_action_log()
                             control_panel.refresh_joint_enablement()
                             control_panel.sync_cartesian_button_states()
+                            control_panel.sync_gizmo_for_jog_state()
+                            if ui_state.gripper_page is not None:
+                                ui_state.gripper_page.update_chart()
+                                ui_state.gripper_page.update_status()
 
             except Exception as e:
                 logger.debug("Status consumer parse error: %s", e)
@@ -1141,6 +1312,7 @@ def main():
     # Store panels in ui_state for cross-module access
     ui_state.control_panel = control_panel
     ui_state.editor_panel = editor_panel
+    ui_state.playback = editor_panel.playback
     ui_state.readout_panel = readout_panel
 
     # Configure logging
@@ -1170,7 +1342,18 @@ def main():
             binding_refresh_interval=0.05,
         )
     except KeyboardInterrupt:
+        import multiprocessing
+        import threading
+
         print("\nShutting down...")
+        for child in multiprocessing.active_children():
+            print(
+                f"  [exit] active child: pid={child.pid} name={child.name}"
+                f" alive={child.is_alive()} exitcode={child.exitcode} daemon={child.daemon}"
+            )
+        for t in threading.enumerate():
+            if t is not threading.current_thread():
+                print(f"  [exit] alive thread: name={t.name} daemon={t.daemon}")
 
 
 if __name__ in {"__main__", "__mp_main__"}:

@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import numpy as np
 from nicegui import ui, context, Client
-from parol_commander.common.theme import get_theme, PathColors
+from parol_commander.common.theme import get_theme
 from parol_commander.constants import REPO_ROOT, config
 from parol_commander.state import (
     robot_state,
@@ -30,6 +30,7 @@ from parol_commander.services.script_runner import (
 from parol_commander.services.path_visualizer import path_visualizer
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.services.stepping_client import GUIStepController
+from parol_commander.components.playback import PlaybackController
 
 logger = logging.getLogger(__name__)
 
@@ -169,18 +170,11 @@ class EditorPanel:
         self.program_log: ui.log | None = None
         self.run_btn: ui.button | None = None
         self.log_toggle_btn: ui.button | None = None
+        self.record_btn: ui.button | None = None
+        self._capture_btn: ui.button | None = None
 
-        # Bottom playback bar elements
-        self.playback_bar: ui.element | None = None
-        self._play_btn: ui.button | None = None
-        self._play_btn_tooltip: ui.tooltip | None = (
-            None  # Stored to update text, not recreate
-        )
-        self._stop_btn: ui.button | None = None
-        self._next_btn: ui.button | None = None  # Step forward button
-        self._scrub_container: ui.element | None = None  # Segmented scrub bar container
-        self._segment_elements: list[ui.element] = []  # Individual segment elements
-        self.speed_fab: ui.fab | None = None
+        # Playback controller (owns bottom bar UI and playback logic)
+        self.playback = PlaybackController(self)
 
         # Shared log area (below play bar)
         self._log_expanded: bool = False
@@ -715,6 +709,8 @@ print(f"Robot status: {{status}}")
 
     async def _start_script_process(self) -> None:
         """Save current editor content and start it as a Python subprocess."""
+        self.playback.stop_playback()
+
         if self.script_running:
             ui.notify("Script already running", color="warning")
             return
@@ -744,7 +740,7 @@ print(f"Robot status: {{status}}")
             if self.program_log:
                 self.program_log.clear()
 
-            config = create_default_config(str(script_path), str(REPO_ROOT))
+            script_config = create_default_config(str(script_path), str(REPO_ROOT))
 
             # Capture UI client context for the callbacks
             ui_client = context.client
@@ -766,14 +762,14 @@ print(f"Robot status: {{status}}")
             self._step_controller.initialize()
 
             self.script_handle = await run_script(
-                config, on_stdout, on_stderr, session_id=self._step_session_id
+                script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
             self.script_running = True
 
             # Start in playing mode (not paused) so user doesn't need to press play twice
             simulation_state.is_playing = True
             self._step_controller.signal_play()
-            self._update_play_button()
+            self.playback.on_script_start()
 
             # Auto-expand log
             self._expand_log()
@@ -802,7 +798,7 @@ print(f"Robot status: {{status}}")
                 self._step_controller.cleanup()
                 self._step_controller = None
             simulation_state.is_playing = False
-            self._update_play_button()
+            self.playback._update_play_button()
 
     async def _watch_script_events(self, ui_client: Any) -> None:
         """Poll for script events and update visualization.
@@ -820,21 +816,14 @@ print(f"Robot status: {{status}}")
                     method = event.get("method", "")
                     step = event.get("step", 0)
 
-                    if event_type == "complete":
-                        # Update visualization when command completes
-                        with ui_client:
-                            # Update step index for playback overlay
-                            simulation_state.current_step_index = step
+                    if event_type == "start":
+                        self.playback.on_script_step_start(step, ui_client)
 
-                            # Update scrub bar to highlight current segment
-                            self._highlight_current_segment()
-
-                            # Highlight the executing line in the editor
-                            self._highlight_executing_line(step)
-
-                            logger.debug(
-                                "Script event: %s completed (step %d)", method, step
-                            )
+                    elif event_type == "complete":
+                        self.playback.on_script_step_complete(step, ui_client)
+                        logger.debug(
+                            "Script event: %s completed (step %d)", method, step
+                        )
 
                 # Poll interval - 50ms for responsive updates
                 await asyncio.sleep(0.05)
@@ -863,37 +852,29 @@ print(f"Robot status: {{status}}")
                     await t
             # Only reset state if this handle is still the active one
             if self.script_handle is handle:
-                # Re-enter UI client context for notifications and state updates
                 with ui_client:
-                    self.script_handle = None
-                    self.script_running = False
-                    simulation_state.is_playing = False
-                    self._update_play_button()
-
-                    # Clean up stepping controller
-                    self._cleanup_stepping()
-
-                    # Don't auto-hide playback bar - user can dismiss it manually
-                    ui.notify(
-                        f"Script finished: {filename} (exit {rc})",
-                        color="positive" if rc == 0 else "warning",
-                    )
+                    self._reset_script_state(handle, ui_client)
                     logger.info("Script %s finished with code %s", filename, rc)
         except Exception as e:
             logger.error("Error monitoring script process: %s", e)
-            # Best-effort reset if still active with UI client context
             with ui_client:
                 if self.script_handle is handle:
-                    self.script_handle = None
-                    self.script_running = False
-                    simulation_state.is_playing = False
-                    self._update_play_button()
-                    self._cleanup_stepping()
-                    # Don't auto-hide playback bar on error either
+                    self._reset_script_state(handle, ui_client)
+
+    def _reset_script_state(
+        self, handle: ScriptProcessHandle, ui_client: Client
+    ) -> None:
+        """Reset all script-related state after a script finishes or errors."""
+        self.script_handle = None
+        self.script_running = False
+        simulation_state.is_playing = False
+        simulation_state.sim_pose_override = False
+        self.playback.on_script_stop(ui_client)
+        self._cleanup_stepping()
 
     def cleanup(self) -> None:
         """Remove listeners registered by this panel."""
-        simulation_state.remove_change_listener(self._update_play_button)
+        self.playback.cleanup()
 
     def _cleanup_stepping(self) -> None:
         """Clean up stepping controller and event watcher."""
@@ -909,7 +890,7 @@ print(f"Robot status: {{status}}")
         self._step_session_id = None
 
         # Clear executing line highlight
-        self._clear_executing_line_highlight()
+        self.clear_executing_line_highlight()
 
     async def _stop_script_process(self) -> None:
         """Stop the running script process."""
@@ -923,7 +904,7 @@ print(f"Robot status: {{status}}")
             self.script_handle = None
             self.script_running = False
             simulation_state.is_playing = False
-            self._update_play_button()
+            self.playback._update_play_button()
 
             # Clean up stepping controller
             self._cleanup_stepping()
@@ -939,9 +920,7 @@ print(f"Robot status: {{status}}")
             logger.error("Error stopping script: %s", e)
             # State already cleared above
 
-    async def _run_simulation(
-        self, notify: bool = True, tab_id: str | None = None
-    ) -> str | None:
+    async def _run_simulation(self, tab_id: str | None = None) -> str | None:
         """Run the simulation for the current script.
 
         Args:
@@ -957,13 +936,23 @@ print(f"Robot status: {{status}}")
 
         content = self.program_textarea.value if self.program_textarea else ""
         if not content:
-            if notify:
-                ui.notify("No script content to simulate", color="warning")
             return None
 
-        if notify:
-            ui.notify("Running simulation...", color="info")
-        error = await path_visualizer.update_path_visualization(content, tab_id=tab_id)
+        # Show loading indicator during simulation
+        loading = self.playback.sim_loading_progress
+        if loading:
+            loading.visible = True
+        try:
+            error = await path_visualizer.update_path_visualization(
+                content, tab_id=tab_id
+            )
+        finally:
+            if loading:
+                loading.visible = False
+
+        # Invalidate timeline so it gets rebuilt from new segments
+        self.playback.invalidate_timeline()
+        simulation_state.sim_playback_time = 0.0
 
         # Snapshot robot position used for this simulation (per-tab)
         tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
@@ -972,7 +961,7 @@ print(f"Robot status: {{status}}")
             tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
 
         # Update scrub bar segments to match the new paths
-        self._update_scrub_segments()
+        self.playback.update_scrub_segments()
 
         # Apply timing warning decorations for infeasible durations
         self._apply_timing_decorations()
@@ -980,12 +969,6 @@ print(f"Robot status: {{status}}")
         # Show error in program log if any
         if error and self.program_log:
             self.program_log.push(f"[SIM ERROR] {error}")
-
-        if notify:
-            if error:
-                ui.notify("Simulation completed with errors", color="warning")
-            else:
-                ui.notify("Simulation complete", color="positive")
 
         # Annotate any lines that generated targets but don't have UUID markers
         self._annotate_unmarked_targets()
@@ -1051,7 +1034,7 @@ print(f"Robot status: {{status}}")
             # but next simulation will find the markers and not generate auto_ IDs)
             self.program_textarea.value = "\n".join(lines)
 
-    def _schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
+    def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
         """Schedule a debounced simulation run when code changes.
 
         Cancels any pending *or running* simulation and schedules a new one after
@@ -1094,14 +1077,14 @@ print(f"Robot status: {{status}}")
                         simulation_state.notify_changed()
                 except RuntimeError:
                     simulation_state.notify_changed()
-                self._update_scrub_segments()
+                self.playback.update_scrub_segments()
             return
 
         async def run_simulation_quietly():
             """Run simulation without notifications (silent auto-update)."""
             try:
                 logger.debug("DEBOUNCE: Starting simulation...")
-                await self._run_simulation(notify=False, tab_id=tab_id)
+                await self._run_simulation(tab_id=tab_id)
                 logger.debug("DEBOUNCE: Simulation completed successfully")
             except asyncio.CancelledError:
                 logger.debug("DEBOUNCE: Simulation cancelled by newer edit")
@@ -1123,11 +1106,13 @@ print(f"Robot status: {{status}}")
 
     def _check_position_changed(self) -> None:
         """Periodically check if robot position changed and re-run path preview."""
-        # Skip if script running, editing, or sim already pending
+        # Skip if script running, editing, scrubbing/playing, or sim already pending
         if (
             self.script_running
             or robot_state.editing_mode
             or self._simulation_debounce_timer is not None
+            or simulation_state.sim_pose_override
+            or simulation_state.sim_playback_active
         ):
             return
 
@@ -1142,18 +1127,19 @@ print(f"Robot status: {{status}}")
 
         current_deg = robot_state.angles.deg[: ui_state.active_robot.joints.count]
         if np.max(np.abs(current_deg - active_tab.last_sim_joints_deg)) > 0.5:
-            self._schedule_debounced_simulation()
+            self.schedule_debounced_simulation()
 
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off."""
         motion_recorder.toggle_recording()
         # Update button visual
         if recording_state.is_recording:
-            self.record_btn.props("color=warning")
+            if self.record_btn:
+                self.record_btn.props("color=warning")
             if self._record_btn_tooltip:
                 self._record_btn_tooltip.text = "Stop Recording"
             # Disable playback controls during recording
-            self._set_playbar_enabled(False)
+            self.playback.set_enabled(False)
             # Show recording notification at top of screen
             try:
                 client = self._ui_client or context.client
@@ -1170,11 +1156,12 @@ print(f"Robot status: {{status}}")
             except RuntimeError:
                 pass  # No client context available
         else:
-            self.record_btn.props("color=negative")
+            if self.record_btn:
+                self.record_btn.props("color=negative")
             if self._record_btn_tooltip:
                 self._record_btn_tooltip.text = "Start Recording"
             # Re-enable playback controls
-            self._set_playbar_enabled(True)
+            self.playback.set_enabled(True)
             # Dismiss recording notification
             if self._recording_notification is not None:
                 try:
@@ -1184,16 +1171,6 @@ print(f"Robot status: {{status}}")
                 except RuntimeError:
                     pass  # No client context available
                 self._recording_notification = None
-
-    def _set_playbar_enabled(self, enabled: bool) -> None:
-        """Enable or disable playback controls (except record button)."""
-        buttons = [self._play_btn, self._next_btn, self.speed_fab]
-        for btn in buttons:
-            if btn:
-                if enabled:
-                    btn.enable()
-                else:
-                    btn.disable()
 
     def _toggle_log(self) -> None:
         """Toggle shared log panel visibility via splitter position."""
@@ -1225,6 +1202,8 @@ print(f"Robot status: {{status}}")
     def _on_splitter_change(self, e) -> None:
         """Handle splitter drag changes to update log expanded state."""
         value = e.value
+        if value is None:
+            return
 
         # If user drags to near-bottom (>90%), treat as collapsed
         if value > 90:
@@ -1273,11 +1252,7 @@ print(f"Robot status: {{status}}")
             tab.path_segments = []
             tab.targets = []
         elif tab.content.strip():
-            # Non-default content - run simulation in background
-            task = asyncio.create_task(
-                self._run_simulation(notify=False, tab_id=tab.id)
-            )
-            self._pending_simulations[tab.id] = task
+            self.schedule_debounced_simulation(tab_id=tab.id)
 
         return tab
 
@@ -1380,12 +1355,15 @@ print(f"Robot status: {{status}}")
             if self.tabs_container and editor_tabs_state.active_tab_id:
                 self.tabs_container.set_value(editor_tabs_state.active_tab_id)
             return
-        if simulation_state.is_playing:
-            ui.notify("Cannot switch tabs during playback", color="warning")
-            # Reset UI to current active tab since the click already changed it visually
+        if self.script_running and simulation_state.is_playing:
+            ui.notify("Cannot switch tabs during script playback", color="warning")
             if self.tabs_container and editor_tabs_state.active_tab_id:
                 self.tabs_container.set_value(editor_tabs_state.active_tab_id)
             return
+
+        # Stop simulation playback on tab switch (non-blocking)
+        self.playback.stop_playback()
+        self.playback.invalidate_timeline()
 
         tab = next((t for t in editor_tabs_state.tabs if t.id == tab_id), None)
         if not tab:
@@ -1462,7 +1440,7 @@ print(f"Robot status: {{status}}")
                     ui_state.urdf_scene.invalidate_paths()
                 if client is not None:
                     with client:
-                        self._update_scrub_segments()
+                        self.playback.update_scrub_segments()
                 simulation_state.notify_changed()
             finally:
                 if self._tab_switch_render_task is task:
@@ -1584,7 +1562,7 @@ print(f"Robot status: {{status}}")
 
         # Only run simulation for active tab
         if tab.id == editor_tabs_state.active_tab_id:
-            self._schedule_debounced_simulation()
+            self.schedule_debounced_simulation()
 
     async def _save_tab(self, tab: EditorTab) -> None:
         """Save tab content to server."""
@@ -1631,229 +1609,9 @@ print(f"Robot status: {{status}}")
         if tab:
             self._download_tab(tab)
 
-    # ---- Bottom Playback Bar Methods ----
+    # ---- Line highlighting  ----
 
-    async def toggle_play(self) -> None:
-        """Toggle play/pause for script execution.
-
-        - If script not running: START the script with step wrapper
-        - If script is running: TOGGLE between play and pause
-        """
-        if self.script_running:
-            # Script running - toggle play/pause
-            if simulation_state.is_playing:
-                # Currently playing, pause it
-                if self._step_controller:
-                    self._step_controller.signal_pause()
-                simulation_state.is_playing = False
-                logger.debug("Script paused")
-            else:
-                # Currently paused, play it
-                if self._step_controller:
-                    self._step_controller.signal_play()
-                simulation_state.is_playing = True
-                logger.debug("Script playing")
-            self._update_play_button()
-        else:
-            # No script running - start the script
-            await self._start_script_process()
-
-    def _update_play_button(self) -> None:
-        """Update play/pause button icon and stop button visibility.
-
-        Play button shows:
-        - play_arrow when script not running OR running but paused
-        - pause when script running and playing
-
-        Stop button:
-        - visible when script is running
-        - hidden when script is not running
-
-        Step button (next):
-        - visible when script is running AND simulation has steps
-        - disabled when at the last step
-        """
-        if self._play_btn:
-            if self.script_running and simulation_state.is_playing:
-                # Script running and playing - show pause icon (yellow)
-                self._play_btn.props("icon=pause color=warning")
-                if self._play_btn_tooltip:
-                    self._play_btn_tooltip.text = "Pause (Space)"
-            else:
-                # Script not running OR paused - show play icon (green)
-                self._play_btn.props("icon=play_arrow color=positive")
-                if self._play_btn_tooltip:
-                    self._play_btn_tooltip.text = "Play (Space)"
-
-        if self._stop_btn:
-            # Stop button visible only when script is running
-            self._stop_btn.set_visibility(self.script_running)
-
-        if self._next_btn:
-            # Step button visible when script running AND simulation has steps to step through
-            has_simulation_steps = simulation_state.total_steps > 0
-            self._next_btn.set_visibility(self.script_running and has_simulation_steps)
-
-            # Enable step button when script is running, disable at last step otherwise
-            if self.script_running:
-                self._next_btn.enable()
-            elif has_simulation_steps:
-                at_last_step = (
-                    simulation_state.current_step_index
-                    >= simulation_state.total_steps - 1
-                )
-                if at_last_step:
-                    self._next_btn.disable()
-                else:
-                    self._next_btn.enable()
-
-    def _update_robot_pose(self) -> None:
-        """Update robot pose in URDF scene based on current step."""
-        if not simulation_state.path_segments:
-            return
-
-        idx = simulation_state.current_step_index
-        if 0 <= idx < len(simulation_state.path_segments):
-            segment = simulation_state.path_segments[idx]
-            if segment.joints and ui_state.urdf_scene:
-                ui_state.urdf_scene.set_axis_values(segment.joints)
-
-    def step_forward(self) -> None:
-        """Step forward one segment.
-
-        During script execution: signals the script to execute one command then pause.
-        During simulation: advances the visualization by one step.
-        """
-        if self.script_running and self._step_controller:
-            # Signal script to execute one command and pause
-            self._step_controller.signal_step()
-            logger.debug("Step forward signal sent to script")
-        else:
-            # Simulation mode - advance visualization
-            if simulation_state.current_step_index < simulation_state.total_steps - 1:
-                simulation_state.current_step_index += 1
-                self._update_robot_pose()
-                self._highlight_current_segment()
-                self._highlight_executing_line(simulation_state.current_step_index)
-                # Update step button disabled state (may be at last step now)
-                self._update_play_button()
-
-    def _on_scrub_change(self, value: int) -> None:
-        """Handle scrub slider change."""
-        simulation_state.current_step_index = value
-        self._update_robot_pose()
-        self._highlight_executing_line(value)
-        # Update step button disabled state
-        self._update_play_button()
-
-    def _on_speed_change(self, value: float) -> None:
-        """Handle speed slider change."""
-        self._set_speed(value)
-
-    def _set_speed(self, value: float) -> None:
-        """Set playback speed."""
-        simulation_state.playback_speed = value
-
-    def _get_segment_border_radius(self, idx: int, num_segments: int) -> str:
-        """Get CSS border-radius for a scrub bar segment based on position."""
-        is_first = idx == 0
-        is_last = idx == num_segments - 1
-        if is_first and is_last:
-            return "border-radius: 9999px;"
-        elif is_first:
-            return "border-radius: 9999px 0 0 9999px;"
-        elif is_last:
-            return "border-radius: 0 9999px 9999px 0;"
-        return ""
-
-    def _update_scrub_segments(self) -> None:
-        """Update the segmented scrub bar to match path_segments.
-
-        Defers the actual update to the next event loop tick to avoid race
-        conditions with NiceGUI's background binding refresh timer.
-        """
-        if not self._scrub_container:
-            return
-
-        # Capture client context for deferred execution
-        try:
-            client = context.client
-        except RuntimeError:
-            return  # No client context available
-
-        def deferred():
-            try:
-                with client:
-                    self._do_update_scrub_segments()
-            except (RuntimeError, KeyError):
-                pass  # Client disconnected
-
-        ui.timer(0, deferred, once=True)
-
-    def _do_update_scrub_segments(self) -> None:
-        """Internal implementation of scrub segment update.
-
-        Each segment is a colored div element that can be clicked to jump to that step.
-        The current segment is highlighted with a lighter shade (filter: brightness).
-        First and last segments have rounded corners to match the container.
-        """
-        if not self._scrub_container:
-            return
-
-        self._scrub_container.clear()
-        self._segment_elements.clear()
-
-        segments = simulation_state.path_segments
-        if not segments:
-            # No segments - show empty bar
-            return
-
-        num_segments = len(segments)
-
-        # Create segment elements
-        with self._scrub_container:
-            for idx, segment in enumerate(segments):
-                color = segment.color or PathColors.CARTESIAN
-                is_last = idx == num_segments - 1
-                is_current = idx == simulation_state.current_step_index
-                border_radius = self._get_segment_border_radius(idx, num_segments)
-                segment_border = (
-                    "border-right: 1px solid rgba(0,0,0,0.3);" if not is_last else ""
-                )
-                seg_elem = (
-                    ui.element("div")
-                    .classes("h-full transition-all duration-150")
-                    .style(
-                        f"flex: 1; background-color: {color}; "
-                        f"filter: brightness({'1.4' if is_current else '0.8'}); "
-                        f"box-sizing: border-box; {border_radius} {segment_border}"
-                    )
-                )
-                self._segment_elements.append(seg_elem)
-
-    def _highlight_current_segment(self) -> None:
-        """Update segment highlighting to show current position."""
-        num_segments = len(self._segment_elements)
-        for idx, elem in enumerate(self._segment_elements):
-            is_current = idx == simulation_state.current_step_index
-            if simulation_state.path_segments and idx < len(
-                simulation_state.path_segments
-            ):
-                color = (
-                    simulation_state.path_segments[idx].color or PathColors.CARTESIAN
-                )
-                is_last = idx == num_segments - 1
-                border_radius = self._get_segment_border_radius(idx, num_segments)
-                segment_border = (
-                    "border-right: 1px solid rgba(0,0,0,0.3);" if not is_last else ""
-                )
-                elem.style(
-                    f"flex: 1; background-color: {color}; "
-                    f"filter: brightness({'1.4' if is_current else '0.8'}); "
-                    f"box-sizing: border-box; {border_radius} {segment_border}"
-                )
-
-    def _highlight_executing_line(self, step_index: int) -> None:
+    def highlight_executing_line(self, step_index: int) -> None:
         """Highlight the source line corresponding to the current step.
 
         Uses path_segments line_number to look up which line to highlight.
@@ -1882,7 +1640,7 @@ print(f"Robot status: {{status}}")
         # Clear highlight if no valid line found
         self.program_textarea.clear_decorations("executing")
 
-    def _clear_executing_line_highlight(self) -> None:
+    def clear_executing_line_highlight(self) -> None:
         """Clear the executing line highlight decoration."""
         if self.program_textarea:
             self.program_textarea.clear_decorations("executing")
@@ -1941,97 +1699,6 @@ print(f"Robot status: {{status}}")
                 )
         self.program_textarea.set_decorations(decorations, set_name="timing")
 
-    def _build_bottom_bar(self) -> None:
-        """Build the bottom playback bar with controls.
-
-        Order: Previous | Play/Stop | Next | Slider | Speed FAB | Record | Capture | Log toggle
-        """
-        with (
-            ui.row()
-            .classes("w-full items-center gap-2 bottom-playback-bar")
-            .style("min-height: 48px;") as bar
-        ):
-            self.playback_bar = bar
-
-            # 1. Play/Pause button - starts script or toggles play/pause
-            self._play_btn = ui.button(
-                icon="play_arrow", on_click=self.toggle_play
-            ).props("round dense color=positive unelevated")
-            with self._play_btn:
-                self._play_btn_tooltip = ui.tooltip("Play (Space)")
-            self._play_btn.mark("editor-play-btn")
-            self.run_btn = self._play_btn
-
-            # 2. Stop button - stops running script
-            self._stop_btn = (
-                ui.button(icon="stop", on_click=self._stop_script_process)
-                .props("round dense color=negative unelevated")
-                .tooltip("Stop")
-            )
-            self._stop_btn.mark("editor-stop-btn")
-            self._stop_btn.set_visibility(False)  # Hidden until script runs
-
-            # 3. Next step - hidden until script runs or simulation loaded
-            self._next_btn = (
-                ui.button(icon="skip_next", on_click=self.step_forward)
-                .props("round dense flat color=white")
-                .tooltip("Next step (S)")
-            )
-            self._next_btn.mark("editor-step-next")
-            self._next_btn.set_visibility(
-                False
-            )  # Hidden until script runs or simulation loaded
-
-            # 4. Segmented scrub bar (flex-grow) - fully rounded ends
-            with ui.element("div").classes("flex-1 px-2"):
-                self._scrub_container = (
-                    ui.row()
-                    .classes(
-                        "w-full h-6 rounded-full overflow-hidden cursor-pointer gap-0"
-                    )
-                    .style("background: rgba(128, 128, 128, 0.2); min-height: 24px;")
-                )
-                self._scrub_container.mark("editor-scrub-bar")
-                # Segments will be populated by _update_scrub_segments()
-
-            # 5. Speed FAB (dropdown with speed options)
-            with (
-                ui.fab(icon="sym_o_acute", color="amber", direction="up")
-                .props("dense unelevated round size=sm")
-                .tooltip("Playback Speed") as speed_fab
-            ):
-                self.speed_fab = speed_fab
-                ui.fab_action("sym_o_speed_0_5x", on_click=lambda: self._set_speed(0.5))
-                ui.fab_action("1x_mobiledata", on_click=lambda: self._set_speed(1.0))
-                ui.fab_action("sym_o_speed_2x", on_click=lambda: self._set_speed(2.0))
-
-            # 6. Record button
-            self.record_btn = ui.button(
-                icon="fiber_manual_record", on_click=self._toggle_recording
-            ).props("round dense color=negative unelevated")
-            with self.record_btn:
-                self._record_btn_tooltip = ui.tooltip("Start Recording")
-            self.record_btn.mark("editor-record-btn")
-
-            # 7. Capture position
-            self._capture_btn = (
-                ui.button(
-                    icon="camera_alt", on_click=motion_recorder.capture_current_pose
-                )
-                .props("round dense unelevated")
-                .tooltip("Capture Current Pose")
-            )
-
-            # 8. Log show/hide
-            self.log_toggle_btn = (
-                ui.button(icon="expand_more", on_click=self._toggle_log)
-                .props("round dense flat")
-                .classes("text-white")
-            )
-            with self.log_toggle_btn:
-                self._log_toggle_btn_tooltip = ui.tooltip("Show Output")
-            self.log_toggle_btn.mark("editor-log-toggle")
-
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
         # Store NiceGUI client reference for JS execution from background tasks
@@ -2039,9 +1706,6 @@ print(f"Robot status: {{status}}")
             self._ui_client = ui.context.client
         except RuntimeError:
             pass  # No client context during build (shouldn't happen)
-
-        # Register for simulation state changes to update step button visibility
-        simulation_state.add_change_listener(self._update_play_button)
 
         # Periodic check: re-run path preview when robot position changes
         ui.timer(1.0, self._check_position_changed)
@@ -2160,7 +1824,8 @@ print(f"Robot status: {{status}}")
 
                 # ---- Playbar in splitter.separator (acts as handle) ----
                 with splitter.separator:
-                    self._build_bottom_bar()
+                    self.playback.build_bar()
+                    self.run_btn = self.playback._play_btn
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:
@@ -2169,6 +1834,9 @@ print(f"Robot status: {{status}}")
                         .classes("w-full h-full whitespace-pre-wrap break-words")
                         .style("min-height: 0;")
                     )
+
+        # Set up playback timers and listeners
+        self.playback.setup_timers()
 
         # Restore tabs from existing state (page refresh) or create initial tab
         if editor_tabs_state.tabs:

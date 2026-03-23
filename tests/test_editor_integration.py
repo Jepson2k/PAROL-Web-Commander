@@ -68,10 +68,10 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     # Initially: play button visible, stop button hidden
     play_btn = user.find(marker="editor-play-btn")
     assert play_btn is not None
-    assert editor._play_btn is not None, "Play button reference should exist"
+    assert editor.playback._play_btn is not None, "Play button reference should exist"
 
     # Stop button should be hidden initially
-    stop_btn = editor._stop_btn
+    stop_btn = editor.playback._stop_btn
     assert stop_btn is not None, "Stop button reference should exist"
     assert stop_btn.visible is False, "Stop button should be hidden initially"
 
@@ -476,14 +476,15 @@ async def test_create_and_remove_tab(user: User) -> None:
 
 
 @pytest.mark.integration
-async def test_step_button_enabled_when_script_running(user: User, robot_state) -> None:
-    """Test that the step button is enabled when a script is running.
+async def test_step_button_enabled_after_simulation(user: User, robot_state) -> None:
+    """Test that the step button is visible and enabled after simulation.
 
-    When a script starts:
-    - Step button becomes visible (if simulation has steps)
-    - Step button is enabled (not disabled)
+    After simulation populates steps:
+    - Step button becomes visible
+    - Step button is not disabled
+    - Play button starts simulation playback (not script execution)
     """
-    from parol_commander.state import ui_state, editor_tabs_state
+    from parol_commander.state import ui_state, editor_tabs_state, simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -494,6 +495,12 @@ async def test_step_button_enabled_when_script_running(user: User, robot_state) 
 
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
+
+    # Step button should be hidden before simulation
+    assert editor.playback._next_btn is not None, "Step button reference should exist"
+    assert editor.playback._next_btn.visible is False, (
+        "Step button should be hidden before simulation"
+    )
 
     # Set script with move commands to generate simulation steps
     tab = editor_tabs_state.get_active_tab()
@@ -506,34 +513,33 @@ rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)
     editor.program_textarea.value = test_script
     tab.content = test_script
 
-    # Run simulation first to populate steps
+    # Run simulation to populate steps
     await editor._run_simulation(notify=False)
     await asyncio.sleep(0.1)
 
-    # Initially step button should be hidden (no script running)
-    assert editor._next_btn is not None, "Step button reference should exist"
-    assert editor._next_btn.visible is False, "Step button should be hidden initially"
-
-    # Click play to start script
-    play_btn = user.find(marker="editor-play-btn")
-    play_btn.click()
-    await asyncio.sleep(0.3)
-
-    # Script should now be running
-    assert editor.script_running is True, "Script should be running"
-
-    # Step button should be visible and enabled
-    assert editor._next_btn.visible is True, (
-        "Step button should be visible when script running"
+    # Step button should be visible after simulation
+    assert editor.playback._next_btn.visible is True, (
+        "Step button should be visible when simulation has steps"
     )
-    assert editor._next_btn._props.get("disable") is not True, (
+    assert editor.playback._next_btn._props.get("disable") is not True, (
         "Step button should be enabled"
     )
+    assert simulation_state.total_steps > 0, "Should have simulation steps"
 
-    # Stop the script for cleanup
-    stop_btn = user.find(marker="editor-stop-btn")
-    stop_btn.click()
-    await asyncio.sleep(0.2)
+    # Play should start sim playback, not script execution
+    await editor.playback.toggle_play()
+    await asyncio.sleep(0.1)
+    assert simulation_state.sim_playback_active is True, (
+        "Play should start simulation playback when steps exist"
+    )
+    assert editor.script_running is False, (
+        "Script should not be running during sim playback"
+    )
+
+    # Pause sim playback
+    await editor.playback.toggle_play()
+    await asyncio.sleep(0)
+    assert simulation_state.sim_playback_active is False
 
 
 @pytest.mark.integration

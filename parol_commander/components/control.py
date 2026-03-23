@@ -13,10 +13,10 @@ import importlib.resources as pkg_resources
 import numpy as np
 
 from nicegui import ui, app, Client
-from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToolSpec
+from waldoctl import ElectricGripperTool, GripperTool, RobotClient, ToggleMode, ToolSpec
 from waldoctl.types import Axis
 
-from parol_commander.constants import config, DEFAULT_CAMERA
+from parol_commander.constants import config, DEFAULT_CAMERA, CLICK_HOLD_THRESHOLD_S
 from parol_commander.state import (
     robot_state,
     ui_state,
@@ -56,7 +56,6 @@ _SLOT_TRANSFORM_OVERRIDES: dict[str, str] = {
     "lr_neg": "translate(-2,-5) scale(1.4)",
 }
 # Slots that use overflow:visible style on the outer SVG
-_OVERFLOW_VISIBLE_SLOTS: frozenset[str] = frozenset()
 # Regex patterns compiled once
 _RE_VIEWBOX = re.compile(r'viewBox="\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*"')
 _RE_SVG_INNER = re.compile(r"<svg[^>]*>([\s\S]*?)</svg>")
@@ -200,19 +199,21 @@ class _EStopManager:
 
 
 class _ToolQuickActions:
-    """Tool toggle, force jog buttons, and visual updates."""
+    """Tool action buttons (L/R) and adjust buttons with visual updates."""
 
     def __init__(
         self, client: "RobotClient", movement_allowed_fn: Callable[..., bool]
     ) -> None:
         self._client = client
         self._movement_allowed = movement_allowed_fn
-        self._toggle_btn: ui.button | None = None
-        self._force_minus_btn: ui.button | None = None
-        self._force_plus_btn: ui.button | None = None
-        self._toggle_tooltip: ui.tooltip | None = None
-        self._force_minus_tooltip: ui.tooltip | None = None
-        self._force_plus_tooltip: ui.tooltip | None = None
+        self._action_l_btn: ui.button | None = None
+        self._action_r_btn: ui.button | None = None
+        self._adjust_minus_btn: ui.button | None = None
+        self._adjust_plus_btn: ui.button | None = None
+        self._action_l_tooltip: ui.tooltip | None = None
+        self._action_r_tooltip: ui.tooltip | None = None
+        self._adjust_minus_tooltip: ui.tooltip | None = None
+        self._adjust_plus_tooltip: ui.tooltip | None = None
         self._last_visual: tuple = ()
 
     def _get_active_tool(self) -> "ToolSpec | None":
@@ -222,10 +223,10 @@ class _ToolQuickActions:
             return None
 
     def build(self) -> None:
-        """Build the tool quick-action box (toggle + force jog)."""
+        """Build the tool quick-action box (L/R action + adjust)."""
         with (
             ui.column()
-            .classes("rounded-lg shadow-sm p-1 gap-1")
+            .classes("rounded-lg shadow-sm p-2 gap-1")
             .style("border: 1px solid rgba(255,255,255,0.1);")
             .bind_visibility_from(
                 robot_state, "tool_key", backward=lambda k: k != "NONE"
@@ -233,33 +234,44 @@ class _ToolQuickActions:
             .mark("tool-quick-actions")
         ):
             ui.label().bind_text_from(robot_state, "tool_key").classes(
-                "text-[10px] text-center w-full opacity-60"
+                "text-xs text-center w-full opacity-60"
             )
 
-            with ui.row().classes("items-center gap-1 justify-center"):
-                self._toggle_btn = (
-                    ui.button(icon="close_fullscreen", on_click=self._on_toggle)
-                    .props("round dense unelevated size=sm color=grey-7")
-                    .mark("btn-tool-toggle")
+            with ui.row().classes("items-center gap-2 justify-center"):
+                self._action_l_btn = (
+                    ui.button(icon="close_fullscreen", on_click=self._on_action_l)
+                    .props("round dense unelevated size=md color=grey-7")
+                    .mark("btn-tool-action-l")
                 )
-                self._force_minus_btn = (
+                self._action_r_btn = (
                     ui.button(
-                        icon="remove", on_click=lambda: _safe_task(self._force_jog(-1))
+                        icon="build",
+                        on_click=lambda: _safe_task(self._on_action_r()),
                     )
-                    .props("round dense unelevated size=sm color=grey-7")
-                    .mark("btn-tool-force-minus")
+                    .props("round dense unelevated size=md color=grey-7")
+                    .classes("cp-disabled-strong")
+                    .mark("btn-tool-action-r")
                 )
-                self._force_plus_btn = (
-                    ui.button(
-                        icon="add", on_click=lambda: _safe_task(self._force_jog(1))
+                with ui.button_group().props("rounded unelevated dense"):
+                    self._adjust_minus_btn = (
+                        ui.button(
+                            icon="remove",
+                            on_click=lambda: _safe_task(self._on_adjust(-1)),
+                        )
+                        .props("round dense unelevated size=md color=grey-7")
+                        .mark("btn-tool-adjust-minus")
                     )
-                    .props("round dense unelevated size=sm color=grey-7")
-                    .mark("btn-tool-force-plus")
-                )
+                    self._adjust_plus_btn = (
+                        ui.button(
+                            icon="add", on_click=lambda: _safe_task(self._on_adjust(1))
+                        )
+                        .props("round dense unelevated size=md color=grey-7")
+                        .mark("btn-tool-adjust-plus")
+                    )
 
     def update_visual(self) -> None:
-        """Update toggle button icon and color from current tool state."""
-        if self._toggle_btn is None:
+        """Update action button icons and colors from current tool state."""
+        if self._action_l_btn is None:
             return
         tool = self._get_active_tool()
         if tool is None:
@@ -269,89 +281,171 @@ class _ToolQuickActions:
             robot_state.tool_key,
             robot_state.tool_position,
             robot_state.tool_engaged,
+            ui_state.gripper_current,
         )
         if visual_key == self._last_visual:
             return
         self._last_visual = visual_key
 
-        if isinstance(tool, GripperTool):
-            is_open = tool.is_open(robot_state.tool_position)
-            off_icon, on_icon = tool.toggle_icons or (
-                "close_fullscreen",
-                "open_in_full",
-            )
-            off_label, on_label = tool.toggle_labels or ("Close", "Open")
-            icon = on_icon if is_open else off_icon
-            color = "positive" if is_open else "negative"
-            tooltip_text = on_label if is_open else off_label
-        elif tool.toggle_icons:
-            off_icon, on_icon = tool.toggle_icons
-            off_label, on_label = tool.toggle_labels or ("Off", "On")
-            engaged = robot_state.tool_engaged
-            icon = on_icon if engaged else off_icon
-            color = "positive" if engaged else "negative"
-            tooltip_text = on_label if engaged else off_label
-        else:
-            return
+        # Left action button
+        if tool.action_l_icons:
+            if isinstance(tool, GripperTool):
+                is_open = tool.is_open(robot_state.tool_position)
+                off_icon, on_icon = tool.action_l_icons
+                off_label, on_label = tool.action_l_labels or ("Close", "Open")
+                icon = off_icon if is_open else on_icon
+                color = "light-blue-7" if is_open else "teal-7"
+                tooltip_text = off_label if is_open else on_label
+            else:
+                off_icon, on_icon = tool.action_l_icons
+                off_label, on_label = tool.action_l_labels or ("Off", "On")
+                engaged = robot_state.tool_engaged
+                if tool.action_l_mode == ToggleMode.TRIGGER:
+                    icon = off_icon
+                    color = "cyan-8"
+                    tooltip_text = off_label
+                else:
+                    icon = off_icon if engaged else on_icon
+                    color = "teal-7" if engaged else "light-blue-7"
+                    tooltip_text = off_label if engaged else on_label
 
-        self._toggle_btn._props["icon"] = icon
-        self._toggle_btn.props(f"color={color}")
-        if self._toggle_tooltip is None:
-            with self._toggle_btn:
-                self._toggle_tooltip = ui.tooltip(tooltip_text)
-        else:
-            self._toggle_tooltip.text = tooltip_text
-        self._toggle_btn.update()
+            self._action_l_btn._props["icon"] = icon
+            self._action_l_btn.props(f"color={color}")
+            if self._action_l_tooltip is None:
+                with self._action_l_btn:
+                    self._action_l_tooltip = ui.tooltip(tooltip_text)
+            else:
+                self._action_l_tooltip.text = tooltip_text
+            self._action_l_btn.update()
 
-        has_force_jog = tool.force_jog_step is not None
-        if self._force_minus_btn is not None:
-            assert self._force_plus_btn is not None
-            self._force_minus_btn.set_visibility(has_force_jog)
-            self._force_plus_btn.set_visibility(has_force_jog)
-            if has_force_jog:
+        # Right action button
+        if self._action_r_btn is not None:
+            if tool.action_r_labels is None:
+                self._action_r_btn.classes(add="cp-disabled-strong")
+            else:
+                self._action_r_btn.classes(remove="cp-disabled-strong")
+                off_icon_r, on_icon_r = tool.action_r_icons or ("build", "build")
+                off_label_r, on_label_r = tool.action_r_labels
+                if tool.action_r_mode == ToggleMode.TRIGGER:
+                    self._action_r_btn._props["icon"] = off_icon_r
+                    self._action_r_btn.props("color=cyan-8")
+                    r_tooltip = off_label_r
+                else:
+                    engaged_r = robot_state.tool_engaged
+                    self._action_r_btn._props["icon"] = (
+                        off_icon_r if engaged_r else on_icon_r
+                    )
+                    self._action_r_btn.props(
+                        f"color={'teal-7' if engaged_r else 'light-blue-7'}"
+                    )
+                    r_tooltip = off_label_r if engaged_r else on_label_r
+                if self._action_r_tooltip is None:
+                    with self._action_r_btn:
+                        self._action_r_tooltip = ui.tooltip(r_tooltip)
+                else:
+                    self._action_r_tooltip.text = r_tooltip
+            self._action_r_btn.update()
+
+        has_adjust = tool.adjust_step is not None
+        if self._adjust_minus_btn is not None:
+            assert self._adjust_plus_btn is not None
+            if not has_adjust:
+                self._adjust_minus_btn.classes(add="cp-disabled-strong")
+                self._adjust_plus_btn.classes(add="cp-disabled-strong")
+            else:
                 cur = ui_state.gripper_current
-                step = tool.force_jog_step
-                if self._force_minus_tooltip is None:
-                    with self._force_minus_btn:
-                        self._force_minus_tooltip = ui.tooltip("")
-                    with self._force_plus_btn:
-                        self._force_plus_tooltip = ui.tooltip("")
-                assert self._force_minus_tooltip is not None
-                assert self._force_plus_tooltip is not None
-                self._force_minus_tooltip.text = f"Current: {cur} mA (\u2212{step})"
-                self._force_plus_tooltip.text = f"Current: {cur} mA (+{step})"
+                step = tool.adjust_step
+                # Disable at limits
+                if isinstance(tool, ElectricGripperTool):
+                    lo, hi = tool.current_range
+                    at_lo = cur <= lo
+                    at_hi = cur >= hi
+                else:
+                    at_lo = at_hi = False
+                if at_lo:
+                    self._adjust_minus_btn.classes(add="cp-disabled-strong")
+                else:
+                    self._adjust_minus_btn.classes(remove="cp-disabled-strong")
+                if at_hi:
+                    self._adjust_plus_btn.classes(add="cp-disabled-strong")
+                else:
+                    self._adjust_plus_btn.classes(remove="cp-disabled-strong")
+                # Tooltips
+                dec_label, inc_label = tool.adjust_labels or ("Decrease", "Increase")
+                if self._adjust_minus_tooltip is None:
+                    with self._adjust_minus_btn:
+                        self._adjust_minus_tooltip = ui.tooltip("")
+                    with self._adjust_plus_btn:
+                        self._adjust_plus_tooltip = ui.tooltip("")
+                assert self._adjust_minus_tooltip is not None
+                assert self._adjust_plus_tooltip is not None
+                self._adjust_minus_tooltip.text = (
+                    f"{dec_label}: {cur} mA (\u2212{step})"
+                )
+                self._adjust_plus_tooltip.text = f"{inc_label}: {cur} mA (+{step})"
 
-    async def _on_toggle(self) -> None:
+    async def _on_action_l(self) -> None:
         if not self._movement_allowed():
             return
         tool = self._get_active_tool()
-        if tool is None:
+        if tool is None or tool.action_l_labels is None:
             return
         try:
-            await tool.toggle(robot_state.tool_status.engaged)
+            if isinstance(tool, GripperTool):
+                spd_kwargs: dict = {}
+                if isinstance(tool, ElectricGripperTool):
+                    spd_kwargs["speed"] = ui_state.jog_speed / 100.0
+                    spd_kwargs["current"] = ui_state.gripper_current
+                if tool.is_open(robot_state.tool_position):
+                    target = 1.0  # close
+                else:
+                    target = 0.0  # open
+                if ui_state.gripper_page is not None:
+                    ui_state.gripper_page.set_target_position(target)
+                else:
+                    ui_state.tool_target_position = target
+                await tool.set_position(target, **spd_kwargs)
+                motion_recorder.record_action("gripper", position=target, **spd_kwargs)
+            else:
+                await tool.action_l(not robot_state.tool_engaged)
         except Exception as e:
-            logger.error("Tool toggle failed: %s", e)
-            ui.notify(f"Toggle failed: {e}", color="negative")
+            logger.error("Tool action_l failed: %s", e)
+            ui.notify(f"Action failed: {e}", color="negative")
 
-    async def _force_jog(self, direction: int) -> None:
+    async def _on_action_r(self) -> None:
         if not self._movement_allowed():
             return
         tool = self._get_active_tool()
-        if tool is None or tool.force_jog_step is None:
+        if tool is None or tool.action_r_labels is None:
+            return
+        try:
+            await tool.action_r(not robot_state.tool_engaged)
+        except Exception as e:
+            logger.error("Tool action_r failed: %s", e)
+            ui.notify(f"Action failed: {e}", color="negative")
+
+    async def _on_adjust(self, direction: int) -> None:
+        if not self._movement_allowed():
+            return
+        tool = self._get_active_tool()
+        if tool is None or tool.adjust_step is None:
             return
         if not isinstance(tool, ElectricGripperTool):
             return
-        step = tool.force_jog_step * direction
+        step = tool.adjust_step * direction
         lo, hi = tool.current_range
         new_cur = max(lo, min(hi, ui_state.gripper_current + step))
-        ui_state.gripper_current = new_cur
+        if ui_state.gripper_page is not None:
+            ui_state.gripper_page.set_target_current(new_cur)
+        else:
+            ui_state.gripper_current = new_cur
         try:
-            pos = robot_state.tool_position
+            pos = ui_state.tool_target_position
             await tool.set_position(pos, current=new_cur)
             motion_recorder.record_action("gripper", position=pos, current=new_cur)
         except Exception as e:
-            logger.error("Force jog failed: %s", e)
-            ui.notify(f"Force jog failed: {e}", color="negative")
+            logger.error("Adjust failed: %s", e)
+            ui.notify(f"Adjust failed: {e}", color="negative")
 
 
 class _ClickHoldHandler:
@@ -492,7 +586,7 @@ class ControlPanel:
         self._cart_slot_elems: dict[str, ui.element] = {}
         self._cart_slot_meta: dict[str, dict] = {}
         # Assignment of axes to fixed slots: 'ud1' (first up/down column), 'lr' (left/right row), 'ud2' (second up/down column)
-        self._cart_assignment: dict[str, str] = {"ud1": "X", "lr": "Y", "ud2": "Z"}
+        self._cart_assignment: dict[str, str] = {"ud1": "Y", "lr": "X", "ud2": "Z"}
         self._axis_classes = {
             "x": "tcp-x",
             "y": "tcp-y",
@@ -503,7 +597,7 @@ class ControlPanel:
         }
 
         # Click/hold handlers (initialized with ui_client in build())
-        self.CLICK_HOLD_THRESHOLD_S: float = 0.25
+        self.CLICK_HOLD_THRESHOLD_S: float = CLICK_HOLD_THRESHOLD_S
         self._joint_click_hold: _ClickHoldHandler | None = None
         self._cart_click_hold: _ClickHoldHandler | None = None
 
@@ -546,14 +640,14 @@ class ControlPanel:
 
         # Dirty checking caches for button enablement (avoid redundant CSS updates)
         self._last_joint_en_tuple: tuple[int, ...] | None = None
-        self._last_cart_en_tuple: tuple[int, ...] | None = None
+        self._last_cart_en_tuple: tuple[tuple, ...] | None = None
         self._last_editing_mode: bool | None = None
+        self._gizmo_auto_hidden: bool = (
+            False  # True when gizmo hidden due to jog unavailable
+        )
 
         # Pending jog end wait task (to prevent spawning multiple concurrent wait tasks)
         self._jog_end_wait_task: asyncio.Task | None = None
-
-        # Preallocated buffer for cartesian jog target to avoid GC pressure
-        self._cart_target_buffer: list[float] = [0.0] * 6
 
     # ---- Helper methods ----
 
@@ -777,13 +871,17 @@ class ControlPanel:
         self._last_joint_en_tuple = current_tuple
 
     def sync_cartesian_button_states(self) -> None:
-        """Apply stronger disabled visuals to axis icons using CART_EN for current frame and mirror to 3D gizmo."""
-        # Get current state for dirty checking
+        """Apply stronger disabled visuals to axis icons and mirror to 3D gizmo.
+
+        Translation axes use WRF enablement, rotation axes use TRF enablement
+        (matching the actual jog frame convention).
+        """
         editing_mode = robot_state.editing_mode
         frames = ui_state.active_robot.cartesian_frames
-        frame = str(ui_state.frame).upper() if ui_state.frame else frames[0]
-        en = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
-        current_tuple = tuple(en) if len(en) == 2 * self._n_joints else None
+        wrf, trf = frames[0], frames[1]
+        en_wrf = robot_state.cart_en.get(wrf, _DEFAULT_CART_EN)
+        en_trf = robot_state.cart_en.get(trf, _DEFAULT_CART_EN)
+        current_tuple = (tuple(en_wrf), tuple(en_trf))
 
         # Skip if state unchanged
         if (
@@ -803,38 +901,41 @@ class ControlPanel:
             self._last_cart_en_tuple = current_tuple
             return
 
-        if current_tuple is None:
-            return
-
-        # 2D icons
+        # 2D icons: translation (0-5) from WRF, rotation (6-11) from TRF
         for i, ax in enumerate(_AXIS_ORDER):
+            en = en_trf if i >= 6 else en_wrf
             elem = self._cart_axis_imgs.get(ax)
             self._set_strong_disabled(elem, not bool(en[i]))
 
         self._last_editing_mode = editing_mode
         self._last_cart_en_tuple = current_tuple
 
-    def refresh_editing_mode_enablement(self) -> None:
-        """Disable jog buttons when in editing mode (E-STOP stays enabled)."""
-        is_editing = robot_state.editing_mode
-        # Disable joint buttons
-        for btn in self._joint_left_btns.values():
-            self._set_strong_disabled(btn, is_editing)
-        for btn in self._joint_right_btns.values():
-            self._set_strong_disabled(btn, is_editing)
-        # Disable joint limit buttons (go-to-limit)
-        for btn in self._joint_limit_btns.values():
-            self._set_strong_disabled(btn, is_editing)
-        # Disable cartesian slot elements
-        for elem in self._cart_slot_elems.values():
-            self._set_strong_disabled(elem, is_editing)
-        # Note: E-STOP button is NOT in these collections, so remains enabled
+    def sync_gizmo_for_jog_state(self) -> None:
+        """Auto-hide TCP gizmo when live jogging is unavailable, restore when available."""
+        jog_possible = (
+            not robot_state.editing_mode
+            and (robot_state.simulator_active or robot_state.connected)
+            and not getattr(ui_state.editor_panel, "script_running", False)
+        )
+        if not jog_possible and not self._gizmo_auto_hidden:
+            if ui_state.urdf_scene and ui_state.gizmo_visible:
+                ui_state.urdf_scene.set_gizmo_visible(False)
+                self._gizmo_auto_hidden = True
+        elif jog_possible and self._gizmo_auto_hidden:
+            if ui_state.urdf_scene and ui_state.gizmo_visible:
+                ui_state.urdf_scene.set_gizmo_visible(True)
+            self._gizmo_auto_hidden = False
 
     # ---- Movement permission check ----
 
     @staticmethod
     def _movement_allowed(notify: bool = True) -> bool:
-        """Return True if robot movement is permitted (simulator active or hardware connected)."""
+        """Return True if robot movement is permitted (simulator active or hardware connected, no script running)."""
+        editor = ui_state.editor_panel
+        if editor and getattr(editor, "script_running", False):
+            if notify:
+                ui.notify("Script is running — jog disabled", color="warning")
+            return False
         if robot_state.simulator_active or robot_state.connected:
             return True
         if notify:
@@ -897,6 +998,7 @@ class ControlPanel:
 
         async def on_click():
             speed = _norm_speed()
+            accel = _norm_accel()
             step = abs(float(ui_state.joint_step_deg))
             try:
                 angles = list(robot_state.angles.deg)
@@ -907,7 +1009,7 @@ class ControlPanel:
                         target_angles[j] = min(hi, target_angles[j] + step)
                     else:
                         target_angles[j] = max(lo, target_angles[j] - step)
-                    await self.client.moveJ(target_angles, speed=speed)
+                    await self.client.moveJ(target_angles, speed=speed, accel=accel)
             except Exception as e:
                 logger.error("Incremental joint move failed: %s", e)
 
@@ -941,7 +1043,10 @@ class ControlPanel:
                 j, d = intent
                 signed_speed = speed if d == "pos" else -speed
                 await self.client.jogJ(
-                    j, speed=signed_speed, duration=self.STREAM_TIMEOUT_S
+                    j,
+                    speed=signed_speed,
+                    duration=self.STREAM_TIMEOUT_S,
+                    accel=_norm_accel(),
                 )
             self._joint_cadence.tick(
                 time.time(),
@@ -966,13 +1071,15 @@ class ControlPanel:
         else:
             self._schedule_jog_end_wait()
 
-        # Check enablement for this axis in current frame
-        frame = ui_state.frame.upper()
-        en_list = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
+        # Check enablement: translation uses WRF, rotation uses TRF
+        frames = ui_state.active_robot.cartesian_frames
         allowed = True
-        if len(en_list) == 12 and axis in _AXIS_ORDER:
+        if axis in _AXIS_ORDER:
             idx = _AXIS_ORDER.index(axis)
-            allowed = bool(int(en_list[idx]))
+            frame = frames[1] if idx >= 6 else frames[0]
+            en_list = robot_state.cart_en.get(frame, _DEFAULT_CART_EN)
+            if len(en_list) == 12:
+                allowed = bool(int(en_list[idx]))
         self._set_strong_disabled(self._cart_axis_imgs.get(axis), not allowed)
         if is_pressed and not allowed:
             return
@@ -993,19 +1100,19 @@ class ControlPanel:
             try:
                 axis_letter = axis.rstrip("+-")
                 direction = 1.0 if axis.endswith("+") else -1.0
-                self._cart_target_buffer[0] = float(robot_state.x)
-                self._cart_target_buffer[1] = float(robot_state.y)
-                self._cart_target_buffer[2] = float(robot_state.z)
-                self._cart_target_buffer[3] = float(robot_state.rx)
-                self._cart_target_buffer[4] = float(robot_state.ry)
-                self._cart_target_buffer[5] = float(robot_state.rz)
+                is_rotation = axis_letter.startswith("R")
+                # Use relative move: translation in WRF, rotation in TRF
+                # (matches jogL hold behavior)
+                rel_pose = [0.0] * 6
                 if axis_letter in _AXIS_MAP:
-                    buf_idx = _AXIS_MAP[axis_letter]
-                    self._cart_target_buffer[buf_idx] += direction * step
+                    rel_pose[_AXIS_MAP[axis_letter]] = direction * step
+                    frame = "TRF" if is_rotation else "WRF"
                     await self.client.moveL(
-                        self._cart_target_buffer,
+                        rel_pose,
+                        frame=frame,
                         speed=speed,
                         accel=_norm_accel(),
+                        rel=True,
                     )
             except Exception as e:
                 logger.error("Incremental cart move failed: %s", e)
@@ -1092,7 +1199,11 @@ class ControlPanel:
             if axis is not None:
                 axis_name, direction, frame = self._get_cart_axis_lookup()[axis]
                 await self.client.jogL(
-                    frame, axis_name, speed * direction, self.STREAM_TIMEOUT_S
+                    frame,
+                    axis_name,
+                    speed * direction,
+                    self.STREAM_TIMEOUT_S,
+                    accel=_norm_accel(),
                 )
             self._cart_cadence.tick(
                 time.time(),
@@ -1179,8 +1290,11 @@ class ControlPanel:
     async def _wait_and_record_jog_end(self) -> None:
         """Wait for robot motion to stop, then record the jog end position."""
         try:
-            await self.client.wait_motion_complete(timeout=5.0, settle_window=0.2)
-            logger.debug("Jog: Motion stopped, recording position")
+            settled = await self.client.wait_motion_complete(
+                timeout=30.0, settle_window=0.5
+            )
+            if not settled:
+                logger.warning("Jog: wait timed out, recording current position")
         except asyncio.CancelledError:
             logger.debug("Jog: wait task cancelled (superseded by new jog)")
             return
@@ -1204,10 +1318,8 @@ class ControlPanel:
             spd = _norm_speed()
 
             await self.client.moveJ(pose, speed=spd)
-            ui.notify(f"Joint J{joint_index + 1} \u2192 {tgt:.2f}°", color="primary")
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
-            ui.notify(f"Failed joint move: {e}", color="negative")
 
     async def go_to_joint_limit(self, joint_index: int, which: str) -> None:
         """Move to min or max joint limit for a specific joint while holding others."""
@@ -1241,7 +1353,7 @@ class ControlPanel:
             # Apply current gizmo mode (default is Move/TRANSLATE)
             ui_state.urdf_scene.set_gizmo_display_mode("TRANSLATE")
             # Fixed WRF orientation for cartesian UI layout
-            # WRF: X (red) horizontal (lr), Y (green) vertical (ud1), Z (blue) vertical (ud2)
+            # WRF: X (red) vertical (ud1), Y (green) horizontal (lr), Z (blue) vertical (ud2)
             self.set_axis_orientation("Y", "X", "Z")
             # Apply enablement visuals
             self.sync_cartesian_button_states()
@@ -1329,10 +1441,10 @@ class ControlPanel:
             return
         if robot_state.simulator_active:
             self._robot_btn.props("color=amber-8")
-            self._robot_btn.classes("glass-btn glass-amber")
+            self._robot_btn.classes(add="glass-btn glass-amber")
         else:
             self._robot_btn.props("color=grey-7")
-            self._robot_btn.classes("glass-btn")
+            self._robot_btn.classes(add="glass-btn", remove="glass-amber")
 
     async def on_toggle_sim(self) -> None:
         """Toggle between robot and simulator modes and update URDF appearance."""
@@ -1371,10 +1483,15 @@ class ControlPanel:
                 except Exception as e:
                     logger.warning("Resume after simulator off failed: %s", e)
 
-            self.update_robot_btn_visual()
         except Exception as ex:
             ui.notify(f"Simulator toggle failed: {ex}", color="negative")
             logger.error("Simulator toggle failed: %s", ex)
+        finally:
+            self.update_robot_btn_visual()
+            if ui_state._readout_panel is not None:
+                ui_state.readout_panel.update_conn_io()
+            if ui_state._playback is not None:
+                ui_state.playback.sync_mode()
 
     async def on_estop_click(self) -> None:
         """Trigger digital E-STOP (STOP command) and show dialog."""
@@ -1389,7 +1506,7 @@ class ControlPanel:
 
     def render_jog_content(self) -> None:
         """Render jog controls (tabs + grids) and settings."""
-        with ui.tabs().props("dense") as jog_mode_tabs:
+        with ui.tabs().props("dense").classes("cp-jog-tabs") as jog_mode_tabs:
             joint_tab = ui.tab("Joint Jog").mark("tab-joint")
             cart_tab = ui.tab("Cartesian Jog").mark("tab-cartesian")
             settings_tab = ui.tab("Settings").mark("tab-settings")
@@ -1397,16 +1514,21 @@ class ControlPanel:
         self._jog_mode_tabs = jog_mode_tabs
 
         # Tab change handler to update step input suffix/tooltip
+        _joint_tab_ref = joint_tab
+        _cart_tab_ref = cart_tab
+
         def _on_tab_change(e):
             if self._step_input is None:
                 return
-            tab_value = e.value if hasattr(e, "value") else e.args
-            if tab_value is joint_tab:
+            v = e.value if hasattr(e, "value") else e.args
+            if v is _joint_tab_ref or v == "Joint Jog":
                 self._step_input.props('suffix="°"')
+                self._step_input.classes(remove="step-suffix-small")
                 if self._step_input_tooltip:
                     self._step_input_tooltip.text = "Step size in degrees"
-            elif tab_value is cart_tab:
+            elif v is _cart_tab_ref or v == "Cartesian Jog":
                 self._step_input.props('suffix="mm"')
+                self._step_input.classes(add="step-suffix-small")
                 if self._step_input_tooltip:
                     self._step_input_tooltip.text = "Step size in mm"
             self._step_input.update()
@@ -1467,18 +1589,34 @@ class ControlPanel:
                                     .props(
                                         'dense borderless input-style="text-align:right;font-weight:bold"'
                                     )
+                                    .classes("joint-readout-input")
                                     .style("width:55px;")
                                 )
                                 spd_lbl = (
-                                    ui.label("")
+                                    ui.label("0°/s")
                                     .classes("text-xs opacity-60")
-                                    .style("min-width:2rem;")
+                                    .style("min-width: 3rem; text-align: right;")
                                 )
 
-                            def _num_backward(a, i=idx) -> float | None:
+                            _num_ref: dict[str, Any] = {"focused": False, "el": num}
+
+                            def _num_backward(a, i=idx, r=_num_ref) -> float | None:
+                                if r["focused"]:
+                                    return r[
+                                        "el"
+                                    ].value  # Keep current value while editing
                                 if len(a) <= i or not math.isfinite(a[i]):
                                     return None
                                 return float(a[i])
+
+                            num.on(
+                                "focus",
+                                lambda _e, r=_num_ref: r.__setitem__("focused", True),
+                            )
+                            num.on(
+                                "blur",
+                                lambda _e, r=_num_ref: r.__setitem__("focused", False),
+                            )
 
                             num.bind_value_from(
                                 robot_state,
@@ -1488,9 +1626,9 @@ class ControlPanel:
 
                             def _spd_backward(s, i=idx) -> str:
                                 if len(s) <= i:
-                                    return ""
+                                    return "0°/s"
                                 v = abs(s[i])
-                                return f"{v:.0f}°/s" if v >= 1.0 else ""
+                                return f"{v:.0f}°/s"
 
                             spd_lbl.bind_text_from(
                                 robot_state,
@@ -1655,29 +1793,29 @@ class ControlPanel:
                     .classes("gap-0")
                     .style("place-items: center")
                 ):
-                    # Row 1:    [UD2+, UD1+, empty, RUD2+, empty, RUD1+, empty]
+                    # Row 1:    [UD2+, UD1-, empty, RUD2+, empty, RUD1+, empty]
                     _add_slot("ud2_up", "arrow-small-up-cropped.svg", "ud2", "+", False)
-                    _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "+", False)
+                    _add_slot("ud1_up", "arrow-small-up.svg", "ud1", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_plus", "curved-arrow-down.svg", "ud2", "+", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud1_plus", "curved-arrow-down.svg", "ud1", "+", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
 
-                    # Row 2:    [LR-, empty, LR+, empty, empty, RLR+, empty, RLR-]
-                    _add_slot("lr_neg", "arrow-small-left.svg", "lr", "-", False)
+                    # Row 2:    [LR+, empty, LR-, empty, empty, RLR+, empty, RLR-]
+                    _add_slot("lr_neg", "arrow-small-left.svg", "lr", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # center empty
-                    _add_slot("lr_pos", "arrow-small-right.svg", "lr", "+", False)
+                    _add_slot("lr_pos", "arrow-small-right.svg", "lr", "-", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_lr_plus", "curved-arrow-right.svg", "lr", "+", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_lr_minus", "curved-arrow-left.svg", "lr", "-", True)
 
-                    # Row 3:    [empty, UD1-, UD2-, empty, RUD2-, empty RUD1-, empty]
+                    # Row 3:    [UD2-, UD1+, empty, RUD2-, empty, RUD1-, empty]
                     _add_slot(
                         "ud2_down", "arrow-small-down-cropped.svg", "ud2", "-", False
                     )
-                    _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "-", False)
+                    _add_slot("ud1_down", "arrow-small-down.svg", "ud1", "+", False)
                     ui.element("div").style("width:30px;height:30px")  # empty
                     _add_slot("r_ud2_minus", "curved-arrow-up.svg", "ud2", "-", True)
                     ui.element("div").style("width:30px;height:30px")  # empty
@@ -1728,7 +1866,7 @@ class ControlPanel:
                 _icon.props(f"color={_colors[val - 1]}")
                 _tooltip.text = _fmt(val / 10.0)
 
-            rating = ui.rating(max=10, icon="circle", value=v_init).props(
+            rating = ui.rating(max=10, icon="circle", size="16px", value=v_init).props(
                 f':color="{colors}"'
             )
             rating.on("update:model-value", _on_change)
@@ -1767,13 +1905,6 @@ class ControlPanel:
                         self.client, self._movement_allowed
                     )
                     self.tool_actions.build()
-
-                    # Right column: Large E-STOP spanning both rows
-                    ui.button(
-                        icon="dangerous", color="negative", on_click=self.on_estop_click
-                    ).props("round unelevated").classes(
-                        "ml-auto glass-btn text-2xl"
-                    ).tooltip("E-Stop (Esc)").mark("btn-estop")
 
                 self._build_action_row()
 
@@ -1878,7 +2009,6 @@ class ControlPanel:
             )
             robot_btn.mark("btn-robot-toggle")
             self._robot_btn = robot_btn
-            self.update_robot_btn_visual()
 
             # Gizmo mode button group
             selected = {"value": "Move"}
@@ -1936,7 +2066,6 @@ class ControlPanel:
             ui.button(icon="view_in_ar", on_click=_reset_cam).props(
                 "round unelevated dense color=light-blue-6"
             ).tooltip("Reset camera")
-            ui.space()
             with ui.row(align_items="center").classes("gap-1"):
                 ui.label("Step:").classes("text-white")
                 self._step_input = (
@@ -1951,10 +2080,20 @@ class ControlPanel:
                     .props(
                         'dense borderless hide-bottom-space input-style="text-align:right"'
                     )
+                    .classes("step-input")
                     .bind_value(ui_state, "joint_step_deg")
                 )
                 with self._step_input:
                     self._step_input_tooltip = ui.tooltip("Step size in degrees")
+
+            with ui.element("div").style(
+                "width: 0; height: 0; overflow: visible; position: relative;"
+            ):
+                ui.button(
+                    icon="dangerous", color="negative", on_click=self.on_estop_click
+                ).props("round unelevated").classes("glass-btn text-2xl").style(
+                    "position: absolute; top: -18px; left: 10px;"
+                ).tooltip("E-Stop (Esc)").mark("btn-estop")
 
     def cleanup(self) -> None:
         """Cancel background timers during shutdown."""

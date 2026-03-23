@@ -70,6 +70,7 @@ class EditingMixin:
     _ensure_tcp_ball: Any
     _update_tcp_ball_position: Any
     enable_tcp_transform_controls: Any
+    invalidate_fk_cache: Any
     _update_envelope_from_robot_state: Any
     _apply_joint_angles: Any
     _ensure_ik_solver: Any
@@ -135,6 +136,9 @@ class EditingMixin:
         self.set_appearance_mode(RobotAppearanceMode.EDITING)
         self._apply_joint_angles(self._editing_angles)
 
+        # Force FK recomputation — the cached pose is from LIVE mode
+        self.invalidate_fk_cache()
+
         # Setup TCP ball
         self._ensure_tcp_ball()
         if self._tcp_ball:
@@ -163,6 +167,10 @@ class EditingMixin:
         self._editing_rotation_set = False
 
         robot_state.editing_mode = False
+
+        # Snap TCP ball back to robot's live position
+        self.invalidate_fk_cache()
+        self._update_tcp_ball_position()
 
     def _cleanup_editing(self) -> None:
         """Clean up editing state."""
@@ -382,9 +390,9 @@ class EditingMixin:
                     0.0,
                     0.0,
                 ):
-                    x_mm, y_mm, z_mm = [c * 1000 for c in self._last_click_coords]
+                    x_mm, y_mm = [c * 1000 for c in self._last_click_coords[:2]]
                     ui.menu_item(
-                        f"Place Target Here ({x_mm:.0f}, {y_mm:.0f}, {z_mm:.0f})...",
+                        f"Place Target Here ({x_mm:.0f}, {y_mm:.0f})...",
                         on_click=lambda: self._show_unified_target_editor(
                             use_click_position=True
                         ),
@@ -438,9 +446,16 @@ class EditingMixin:
             else:
                 initial_angles = self._get_robot_angles_rad()
         elif use_click_position and self._last_click_coords:
-            initial_angles = self._ik_for_position(list(self._last_click_coords))
-            if initial_angles is None:
-                initial_angles = self._get_robot_angles_rad()
+            click_pos = list(self._last_click_coords)
+            ik_result = self._ik_for_position(click_pos)
+            if ik_result is None and abs(click_pos[2]) < 0.001:
+                tcp_z = self._get_current_tcp_z()
+                if tcp_z is not None:
+                    click_pos[2] = tcp_z
+                    ik_result = self._ik_for_position(click_pos)
+            initial_angles = (
+                ik_result if ik_result is not None else self._get_robot_angles_rad()
+            )
         else:
             initial_angles = self._get_robot_angles_rad()
 
@@ -661,6 +676,13 @@ class EditingMixin:
         if len(robot_state.angles) >= n:
             return list(robot_state.angles.rad[:n])
         return [0.0] * n
+
+    def _get_current_tcp_z(self) -> float | None:
+        """Get current TCP z position in meters via FK."""
+        if not self._ensure_ik_solver() or not self._tcp_fk_solver:
+            return None
+        fk = self._tcp_fk_solver.forward_kinematics(self._get_robot_angles_rad())
+        return float(fk[2]) if fk is not None else None
 
     def _get_editing_tcp_pose(self) -> list[float] | None:
         """Get TCP pose from robot_state (already synced from editing angles).

@@ -34,41 +34,8 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
 
 
 @pytest.mark.integration
-async def test_gripper_tab_operations(user: User, robot_state) -> None:
-    """Test gripper calibrate and move send commands to the controller."""
-    from parol_commander.state import ui_state
-
-    await user.open("/")
-    await wait_for_app_ready()
-
-    # Set tool on the controller and wait for status loop to propagate
-    await ui_state.control_panel.client.set_tool("SSG-48")
-    await wait_for_tool_key(robot_state, "SSG-48")
-
-    # Open the Gripper tab
-    user.find(marker="tab-gripper").click()
-    await asyncio.sleep(0)
-
-    # --- Calibrate (icon button with marker) ---
-    user.find(marker="btn-grip-cal").click()
-    await asyncio.sleep(0.1)
-    # Calibrate should not produce an error notification
-    assert not any("failed" in m.lower() for m in user.notify.messages), (
-        f"Calibrate produced error: {user.notify.messages}"
-    )
-
-    # --- Move (icon button with marker) ---
-    user.find(marker="btn-grip-move").click()
-    await asyncio.sleep(0.1)
-    # Move should not produce an error notification
-    assert not any("failed" in m.lower() for m in user.notify.messages), (
-        f"Move produced error: {user.notify.messages}"
-    )
-
-
-@pytest.mark.integration
 async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
-    """Gripper panel should show chart, status readouts, and controls."""
+    """Gripper panel should show chart and status readouts."""
     from parol_commander.state import ui_state
 
     await user.open("/")
@@ -82,17 +49,8 @@ async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
     user.find(marker="tab-gripper").click()
     await asyncio.sleep(0)
 
-    # Chart element should exist
+    # Combined dual-axis chart should exist
     await user.should_see(marker="gripper-chart")
-
-    # Camera section exists (placeholder when no camera)
-    await user.should_see(marker="gripper-camera-section")
-
-    # Action buttons
-    await user.should_see(marker="btn-grip-open")
-    await user.should_see(marker="btn-grip-close")
-    await user.should_see(marker="btn-grip-cal")
-    await user.should_see(marker="btn-grip-move")
 
 
 @pytest.mark.integration
@@ -107,9 +65,9 @@ async def test_control_panel_tool_quick_actions(user: User, robot_state) -> None
     await ui_state.control_panel.client.set_tool("SSG-48")
     await wait_for_tool_key(robot_state, "SSG-48")
 
-    # Tool toggle button should be visible
-    await user.should_see(marker="btn-tool-toggle")
+    # Tool action L button should be visible
+    await user.should_see(marker="btn-tool-action-l")
 
-    # Force jog buttons should be visible for electric grippers
-    await user.should_see(marker="btn-tool-force-minus")
-    await user.should_see(marker="btn-tool-force-plus")
+    # Adjust buttons should be visible for electric grippers
+    await user.should_see(marker="btn-tool-adjust-minus")
+    await user.should_see(marker="btn-tool-adjust-plus")

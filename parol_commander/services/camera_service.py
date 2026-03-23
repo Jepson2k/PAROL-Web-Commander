@@ -27,7 +27,9 @@ from starlette.responses import StreamingResponse
 
 from nicegui import app as ng_app, run
 
-log = logging.getLogger(__name__)
+# Suppress linuxpy's verbose per-ioctl debug logging
+logging.getLogger("linuxpy").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Placeholder
@@ -68,21 +70,23 @@ class LinuxpyBackend:
 
     def open(self, device: int | str, width: int, height: int) -> bool:
         try:
-            from linuxpy.video.device import Device, VideoCapture  # ty: ignore[unresolved-import]
+            from linuxpy.video.device import BufferType, Device, VideoCapture
         except ImportError:
-            log.debug("linuxpy not installed — skipping v4l2 backend")
+            logger.debug("linuxpy not installed — skipping v4l2 backend")
             return False
 
         if not isinstance(device, int):
-            log.debug("linuxpy requires integer device index, got %s", type(device))
+            logger.debug("linuxpy requires integer device index, got %s", type(device))
             return False
 
         try:
-            cap = VideoCapture(Device(f"/dev/video{device}"))
+            dev = Device(f"/dev/video{device}")
+            dev.open()
+            dev.set_format(BufferType.VIDEO_CAPTURE, width, height, pixel_format="MJPG")
+            cap = VideoCapture(dev)
             cap.open()
-            cap.set_format(width, height, "MJPG")
             self._capture = cap
-            log.info(
+            logger.info(
                 "linuxpy v4l2 backend opened /dev/video%d (%dx%d MJPG)",
                 device,
                 width,
@@ -90,11 +94,11 @@ class LinuxpyBackend:
             )
             return True
         except Exception:
-            log.debug("linuxpy failed to open device %s", device, exc_info=True)
+            logger.debug("linuxpy failed to open device %s", device, exc_info=True)
             if self._capture is not None:
                 try:
                     self._capture.close()
-                except Exception:
+                except OSError:
                     pass
                 self._capture = None
             return False
@@ -107,14 +111,14 @@ class LinuxpyBackend:
             for frame in self._capture:
                 return bytes(frame.data)
         except Exception:
-            log.debug("linuxpy read_frame error", exc_info=True)
+            logger.debug("linuxpy read_frame error", exc_info=True)
         return None
 
     def close(self) -> None:
         if self._capture is not None:
             try:
                 self._capture.close()
-            except Exception:
+            except OSError:
                 pass
             self._capture = None
 
@@ -129,19 +133,19 @@ class OpenCVBackend:
         try:
             import cv2
         except ImportError:
-            log.warning("opencv-python-headless not installed — camera disabled")
+            logger.warning("opencv-python-headless not installed — camera disabled")
             return False
 
         cap = cv2.VideoCapture(device)
         if not cap.isOpened():
-            log.warning("OpenCV failed to open camera device %s", device)
+            logger.warning("OpenCV failed to open camera device %s", device)
             cap.release()
             return False
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self._cap = cap
-        log.info("OpenCV backend opened device %s (%dx%d)", device, width, height)
+        logger.info("OpenCV backend opened device %s (%dx%d)", device, width, height)
         return True
 
     def read_frame(self) -> bytes | None:
@@ -199,13 +203,13 @@ class CameraService:
                 backend = candidate_cv
 
         if backend is None:
-            log.warning("No camera backend could open device %s", device)
+            logger.warning("No camera backend could open device %s", device)
             return
 
         self._backend = backend
         self._active = True
         self._capture_task = asyncio.get_event_loop().create_task(self._capture_loop())
-        log.info("Camera started on device %s", device)
+        logger.info("Camera started on device %s", device)
 
     def stop(self) -> None:
         """Release the camera device and stop the capture loop."""
@@ -234,7 +238,7 @@ class CameraService:
         except asyncio.CancelledError:
             return
         except Exception:
-            log.error("Capture loop crashed", exc_info=True)
+            logger.error("Capture loop crashed", exc_info=True)
             self._active = False
 
 
@@ -243,15 +247,60 @@ camera_service = CameraService()
 
 
 # ---------------------------------------------------------------------------
-# Device enumeration (still uses OpenCV — works cross-platform)
+# Device enumeration
 # ---------------------------------------------------------------------------
 
 
 def enumerate_video_devices(max_check: int = 10) -> list[dict[str, int | str]]:
-    """Probe video device indices that can be opened by OpenCV.
+    """Detect available video capture devices.
+
+    On Linux, uses linuxpy/v4l2 to check device capabilities (avoids
+    OpenCV warnings and correctly skips metadata-only nodes).
+    Falls back to OpenCV probing on other platforms.
 
     Returns a list of ``{"index": int, "label": str}`` dicts.
     """
+    if sys.platform == "linux":
+        devs = _enumerate_v4l2(max_check)
+        if devs is not None:
+            return devs
+    return _enumerate_opencv(max_check)
+
+
+def _enumerate_v4l2(max_check: int) -> list[dict[str, int | str]] | None:
+    """List v4l2 devices that support VIDEO_CAPTURE. Returns None if linuxpy unavailable."""
+    try:
+        from linuxpy.video.device import Capability, Device
+    except ImportError:
+        return None
+
+    devices: list[dict[str, int | str]] = []
+    for i in range(max_check):
+        path = f"/dev/video{i}"
+        try:
+            dev = Device(path)
+            dev.open()
+            try:
+                info = dev.info
+                if info is None:
+                    continue
+                # Prefer device_capabilities (per-node) over capabilities (driver-wide)
+                caps = info.device_capabilities or info.capabilities
+                if Capability.VIDEO_CAPTURE in caps:
+                    card = info.card
+                    label = card if card else f"Camera {i}"
+                    devices.append({"index": i, "label": label})
+            finally:
+                dev.close()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.debug("v4l2 probe failed for %s", path, exc_info=True)
+    return devices
+
+
+def _enumerate_opencv(max_check: int) -> list[dict[str, int | str]]:
+    """Probe video devices via OpenCV (non-Linux fallback)."""
     devices: list[dict[str, int | str]] = []
     try:
         import cv2
@@ -260,7 +309,10 @@ def enumerate_video_devices(max_check: int = 10) -> list[dict[str, int | str]]:
     for i in range(max_check):
         cap = cv2.VideoCapture(i)
         if cap.isOpened():
-            devices.append({"index": i, "label": f"Camera {i}"})
+            # Read a test frame to filter out metadata-only nodes
+            ok, _ = cap.read()
+            if ok:
+                devices.append({"index": i, "label": f"Camera {i}"})
             cap.release()
     return devices
 

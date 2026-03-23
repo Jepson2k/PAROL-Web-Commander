@@ -17,11 +17,8 @@ from typing import Callable, Any
 
 from nicegui import ui
 
-from parol_commander.state import ui_state
-
-
-# Click vs hold threshold (matches control.py)
-CLICK_HOLD_THRESHOLD_S: float = 0.25
+from parol_commander.constants import CLICK_HOLD_THRESHOLD_S
+from parol_commander.state import simulation_state, ui_state
 
 
 @dataclass
@@ -229,7 +226,6 @@ class KeybindingsManager:
     def set_editor_focused(self, focused: bool) -> None:
         """Called from JS when editor/input focus changes."""
         self._editor_focused = focused
-        logging.debug("Editor focused: %s", focused)
 
     def get_all_bindings(self) -> dict[str, list[Keybinding]]:
         """Get all bindings grouped by category for help menu."""
@@ -350,7 +346,7 @@ def _register_default_keybindings() -> None:
             key=" ",
             display="Space",
             description="Play/Pause",
-            action=lambda: asyncio.create_task(ep.toggle_play()),
+            action=lambda: asyncio.create_task(ep.playback.toggle_play()),
             category="Playback",
         )
     )
@@ -360,10 +356,9 @@ def _register_default_keybindings() -> None:
             key="s",
             display="S",
             description="Step forward",
-            action=lambda: ep.step_forward(),
+            action=lambda: ep.playback.step_forward(),
             category="Playback",
-            # Only active when script is running
-            enabled_check=lambda: ep.script_running,
+            enabled_check=lambda: ep.script_running or simulation_state.total_steps > 0,
         )
     )
 

@@ -2,18 +2,17 @@
 
 import logging
 from contextlib import contextmanager
-from typing import Literal, cast
 
 from nicegui import app as ng_app
 from nicegui import ui
 
-from parol_commander.common.theme import set_theme
+from waldoctl import RobotClient
+
 from parol_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
-from parol_commander.state import simulation_state, ui_state
-from waldoctl import RobotClient
+from parol_commander.state import robot_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +51,8 @@ class SettingsContent:
         self.client = client
         self._port_select: ui.select | None = None
         self._refresh_timer: ui.timer | None = None
+        self._cam_select: ui.select | None = None
+        self._cam_refresh_timer: ui.timer | None = None
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
 
@@ -80,6 +81,8 @@ class SettingsContent:
         """Cancel background timers during shutdown."""
         if self._refresh_timer is not None:
             self._refresh_timer.cancel()
+        if self._cam_refresh_timer is not None:
+            self._cam_refresh_timer.cancel()
 
     # ── Tool helpers (promoted from closures) ────────────────────────
 
@@ -111,6 +114,14 @@ class SettingsContent:
             return None
         return (x / 1000, y / 1000, z / 1000)
 
+    def _notify_and_resimulate(self) -> None:
+        """Notify simulation state changed and trigger debounced re-simulation."""
+        simulation_state.notify_changed()
+        try:
+            ui_state.editor_panel.schedule_debounced_simulation()
+        except RuntimeError:
+            pass
+
     def _apply_tool_scene(self, tool_key: str, variant_key: str | None = None) -> None:
         """Apply tool to local FK/IK model and 3D scene."""
         ui_state.active_robot.set_active_tool(
@@ -119,11 +130,7 @@ class SettingsContent:
             variant_key=variant_key,
         )
         if ui_state.urdf_scene:
-            ui_state.urdf_scene.update_tcp_pose_from_tool(
-                tool_key, variant_key=variant_key
-            )
-            ui_state.urdf_scene.swap_tool_mesh(tool_key, variant_key=variant_key)
-            ui_state.urdf_scene.invalidate_fk_cache()
+            ui_state.urdf_scene.apply_tool(tool_key, variant_key=variant_key)
 
     def _rebuild_variant_selector(self, tool_key: str) -> None:
         """Rebuild variant sub-selector for the current tool."""
@@ -134,33 +141,47 @@ class SettingsContent:
         except (KeyError, AttributeError):
             tool_spec = None
         variants = tool_spec.variants if tool_spec else ()
-        if not variants or tool_key == "NONE":
+        is_none = tool_key == "NONE"
+        if not variants and not is_none:
             return
 
-        variant_options = {v.key: v.display_name for v in variants}
-        current_vk = self._get_variant_key(tool_key) or variants[0].key
+        variant_options = (
+            {v.key: v.display_name for v in variants} if variants else {"": "—"}
+        )
+        current_vk = self._get_variant_key(tool_key) or (
+            next(iter(variant_options), "") if variants else ""
+        )
 
         async def _on_variant_change(e):
             vk = e.value
             ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
+            robot_state.tool_variant_key = vk or ""
             self._apply_tool_scene(tool_key, variant_key=vk)
-            simulation_state.notify_changed()
+            self._notify_and_resimulate()
 
         with self._variant_container:
             with _setting_row("Variant", "Tool configuration variant"):
-                ui.select(
-                    options=variant_options,
-                    value=current_vk,
-                    on_change=_on_variant_change,
-                ).classes("w-32").props("dense").mark("select-tool-variant")
+                sel = (
+                    ui.select(
+                        options=variant_options,
+                        value=current_vk,
+                        on_change=_on_variant_change,
+                    )
+                    .classes("w-32")
+                    .props("dense")
+                    .mark("select-tool-variant")
+                )
+                if is_none or not variants:
+                    sel.props("disable")
 
     def _rebuild_tcp_offset(self, tool_key: str) -> None:
         """Rebuild per-tool TCP offset inputs."""
         assert self._tcp_offset_container is not None
         self._tcp_offset_container.clear()
-        if tool_key == "NONE":
-            return
-        offset = self._get_tcp_offset(tool_key)
+        is_none = tool_key == "NONE"
+        offset = (
+            self._get_tcp_offset(tool_key) if not is_none else {"x": 0, "y": 0, "z": 0}
+        )
 
         async def _on_offset_change(_e=None):
             vals = {
@@ -171,27 +192,27 @@ class SettingsContent:
             ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
             vk = self._get_variant_key(tool_key)
             self._apply_tool_scene(tool_key, variant_key=vk)
-            simulation_state.notify_changed()
+            self._notify_and_resimulate()
 
         with self._tcp_offset_container:
             with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
                 with ui.row().classes("gap-1"):
                     x_input = (
                         ui.number(label="X", value=offset.get("x", 0), step=0.5)
-                        .classes("w-16")
-                        .props("dense")
+                        .style("width: 48px;")
+                        .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
                     )
                     y_input = (
                         ui.number(label="Y", value=offset.get("y", 0), step=0.5)
-                        .classes("w-16")
-                        .props("dense")
+                        .style("width: 48px;")
+                        .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
                     )
                     z_input = (
                         ui.number(label="Z", value=offset.get("z", 0), step=0.5)
-                        .classes("w-16")
-                        .props("dense")
+                        .style("width: 48px;")
+                        .props("dense borderless" + (" disable" if is_none else ""))
                         .on("update:model-value", _on_offset_change)
                     )
 
@@ -275,20 +296,20 @@ class SettingsContent:
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
             tool = e.value
+            vk = self._get_variant_key(tool)
             try:
-                await self.client.set_tool(tool)
+                await self.client.set_tool(tool, variant_key=vk or "")
             except Exception as exc:
                 logger.warning("set_tool(%s) failed: %s", tool, exc)
                 ui.notify(f"Tool change failed: {exc}", color="negative")
                 return
 
             ng_app.storage.general["selected_tool"] = tool
-            vk = self._get_variant_key(tool)
+            robot_state.tool_variant_key = vk or ""
             self._apply_tool_scene(tool, variant_key=vk)
             self._rebuild_variant_selector(tool)
             self._rebuild_tcp_offset(tool)
-            simulation_state.notify_changed()
-            ui.notify(f"Tool: {tool}", color="primary")
+            self._notify_and_resimulate()
 
         tool_options = {}
         for tool in ui_state.active_robot.tools.available:
@@ -313,35 +334,69 @@ class SettingsContent:
         self._rebuild_tcp_offset(stored_tool)
 
         vk_initial = self._get_variant_key(stored_tool)
+        robot_state.tool_variant_key = vk_initial or ""
         if stored_tool:
             self._apply_tool_scene(stored_tool, variant_key=vk_initial)
 
     def _build_camera(self) -> None:
         stored_cam = ng_app.storage.general.get("camera_device", -1)
-        ui_state.camera_device = stored_cam
-
         cam_devices = enumerate_video_devices()
         cam_options: dict[int | str, str] = {-1: "Disabled"}
         for dev in cam_devices:
             cam_options[dev["index"]] = str(dev["label"])
+        # Validate stored camera still exists (index may change across reboots)
+        if stored_cam not in cam_options:
+            stored_cam = -1
+            ng_app.storage.general["camera_device"] = -1
+        ui_state.camera_device = stored_cam
 
         def _on_camera_change(e):
             val = e.value
             ng_app.storage.general["camera_device"] = val
             ui_state.camera_device = val
-            if val == -1:
+            if val is None or val == -1:
                 camera_service.stop()
             else:
                 camera_service.start(val)
 
         with _setting_row("Camera", "Video device for gripper panel"):
-            ui.select(
-                options=cam_options,
-                value=stored_cam,
-                on_change=_on_camera_change,
-            ).classes("w-32").props("dense").mark("select-camera")
+            self._cam_select = (
+                ui.select(
+                    options=cam_options,
+                    value=stored_cam,
+                    on_change=_on_camera_change,
+                    new_value_mode="add-unique",
+                    clearable=True,
+                )
+                .classes("w-32")
+                .props("dense")
+                .mark("select-camera")
+            )
 
-        if stored_cam != -1:
+        with ui.column().classes("w-full gap-0 px-2"):
+            ui.label(
+                "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
+            ).classes("text-xs text-gray-500 dark:text-gray-400")
+            ui.label("Linux: sudo apt install v4l2loopback-dkms").classes(
+                "text-xs text-gray-500 dark:text-gray-400"
+            )
+
+        def _refresh_camera_devices() -> None:
+            if self._cam_select:
+                new_devices = enumerate_video_devices()
+                new_options: dict[int | str, str] = {-1: "Disabled"}
+                for dev in new_devices:
+                    new_options[dev["index"]] = str(dev["label"])
+                # Keep any custom entries the user typed
+                for k, v in self._cam_select.options.items():  # ty: ignore[unresolved-attribute]
+                    if k not in new_options and k != -1:
+                        new_options[k] = v
+                self._cam_select.options = new_options
+                self._cam_select.update()
+
+        self._cam_refresh_timer = ui.timer(10.0, _refresh_camera_devices)
+
+        if stored_cam is not None and stored_cam != -1:
             camera_service.start(stored_cam)
 
     def _build_motion_profile(self, prefs: dict) -> None:
@@ -366,26 +421,15 @@ class SettingsContent:
                 on_change=_on_motion_profile_change,
             ).classes("w-32").props("dense").mark("select-motion-profile")
 
-    def _build_backend(self) -> None:
-        backend_options = {"parol6": "PAROL6"}
-        stored_backend = ui_state.active_robot.backend_package
-
-        with _setting_row("Robot Backend", "Robot control library"):
-            ui.select(
-                options=backend_options,
-                value=stored_backend,
-            ).classes("w-32").props("dense disable").mark("select-robot-backend")
-
     def _build_theme(self, prefs: dict) -> None:
-        def _on_theme_change(e):
-            set_theme(cast(Literal["system", "light", "dark"], e.value))
-
         with _setting_row("Theme", "Application color scheme"):
-            ui.select(
-                options={"system": "Auto", "light": "Light", "dark": "Dark"},
-                value=prefs["theme_mode"],
-                on_change=_on_theme_change,
-            ).classes("w-24").props("dense")
+            with ui.element("span").tooltip(
+                "Light mode will be available in a future update"
+            ):
+                ui.select(
+                    options={"dark": "Dark"},
+                    value="dark",
+                ).classes("w-24").props("dense disable")
 
     def _build_reference_frames(self) -> None:
         with _setting_row("Translation RF", "Reference frame for translation moves"):
@@ -421,7 +465,6 @@ class SettingsContent:
             self._build_tool_section,
             self._build_camera,
             lambda: self._build_motion_profile(prefs),
-            self._build_backend,
             lambda: self._build_theme(prefs),
             self._build_reference_frames,
         ]

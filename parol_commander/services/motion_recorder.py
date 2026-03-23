@@ -1,6 +1,7 @@
 """Motion recorder for capturing robot actions as code during teaching."""
 
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ import numpy as np
 from pinokin import se3_rpy
 
 from parol_commander.state import (
+    editor_tabs_state,
     recording_state,
     robot_state,
     ui_state,
@@ -42,7 +44,9 @@ class MotionRecorder:
 
     def __init__(self):
         self._active_jog: ActiveJog | None = None
-        self._estimated_done_time: float = 0.0
+        # Actions queued while a jog is in progress (arm still moving).
+        # Each entry: (action_type, params, timestamp_of_click)
+        self._pending_actions: list[tuple[str, dict, float]] = []
 
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
@@ -71,6 +75,69 @@ class MotionRecorder:
             else [0.0] * n
         )
 
+    @staticmethod
+    def _matches_sim_end(current_angles_deg: list[float], tol_deg: float = 0.5) -> bool:
+        """Check if current joint angles match the simulation's final position."""
+        tab = editor_tabs_state.get_active_tab()
+        if tab is None or tab.final_joints_rad is None:
+            return False
+        final_deg = np.degrees(tab.final_joints_rad)
+        return bool(np.allclose(current_angles_deg, final_deg, atol=tol_deg))
+
+    @staticmethod
+    def _get_motion_cmd_names() -> frozenset[str]:
+        """Get motion command names from the command palette discovery."""
+        from parol_commander.components.editor import discover_robot_commands
+
+        commands = discover_robot_commands()
+        return frozenset(
+            name
+            for name, info in commands.items()
+            if info["category"] in ("Motion", "Jog", "Streaming")
+        )
+
+    def _ensure_set_tool(self, tool_key: str, variant_key: str = "") -> None:
+        """Ensure rbt.set_tool() is in the script before the first move command.
+
+        If an existing set_tool line is found, update it. Otherwise insert one
+        before the first motion command (home, moveJ, moveL, etc.).
+        """
+        textarea = ui_state.editor_panel.program_textarea
+        if not textarea:
+            return
+        val: str = textarea.value or ""
+        lines = list(val.split("\n"))
+
+        if variant_key:
+            set_tool_line = f'rbt.set_tool("{tool_key}", variant_key="{variant_key}")'
+        else:
+            set_tool_line = f'rbt.set_tool("{tool_key}")'
+        set_tool_re = re.compile(r"^\s*rbt\.\s*set_tool\s*\(")
+
+        # Check for existing set_tool line
+        for i, line in enumerate(lines):
+            if set_tool_re.match(line):
+                # Update existing set_tool with current tool
+                lines[i] = set_tool_line
+                textarea.value = "\n".join(lines)
+                logger.info("Updated existing set_tool to %s", tool_key)
+                return
+
+        # No existing set_tool — insert before first motion command
+        motion_names = self._get_motion_cmd_names()
+        motion_re = re.compile(
+            r"^\s*rbt\.(" + "|".join(re.escape(n) for n in motion_names) + r")\s*\("
+        )
+        for i, line in enumerate(lines):
+            if motion_re.match(line):
+                lines.insert(i, set_tool_line)
+                textarea.value = "\n".join(lines)
+                logger.info("Inserted set_tool before first motion at line %d", i + 1)
+                return
+
+        # No motion commands found — just append
+        self._insert_snippet(set_tool_line)
+
     def toggle_recording(self) -> None:
         """Toggle recording state on/off."""
         if recording_state.is_recording:
@@ -82,7 +149,6 @@ class MotionRecorder:
         """Start a new recording session."""
         recording_state.is_recording = True
         self._active_jog = None
-        self._estimated_done_time = 0.0
 
         # Log the initial position for reference
         if len(robot_state.angles) >= ui_state.active_robot.joints.count:
@@ -100,21 +166,29 @@ class MotionRecorder:
             robot_state.rz,
         )
 
-        # Always insert anchor moveJ to establish the recording start position.
-        # This ensures the path visualizer shows correct transitions — without it,
-        # the viz draws a line from the script's last move directly to the first
-        # recorded move, even if the robot was jogged elsewhere in between.
+        # Ensure set_tool is before the first move command in the script
+        tool_key = robot_state.tool_key
+        if tool_key and tool_key != "NONE":
+            self._ensure_set_tool(tool_key, variant_key=robot_state.tool_variant_key)
+
+        # Insert anchor moveJ to establish recording start position — but only
+        # if the robot has moved away from where the script's simulation ends.
+        # This avoids a redundant zero-distance segment (e.g. script ends with
+        # home() and robot is still at home when recording starts).
         if len(robot_state.angles) >= ui_state.active_robot.joints.count:
             angles = self._get_current_angles()
-            args = ", ".join(f"{a:.2f}" for a in angles)
-            spd = ui_state.jog_speed / 100.0
-            acc = ui_state.jog_accel / 100.0
-            anchor_snippet = f"rbt.moveJ([{args}], speed={spd}, accel={acc})  # Recording start position"
-            self._insert_snippet(anchor_snippet)
-            logger.info(
-                "Inserted recording start anchor at joints: %s",
-                [f"{a:.1f}" for a in angles],
-            )
+            if not self._matches_sim_end(angles):
+                args = ", ".join(f"{a:.2f}" for a in angles)
+                spd = ui_state.jog_speed / 100.0
+                acc = ui_state.jog_accel / 100.0
+                anchor_snippet = f"rbt.moveJ([{args}], speed={spd}, accel={acc})  # Recording start position"
+                self._insert_snippet(anchor_snippet)
+                logger.info(
+                    "Inserted recording start anchor at joints: %s",
+                    [f"{a:.1f}" for a in angles],
+                )
+            else:
+                logger.info("Skipped anchor — robot matches script end position")
 
     def _stop_recording(self) -> None:
         """Stop recording session."""
@@ -123,7 +197,6 @@ class MotionRecorder:
             self.on_jog_end()
 
         recording_state.is_recording = False
-        self._estimated_done_time = 0.0
         logger.info("Recording stopped")
 
     def record_action(self, action_type: str, **params) -> None:
@@ -136,32 +209,18 @@ class MotionRecorder:
         """
         if not recording_state.is_recording:
             return
+
+        # If a jog is in progress (arm still moving to target), queue
+        # non-motion actions so they appear AFTER the pending moveJ/moveL.
+        if self._active_jog and action_type not in ("moveJ", "moveL"):
+            self._pending_actions.append((action_type, params, time.time()))
+            return
+
         self._record_action_impl(action_type, **params)
 
     def _record_action_impl(self, action_type: str, **params) -> None:
         """Core recording logic (no is_recording guard)."""
-        # Auto-insert delay if significant time gap (>0.5s)
-        now = time.time()
-        if self._estimated_done_time > 0:
-            gap = now - self._estimated_done_time
-            if gap > 0.5:
-                delay_snippet = f"time.sleep({gap:.2f})"
-                self._insert_snippet(delay_snippet)
-                if TRACE_ENABLED:
-                    logger.log(
-                        5, "RECORDER: Auto-inserted delay of %.2fs", gap
-                    )  # TRACE level
-
-        # Get duration for motion commands (to estimate when action completes)
-        duration = params.get("duration", 0.0)
         is_motion_action = action_type in EDITABLE_TARGET_METHODS
-
-        # Update timestamp to estimated completion time for motion commands,
-        # or current time for instant commands (home, gripper, io)
-        if is_motion_action and duration > 0:
-            self._estimated_done_time = now + duration
-        else:
-            self._estimated_done_time = now
 
         # Generate marker for motion commands (for interactive targets)
         marker_id = uuid.uuid4().hex[:8] if is_motion_action else None
@@ -196,14 +255,16 @@ class MotionRecorder:
             spd = ui_state.jog_speed / 100.0
             acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{a:.2f}" for a in angles)
-            return f"rbt.moveJ([{args}], speed={spd}, accel={acc}){marker}"
+            wait_str = ", wait=False" if not params.get("wait", True) else ""
+            return f"rbt.moveJ([{args}], speed={spd}, accel={acc}{wait_str}){marker}"
 
         elif action_type == "moveL":
             pose = params["pose"]
             spd = ui_state.jog_speed / 100.0
             acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{p:.3f}" for p in pose)
-            return f"rbt.moveL([{args}], speed={spd}, accel={acc}){marker}"
+            wait_str = ", wait=False" if not params.get("wait", True) else ""
+            return f"rbt.moveL([{args}], speed={spd}, accel={acc}{wait_str}){marker}"
 
         elif action_type == "home":
             return "rbt.home()"
@@ -212,10 +273,6 @@ class MotionRecorder:
             if params.get("calibrate"):
                 return "rbt.tool.calibrate()"
             pos = params["position"]
-            if pos <= 0.0:
-                return "rbt.tool.open()"
-            if pos >= 1.0:
-                return "rbt.tool.close()"
             kwargs = []
             spd = params.get("speed")
             cur = params.get("current")
@@ -269,13 +326,19 @@ class MotionRecorder:
 
         # Only record if there was actual movement (> 0.1s)
         if duration > 0.1:
+            # Use wait=False when actions were queued mid-motion so the
+            # tool fires while the arm is still moving on playback.
+            wait = not bool(self._pending_actions)
             if self._active_jog.move_type == "joint":
                 self.record_action(
-                    "moveJ", angles=self._get_current_angles(), duration=duration
+                    "moveJ",
+                    angles=self._get_current_angles(),
+                    duration=duration,
+                    wait=wait,
                 )
             else:
                 self.record_action(
-                    "moveL", pose=self._get_wrf_pose(), duration=duration
+                    "moveL", pose=self._get_wrf_pose(), duration=duration, wait=wait
                 )
 
             logger.debug(
@@ -290,7 +353,23 @@ class MotionRecorder:
                 duration,
             )
 
+        self._flush_pending_actions()
         self._active_jog = None
+
+    def _flush_pending_actions(self) -> None:
+        """Flush actions queued during a jog, inserting time.sleep delays."""
+        if not self._pending_actions or not self._active_jog:
+            return
+
+        last_t = self._active_jog.start_time
+        for action_type, params, queued_at in self._pending_actions:
+            delay = queued_at - last_t
+            if delay > 0.05:
+                self._record_action_impl("delay", seconds=delay)
+            self._record_action_impl(action_type, **params)
+            last_t = queued_at
+
+        self._pending_actions.clear()
 
     def capture_current_pose(self, move_type: str = "cartesian") -> None:
         """Capture current robot pose and insert as move command.
@@ -298,7 +377,6 @@ class MotionRecorder:
         Args:
             move_type: "cartesian" or "joints"
         """
-        self._estimated_done_time = 0.0
         if move_type == "joints":
             self._record_action_impl(
                 "moveJ", angles=self._get_current_angles(), duration=1.0

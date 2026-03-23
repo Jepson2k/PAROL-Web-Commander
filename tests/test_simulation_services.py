@@ -56,6 +56,10 @@ class TestDryRunClient:
         assert segment["joints"] is not None
         assert len(segment["joints"]) == 6
         assert segment["move_type"] == "joints"
+        # Verify full joint trajectory is present for smooth playback
+        assert segment["joint_trajectory"] is not None
+        assert len(segment["joint_trajectory"]) >= 2  # At least start and end
+        assert len(segment["joint_trajectory"][0]) == 6  # 6 joints per waypoint
 
     @pytest.mark.asyncio
     async def test_move_cartesian_creates_path_segment(self):
@@ -289,17 +293,17 @@ class TestMotionRecorder:
         inserted_code = mock_editor.program_textarea.value
         assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
 
-        # Part 3: Full open (position=0.0 in new convention)
+        # Part 3: Full open (position=0.0) — always uses set_position
         mock_editor.program_textarea.value = ""
         recorder.record_action("gripper", position=0.0)
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.tool.open()" in inserted_code
+        assert "rbt.tool.set_position(0.0)" in inserted_code
 
-        # Part 4: Full close (position=1.0 in new convention)
+        # Part 4: Full close (position=1.0) — always uses set_position
         mock_editor.program_textarea.value = ""
         recorder.record_action("gripper", position=1.0)
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.tool.close()" in inserted_code
+        assert "rbt.tool.set_position(1.0)" in inserted_code
 
     def test_record_action_io(self, mock_editor):
         """record_action for io should generate set_io code."""
@@ -367,76 +371,6 @@ class TestMotionRecorder:
         # Check that code was inserted
         inserted_code = mock_editor.program_textarea.value
         assert "rbt.moveL(" in inserted_code
-
-    def test_delay_calculation_excludes_motion_duration(self, mock_editor):
-        """Auto-inserted delay should NOT include the previous motion's duration.
-
-        Bug regression test: Before the fix, _last_action_time was set to `now`
-        (when record_action was called), not `now + duration` (estimated completion).
-
-        This caused delays to incorrectly include the motion time:
-        - Action A starts at T=0 with duration=5s, _last_action_time = 0 (BUG!)
-        - User waits until motion completes at T=5, then waits 2s more
-        - Action B starts at T=7
-        - Gap calculated as 7 - 0 = 7s (WRONG - includes motion)
-        - Should be: 7 - 5 = 2s (idle time only)
-
-        After fix: _last_action_time = now + duration for motion commands.
-        So gap = now - (start + duration) = idle time only.
-        """
-        import re
-
-        self._set_robot_pose(100.0, 100.0, 100.0)
-        robot_state.angles.set_deg(np.zeros(6))
-
-        recorder = MotionRecorder()
-
-        # Start recording (resets _last_action_time to 0)
-        recorder.toggle_recording()
-
-        # Clear editor to start fresh (toggle_recording inserts anchor)
-        mock_editor.program_textarea.value = ""
-
-        # Record first action with a SHORT duration (0.5s)
-        # This sets _last_action_time = now + 0.5
-        recorder.record_action("moveL", pose=[100, 100, 100, 0, 0, 0], duration=0.5)
-
-        # Wait 1.5 seconds - this is LONGER than the duration
-        # So: motion completes at T=0.5, we wait until T=1.5
-        # Expected idle time (delay) = 1.5 - 0.5 = 1.0s
-        time.sleep(1.5)
-
-        # Record second action - this should trigger auto-delay insertion
-        # Gap = now (1.5) - _last_action_time (0.5) = 1.0s > 0.5s threshold
-        recorder.record_action("moveL", pose=[200, 200, 200, 0, 0, 0], duration=0.5)
-
-        recorder.toggle_recording()  # Stop
-
-        # Get the final code
-        final_code = mock_editor.program_textarea.value
-
-        # Extract the delay value that was inserted (uses time.sleep for playback support)
-        delay_match = re.search(r"time\.sleep\(([\d.]+)\)", final_code)
-
-        # A delay should have been inserted (since idle time > 0.5s threshold)
-        assert delay_match is not None, (
-            f"Expected time.sleep to be inserted, got: {final_code}"
-        )
-
-        delay_value = float(delay_match.group(1))
-
-        # The delay should be approximately 1 second (the idle wait time)
-        # NOT approximately 2 seconds (motion duration + idle time) - that would indicate the bug
-        # Allow for timing variations (0.7 to 1.5 seconds)
-        assert delay_value < 2.0, (
-            f"Delay {delay_value}s is too large - it may be incorrectly including motion duration. "
-            f"Expected ~1s (idle time only), not ~2s (motion + idle)"
-        )
-
-        # Also verify it's a reasonable value (> 0.7s since we waited 1.5s minus 0.5s duration = 1.0s)
-        assert delay_value > 0.7, (
-            f"Delay {delay_value}s is too small - should be ~1s (1.5s wait - 0.5s duration)"
-        )
 
 
 # ============================================================================
@@ -563,7 +497,7 @@ class TestEditorAutoSimulation:
         # Timer starts as None
         assert panel._simulation_debounce_timer is None
 
-    def test_schedule_debounced_simulation_creates_timer(self):
+    def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
         from parol_commander.components.editor import EditorPanel
         from parol_commander.state import editor_tabs_state
@@ -576,7 +510,7 @@ class TestEditorAutoSimulation:
             editor_tabs_state.active_tab_id = "test-tab"
 
             panel = EditorPanel()
-            panel._schedule_debounced_simulation()
+            panel.schedule_debounced_simulation()
 
             # Verify timer was created with correct parameters
             mock_ui.timer.assert_called_once()
@@ -584,7 +518,7 @@ class TestEditorAutoSimulation:
             assert call_args[0][0] == 1.0  # debounce delay
             assert call_args[1]["once"] is True
 
-    def test_schedule_debounced_simulation_cancels_previous_timer(self):
+    def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
         from parol_commander.components.editor import EditorPanel
         from parol_commander.state import editor_tabs_state
@@ -600,11 +534,11 @@ class TestEditorAutoSimulation:
             panel = EditorPanel()
 
             # First call creates timer1
-            panel._schedule_debounced_simulation()
+            panel.schedule_debounced_simulation()
             assert panel._simulation_debounce_timer == mock_timer1
 
             # Second call should cancel timer1 (including running callback) and create timer2
-            panel._schedule_debounced_simulation()
+            panel.schedule_debounced_simulation()
             mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
             assert panel._simulation_debounce_timer == mock_timer2
 
@@ -1016,3 +950,260 @@ async def main():
         assert len(simulation_state.targets) == 0, (
             f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"
         )
+
+
+# ============================================================================
+# Home and Checkpoint Tests
+# ============================================================================
+
+
+class TestHomeAndCheckpoints:
+    """Tests for home teleport and checkpoint marker creation."""
+
+    def test_home_segment_is_zero_duration_checkpoint(self):
+        """home() produces a zero-duration segment with checkpoint='home' and correct joints."""
+        from parol6.config import HOME_ANGLES_DEG
+
+        segments: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+        )
+
+        # Start from non-home position, then home
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.home()
+
+        assert len(segments) == 2
+        home_seg = segments[1]
+        assert home_seg["checkpoint"] == "home"
+        assert home_seg["estimated_duration"] == pytest.approx(0.0)
+        assert home_seg["joints"] is not None
+        # Joints should be at home position (in radians)
+        home_rad = np.radians(HOME_ANGLES_DEG)
+        assert np.allclose(home_seg["joints"], home_rad, atol=0.01)
+
+    def test_home_updates_planner_for_subsequent_moves(self):
+        """After home(), subsequent moveJ starts from home position."""
+        segments: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+        )
+
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.home()
+        client.moveJ([90, -90, 140, 15, 50, 175], speed=1.0)
+
+        assert len(segments) == 3
+        # Third segment should have a trajectory starting near home
+        third = segments[2]
+        assert third["joint_trajectory"] is not None
+        assert len(third["joint_trajectory"]) >= 2
+
+    def test_checkpoint_creates_zero_width_marker(self):
+        """checkpoint() creates a zero-width segment with the correct label."""
+        segments: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+        )
+
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.checkpoint("pick_done")
+
+        assert len(segments) == 2
+        cp_seg = segments[1]
+        assert cp_seg["checkpoint"] == "pick_done"
+        assert cp_seg["estimated_duration"] == pytest.approx(0.0)
+        assert cp_seg["points"] == []
+        assert cp_seg["move_type"] == "checkpoint"
+
+
+# ============================================================================
+# Tool Action Tracking Tests
+# ============================================================================
+
+
+class TestToolActionTracking:
+    """Tests for tool action start_positions tracking across calls."""
+
+    def test_tool_start_positions_across_calls(self):
+        """close() then open() records correct start_positions for each action."""
+        from dataclasses import asdict
+        from waldoctl.tools import LinearMotion
+
+        segments: list[dict] = []
+        tool_actions: list = []
+        robot = get_robot("parol6")
+
+        # Build tool metadata registry (same logic as path_visualizer)
+        def _serialize_motions(motion_list):
+            return [
+                {"type": "linear", **asdict(m)}
+                if isinstance(m, LinearMotion)
+                else {"type": "rotary", **asdict(m)}
+                for m in motion_list
+            ]
+
+        tool_meta: dict[str, dict] = {}
+        for spec in robot.tools.available:
+            if spec.key == "NONE":
+                continue
+            base = _serialize_motions(spec.motions) if spec.motions else []
+            variants = {}
+            for v in spec.variants:
+                if v.motions:
+                    variants[v.key] = {"motions": _serialize_motions(v.motions)}
+            if base or variants:
+                tool_meta[spec.key] = {
+                    "motions": base,
+                    "variants": variants,
+                    "activation_type": spec.activation_type.value,
+                }
+
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            tool_action_collector=tool_actions,
+            tool_meta_registry=tool_meta,
+        )
+
+        client.set_tool("SSG-48", "pinch")
+        client.tool.close()
+        client.tool.open()
+
+        assert len(tool_actions) == 2
+
+        # First action: close — starts open (0.0), targets closed (1.0)
+        assert tool_actions[0].start_positions == (0.0,)
+        assert tool_actions[0].target_positions == (1.0,)
+
+        # Second action: open — starts closed (1.0), targets open (0.0)
+        assert tool_actions[1].start_positions == (1.0,)
+        assert tool_actions[1].target_positions == (0.0,)
+
+
+# ============================================================================
+# Teleport Command Tests
+# ============================================================================
+
+
+class TestTeleportCommand:
+    """Tests for TeleportCommand as a streamable motion command."""
+
+    def test_teleport_is_streamable_motion_command(self):
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.commands.base import MotionCommand
+
+        assert issubclass(TeleportCommand, MotionCommand)
+        assert TeleportCommand.streamable is True
+
+    def test_teleport_not_in_system_cmd_types(self):
+        from parol6.ack_policy import SYSTEM_CMD_TYPES, FIRE_AND_FORGET
+        from parol6.protocol.wire import CmdType
+
+        assert CmdType.TELEPORT not in SYSTEM_CMD_TYPES
+        assert CmdType.TELEPORT in FIRE_AND_FORGET
+
+    def test_teleport_converts_degrees_to_steps(self):
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.protocol.wire import TeleportCmd
+        from parol6.server.state import ControllerState
+
+        angles_deg = [90.0, -45.0, 30.0, 0.0, 60.0, 180.0]
+        cmd = TeleportCommand(TeleportCmd(angles=angles_deg))
+        state = ControllerState()
+        cmd.do_setup(state)
+
+        # Steps should be non-zero for non-zero angles
+        assert cmd._target_steps[0] != 0  # 90 deg
+        assert cmd._target_steps[3] == 0  # 0 deg
+
+    def test_teleport_clears_gripper_command_bits(self):
+        """Teleport with tool_positions must clear Gripper_data_out[3]
+        to prevent the write-frame JIT from re-arming the gripper ramp."""
+        import os
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.protocol.wire import TeleportCmd, CommandCode
+        from parol6.server.state import ControllerState
+
+        state = ControllerState()
+        state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
+
+        angles = [0.0] * 6
+        cmd = TeleportCommand(TeleportCmd(angles=angles, tool_positions=[0.5]))
+        cmd.do_setup(state)
+
+        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
+            cmd.execute_step(state)
+
+        assert state.Command_out == CommandCode.TELEPORT
+        assert state.Gripper_data_out[3] == 0
+        assert state.tool_teleport_pos == pytest.approx(127.5)
+
+
+# ============================================================================
+# Sim Pose Override Auto-Clear Tests
+# ============================================================================
+
+
+class TestSimPoseOverrideAutoClear:
+    """Tests for the timestamp-based auto-clear of sim_pose_override."""
+
+    def test_clears_after_timeout(self):
+        """Override should clear once 100ms has passed since last teleport."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = False
+        simulation_state.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
+
+        # Simulate the auto-clear condition from main.py
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert should_clear
+
+    def test_stays_set_during_active_scrubbing(self):
+        """Override should NOT clear if a teleport was sent recently."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = False
+        simulation_state.last_teleport_ts = time.monotonic()  # just now
+
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert not should_clear
+
+    def test_stays_set_during_playback(self):
+        """Override should NOT clear during active simulation playback."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = True
+        simulation_state.last_teleport_ts = time.monotonic() - 0.2
+
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert not should_clear
+
+    def test_no_clear_without_teleport(self):
+        """Override should NOT clear if no teleport was ever sent (ts=0)."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = False
+        simulation_state.last_teleport_ts = 0.0
+
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert not should_clear

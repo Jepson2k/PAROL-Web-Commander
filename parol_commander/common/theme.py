@@ -91,6 +91,8 @@ class PathColors:
     SMOOTH = "#a855f7"  # purple-500 - smooth moves (moveC, moveS)
     INVALID = "#ef4444"  # red-500 - IK failure / unreachable
     TIMING_WARNING = "#f59e0b"  # amber-500 - needs more time than requested
+    CHECKPOINT = "#94a3b8"  # slate-400 - checkpoint markers on scrubber
+    TOOL_ACTION = "#FF9800"  # orange - tool action bars on scrubber
 
 
 # Move type to color mapping (for path_visualizer and path_preview_client)
@@ -334,7 +336,8 @@ def _inject_component_overrides() -> None:
         """
 /* Containers and surfaces */
 .q-header, .q-footer { background: var(--ctk-surface); color: var(--ctk-text); }
-.q-card, .q-field, .q-toolbar, .q-item { background: var(--ctk-surface); color: var(--ctk-text); }
+.q-field, .q-toolbar, .q-item { background: var(--ctk-surface); color: var(--ctk-text); }
+.overlay-panel > .q-card { background: var(--ctk-surface); color: var(--ctk-text); }
 
 /* Buttons */
 .q-btn:not(.q-btn--round) { border-radius: 6px; padding-top: 3px !important; padding-left: 6px !important; padding-bottom: 3px !important; padding-right: 6px !important; min-height: 32px !important; min-width: 32px !important; }
@@ -344,8 +347,11 @@ def _inject_component_overrides() -> None:
 .q-slider__track { height: 8px !important; }
 
 /* Inputs */
-.q-input .q-field__native, .q-textarea .q-field__native { color: var(--ctk-text); padding-top: 12px !important; padding-bottom: 4px !important; }
+.q-input .q-field__native, .q-textarea .q-field__native { color: var(--ctk-text); }
+.joint-readout-input .q-field__native { padding-top: 12px !important; padding-bottom: 4px !important; }
 .q-field__control { border-radius: 6px; }
+.step-input .q-field__suffix { display: inline-block; width: 14px; text-align: center; }
+.step-suffix-small .q-field__suffix { font-size: 0.7em; }
 
 /* Segmented toggle */
 .q-btn-toggle .q-btn { border-radius: 6px; }
@@ -355,10 +361,14 @@ def _inject_component_overrides() -> None:
 /* Misc */
 .q-separator { background: var(--ctk-muted); }
 
-/* Transparent shell and transparent fields */
-body.body--dark, .q-dark, .q-dark .q-page { background: transparent !important; }
-body.body--light, .q-light, .q-light .q-page { background: transparent !important; }
+/* Transparent shell for frosted glass overlay panels */
+body.body--dark, body.body--light { background: transparent !important; }
+.q-page { background: transparent !important; }
 .q-field { background: transparent !important; }
+/* Panel container (q-tab-panels) is transparent — each tab panel provides its own glass */
+.left-panels-container { background: transparent !important; }
+/* Nested q-tab-panels inside overlay cards are transparent (the card provides the glass) */
+.overlay-card .q-tab-panels { background: transparent !important; }
 
 /* Disable input steppers for numercal input */
 input::-webkit-outer-spin-button,
@@ -464,7 +474,7 @@ PANEL_RESIZE_CONFIG = {
     },
     "constraints": {
         "viewportMarginX": 80,
-        "viewportMarginY": 100,
+        "viewportMarginY": 20,
         "containerPadding": 20,
         "bottomOffset": 12,
         "totalMargin": 36,
@@ -484,6 +494,16 @@ PANEL_RESIZE_CONFIG = {
             "minWidth": 300,
             "minHeight": 100,
             "group": "bottom",
+        },
+        "gripper": {
+            "selector": ".top-panels-container .gripper-panel",
+            "minWidth": 378,
+            "minHeight": 310,
+            "defaultWidth": 378,
+            "defaultHeight": 310,
+            "cameraWidth": 660,
+            "cameraHeight": 675,
+            "group": "top",
         },
     },
 }
@@ -579,16 +599,16 @@ html, body {
 /* Main app container should also clip */
 .q-layout, .q-page-container { overflow: hidden !important; }
 
-/* Compact input field styling */
-.q-field .q-field__control {
+/* Joint readout input — compact field styling */
+.joint-readout-input .q-field__control {
   max-height: 3em !important;
 }
 
-.q-field .q-field__native {
+.joint-readout-input .q-field__native {
    padding: 0 !important;
 }
 
-.q-field__label {
+.joint-readout-input .q-field__label {
     top: 12px !important;
 }
 
@@ -637,7 +657,11 @@ html, body {
   pointer-events: none;
 }
 
-/* Control panel jog tabs: zero padding only here */
+/* Control panel jog tabs: compact padding */
+.cp-jog-tabs .q-tab {
+  padding: 0 14px !important;
+  min-height: 28px !important;
+}
 .cp-jog-panels .q-tab-panels,
 .cp-jog-panels .q-tab-panel {
   padding: 0 !important;
@@ -993,6 +1017,20 @@ html, body {
   cursor: default;
 }
 
+/* Timeline slider: transparent track, full-height hit area, line cursor on drag */
+.timeline-slider .q-slider__track-container--h { background: transparent !important; }
+.timeline-slider .q-slider__track { background: transparent !important; height: 100% !important; }
+.timeline-slider .q-slider__inner { height: 100% !important; }
+.timeline-slider .q-slider__focus-ring { display: none !important; }
+.timeline-slider .q-slider__thumb::after {
+  content: ''; position: absolute; width: 10px; height: 34px;
+  background: #424242; border-radius: 4px; pointer-events: none;
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.timeline-slider .q-slider__thumb:hover::after { opacity: 0.4; }
+.timeline-slider.q-slider--active .q-slider__thumb::after { opacity: 1; }
+
 
 /* ========== Editor Log Area ========== */
 
@@ -1111,6 +1149,11 @@ html, body {
   padding: 0 !important;
 }
 
+.tutorial-dialog-card .q-stepper,
+.tutorial-dialog-card .q-stepper__content {
+  background: transparent !important;
+}
+
 /* Help dialog - expand to fit content */
 .help-dialog-card {
   max-width: 95vw;
@@ -1155,27 +1198,26 @@ html, body {
 
 /* ========== Robot Face Indicator ========== */
 
-/* Transition targets for hover animations */
-.robot-face .eye-full,
-.robot-face .eye-squint,
-.robot-face .eye-sad,
-.robot-face .mouth-straight,
-.robot-face .mouth-zigzag { transition: opacity 0.25s ease; }
+/* Robot face SVG transitions */
+.robot-face .pupil { transition: transform 0.45s ease; }
+.robot-face .eye-white { transition: opacity 0.25s ease; }
 
-/* Happy: squint eyes on hover */
-.robot-face-happy .eye-squint { opacity: 0; }
-.robot-face-happy:hover .eye-full { opacity: 0; }
-.robot-face-happy:hover .eye-squint { opacity: 1; }
-
-/* Neutral: zigzag mouth on hover */
-.robot-face-neutral .mouth-zigzag { opacity: 0; }
-.robot-face-neutral:hover .mouth-straight { opacity: 0; }
-.robot-face-neutral:hover .mouth-zigzag { opacity: 1; }
-
-/* Sad: droopy eyes on hover */
-.robot-face-sad .eye-sad { opacity: 0; }
-.robot-face-sad:hover .eye-full { opacity: 0; }
-.robot-face-sad:hover .eye-sad { opacity: 1; }
+/* Breathing animations */
+@keyframes breathe-happy {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@keyframes breathe-neutral {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1.5px); }
+}
+@keyframes breathe-sad {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2.5px); }
+}
+.robot-face-happy svg { animation: breathe-happy 6s ease-in-out infinite; }
+.robot-face-neutral svg { animation: breathe-neutral 7s ease-in-out infinite; animation-delay: -2s; }
+.robot-face-sad svg { animation: breathe-sad 8s ease-in-out infinite; animation-delay: -4s; }
 
 /* Help tab has no panel — hide its indicator to prevent stale marker at startup */
 .side-tab-bar.absolute.bottom-0 .q-tab:last-child .q-tab__indicator {
@@ -1186,7 +1228,7 @@ html, body {
 /* ========== Action Log ========== */
 
 .action-log {
-  max-height: 22px;
+  max-height: 20px;
   transition: max-height 0.2s ease;
   width: 0;
   min-width: 100%;

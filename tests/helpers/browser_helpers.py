@@ -10,6 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+import time as _time
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -56,10 +57,20 @@ def click_tab(screen: "Screen", tab_name: str, timeout: float = 10.0) -> None:
 
     target_tab.click()
 
-    # Wait for tab to become active
-    WebDriverWait(screen.selenium, timeout).until(
-        lambda d: "q-tab--active" in (target_tab.get_attribute("class") or "")
-    )
+    # Wait for tab to become active (re-find element to avoid stale reference)
+    def tab_is_active(driver):
+        for tab in driver.find_elements(By.CSS_SELECTOR, ".q-tab"):
+            try:
+                icon = tab.find_element(By.CSS_SELECTOR, ".q-icon")
+                if icon.text == icon_name and "q-tab--active" in (
+                    tab.get_attribute("class") or ""
+                ):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    WebDriverWait(screen.selenium, timeout).until(tab_is_active)
 
 
 def find_button_by_icon(screen: "Screen", icon_name: str) -> WebElement | None:
@@ -143,28 +154,44 @@ def dismiss_dialogs(screen: "Screen", timeout: float = 2.0) -> None:
 
     def close_dialogs() -> None:
         """Try to close any open dialogs."""
-        # Click the "Skip Tour" button or any close button in the dialog
         js(
             screen,
             """
-            // Find and click Skip Tour or close buttons
             const buttons = document.querySelectorAll('.q-dialog button');
+            // Try skip/close buttons first
             for (const btn of buttons) {
                 const text = btn.textContent.toLowerCase();
                 if (text.includes('skip') || text.includes('close')) {
                     btn.click();
                     return;
                 }
-                // Also check for close icon
                 const icon = btn.querySelector('i');
                 if (icon && icon.textContent === 'close') {
                     btn.click();
                     return;
                 }
             }
+            // Accept any unchecked checkboxes (e.g. welcome/disclaimer dialogs)
+            const cbs = document.querySelectorAll('.q-dialog .q-checkbox:not(.q-checkbox--truthy)');
+            cbs.forEach(cb => cb.click());
             // Fallback: click the backdrop
             const backdrop = document.querySelector('.q-dialog__backdrop');
             if (backdrop) backdrop.click();
+            """,
+        )
+        # After checking checkboxes, wait a tick for Vue reactivity, then click continue/ok
+        _time.sleep(0.1)
+        js(
+            screen,
+            """
+            const buttons = document.querySelectorAll('.q-dialog button');
+            for (const btn of buttons) {
+                const text = btn.textContent.toLowerCase();
+                if (text.includes('continue') || text.includes('ok')) {
+                    btn.click();
+                    return;
+                }
+            }
             """,
         )
 

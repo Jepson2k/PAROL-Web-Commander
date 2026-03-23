@@ -106,4 +106,16 @@ class _Config:
 # Default 3D scene camera position
 DEFAULT_CAMERA = dict(x=0.3, y=0.3, z=0.22, look_at_z=0.22)
 
+# Gripper camera feed resolution
+CAMERA_FEED_W = 640
+CAMERA_FEED_H = 480
+
+
+# Waypoint marker sizes (meters) for 3D path visualization
+WAYPOINT_SIZE_LARGE = 0.008  # Editable targets (with TransformControls)
+WAYPOINT_SIZE_SMALL = 0.004  # Non-editable segment endpoints
+
+# Click vs hold threshold for jog buttons and keyboard shortcuts
+CLICK_HOLD_THRESHOLD_S: float = 0.15
+
 config = _Config()

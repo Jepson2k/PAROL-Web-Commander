@@ -18,7 +18,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -33,9 +33,8 @@ from parol_commander.common.theme import (
     SceneColors,
     get_color_for_move_type,
 )
+from parol_commander.constants import WAYPOINT_SIZE_LARGE, WAYPOINT_SIZE_SMALL
 from parol_commander.state import simulation_state, robot_state, ui_state
-
-from .envelope_mixin import workspace_envelope
 
 from .config import RobotAppearanceMode, ToolPose, UrdfSceneConfig
 from .loader import (
@@ -52,6 +51,88 @@ from .envelope_mixin import EnvelopeMixin
 from .path_renderer_mixin import PathRendererMixin
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]
+
+
+class RenderedSegment(NamedTuple):
+    """Immutable record of a rendered path segment's scene objects and identity."""
+
+    objects: list[Any]  # scene objects (polyline + cones)
+    colors: list[str]  # display color per object
+    uses_vc: bool  # polyline uses vertex colors?
+    fingerprint: tuple  # identity for diff (visual properties only)
+    line_number: int  # source line number (for cursor highlight map)
+
+
+class RenderedItem(NamedTuple):
+    """Immutable record of a rendered scene element (tool action or waypoint)."""
+
+    objects: list[Any]  # scene objects
+    fingerprint: tuple  # identity for diff
+    segment_index: int  # associated segment index for playback opacity (-1 if N/A)
+
+
+def _segment_fingerprint(
+    segments: Sequence,
+    seg_index: int,
+    blend_range: int,
+) -> tuple:
+    """Compute a rendering fingerprint for a path segment.
+
+    Includes neighbor validity within blend range so gradient colors
+    update correctly when a nearby segment changes validity.
+    ``line_number`` is excluded -- it doesn't affect visual output.
+    """
+    seg = segments[seg_index]
+    pts = seg.points
+    n = len(segments)
+    # Compute neighbor validity signature within blend range
+    neighbor_valid: list[bool] = []
+    for d in range(1, blend_range + 1):
+        before = seg_index - d
+        after = seg_index + d
+        neighbor_valid.append(before >= 0 and before < n and segments[before].is_valid)
+        neighbor_valid.append(after >= 0 and after < n and segments[after].is_valid)
+    return (
+        tuple(pts[0]) if pts else (),
+        tuple(pts[-1]) if pts else (),  # spatial identity
+        len(pts),
+        seg.color,
+        seg.is_dashed,
+        seg.show_arrows,
+        seg.is_valid,
+        tuple(neighbor_valid),
+    )
+
+
+def _tool_action_fingerprint(action) -> tuple:
+    """Compute a rendering fingerprint for a tool action."""
+    return (
+        tuple(action.tcp_pose or ()),
+        action.target_positions,
+        action.start_positions,
+        tuple(tuple(sorted(m.items())) for m in action.motions),
+        len(action.tcp_path or []),
+    )
+
+
+def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
+    """Create a waypoint marker: diamond (lathe bicone), square (box), or sphere."""
+    if shape == "diamond":
+        # Bicone: rotate a diamond profile around Y axis
+        r = size
+        h = size * 1.5
+        obj = ui.scene.lathe([[0, -h], [r, 0], [0, h]], segments=8)
+        obj.material(color)
+        return obj
+    elif shape == "square":
+        side = size * 2
+        box = ui.scene.box(side, side, side)
+        box.material(color)
+        return box
+    else:
+        sphere = ui.scene.sphere(size)
+        sphere.material(color)
+        return sphere
 
 
 class UrdfScene(
@@ -143,13 +224,15 @@ class UrdfScene(
         self.simulation_group: Any | None = None
         self.path_group: Any | None = None
         self.targets_group: Any | None = None
-        self._path_objects: list[Any] = []
-        self._path_object_colors: list[str] = []  # display color per object
-        self._segment_object_ranges: list[tuple[int, int]] = []
-        self._rendered_segment_count: int = 0
-        self._tool_action_objects: list[Any] = []
-        self._rendered_tool_action_count: int = 0
+        # Per-segment rendering state (indexed by segment index)
+        self._rendered_segments: list[RenderedSegment | None] = []
+        # Cursor highlight: line_number -> list of segment indices
+        self._line_to_segments: dict[int, list[int]] = {}
+        # Per-item diff state for tool actions and waypoints
+        self._rendered_tool_actions: list[RenderedItem | None] = []
+        self._rendered_waypoints: list[RenderedItem | None] = []
         self._highlighted_line: int = 0
+        self._rendered_playback_step: int = -1
 
         # Track robot mesh objects for material changes
         self._robot_meshes: list[ui.scene.stl] = []
@@ -287,14 +370,6 @@ class UrdfScene(
             except Exception as e:
                 logger.debug("set_axes_inset configuration failed: %s", e)
 
-            # Pre-generate workspace envelope for immediate rendering when enabled
-            # Skip in tests that don't need it (PAROL_SKIP_ENVELOPE=1)
-            if (
-                not os.environ.get("PAROL_SKIP_ENVELOPE")
-                and not workspace_envelope.is_ready
-            ):
-                workspace_envelope.generate()
-
             # Add keyboard handler for ESC to deselect TransformControls
             ui.keyboard(on_key=self._handle_keyboard)
 
@@ -361,14 +436,8 @@ class UrdfScene(
                 if self.scene:
                     self.scene.set_orbit_enabled(True)
                 if self._joint_controls_suspended:
-                    # Re-enable joint rotation controls
                     self._enable_joint_transform_controls()
                     self._joint_controls_suspended = False
-                # In editing mode, snap TCP ball back to valid editing position
-                # (IK may have failed during drag, leaving ball at unreachable spot)
-                if self._appearance_mode == RobotAppearanceMode.EDITING:
-                    self._last_fk_angles_tuple = None  # Invalidate FK cache
-                    self._update_tcp_ball_position()
                 # Notify drag-end to consumers (for jogging mode)
                 if self._appearance_mode != RobotAppearanceMode.EDITING:
                     cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
@@ -385,7 +454,6 @@ class UrdfScene(
         if object_name in ("tcp:jog_ball", "tcp:offset"):
             if event_type == "transform_end":
                 self._tcp_ball_dragging = False
-                # Clear drag start rotation
                 self._tcp_drag_start_rot_deg = None
                 # Notify drag-end to consumers
                 cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
@@ -521,31 +589,6 @@ class UrdfScene(
 
     def _do_update_simulation_view(self) -> None:
         """Internal implementation of simulation view update."""
-        # Keep TCP jog ball aligned with current robot TCP when not dragging
-        self._update_jog_ball_from_robot_state()
-
-        # Update Workspace Envelope based on envelope_mode
-        envelope_mode = simulation_state.envelope_mode
-        approaching_positions: list[tuple[float, float, float]] = []
-
-        if envelope_mode == "auto":
-            # Check robot TCP position (convert mm to m)
-            tcp_x = robot_state.x / 1000.0
-            tcp_y = robot_state.y / 1000.0
-            tcp_z = robot_state.z / 1000.0
-            if self._is_near_boundary(tcp_x, tcp_y, tcp_z):
-                approaching_positions.append((tcp_x, tcp_y, tcp_z))
-
-            # Check each target position
-            for target in simulation_state.targets:
-                if len(target.pose) >= 3:
-                    tx, ty, tz = target.pose[0], target.pose[1], target.pose[2]
-                    if self._is_near_boundary(tx, ty, tz):
-                        approaching_positions.append((tx, ty, tz))
-
-        # Update envelope using mixin method
-        self._update_envelope_in_simulation_view(approaching_positions)
-
         # Visibility check for paths and targets
         if not simulation_state.paths_visible:
             if self.path_group is not None:
@@ -559,143 +602,466 @@ class UrdfScene(
         if self.targets_group is not None:
             self.targets_group.visible(True)
 
-        # Rebuild paths if changed
-        current_count = len(simulation_state.path_segments)
-        prev_rendered = self._rendered_segment_count
+        all_segments = simulation_state.path_segments
+        new_count = len(all_segments)
+        old_count = len(self._rendered_segments)
+        tool_actions = simulation_state.tool_actions
+        targets = simulation_state.targets
+
+        # Early-out: nothing to render and nothing rendered
+        if (
+            new_count == 0
+            and old_count == 0
+            and not tool_actions
+            and not self._rendered_tool_actions
+            and not targets
+            and not self._rendered_waypoints
+        ):
+            return
 
         if TRACE_ENABLED:
             logger.trace(
                 "SCENE: _update_simulation_view tick - current_segments=%d, "
-                "rendered_count=%d, path_objects=%d",
-                current_count,
-                prev_rendered,
-                len(self._path_objects),
+                "rendered_count=%d",
+                new_count,
+                old_count,
             )
 
-        if current_count == 0:
-            if TRACE_ENABLED and self._path_objects:
-                logger.trace(
-                    "SCENE: Clearing %d path objects (segments went to 0)",
-                    len(self._path_objects),
-                )
-            self._clear_path_state()
+        # --- Per-segment diff rendering ---
+        first_cmd_idx = -1  # first non-travel segment index
+        last_cmd_idx = -1  # last non-travel segment index
 
-        elif current_count > self._rendered_segment_count:
+        if new_count == 0 and old_count > 0:
             if TRACE_ENABLED:
-                logger.trace(
-                    "SCENE: Adding segments %d-%d (new segments arrived)",
-                    self._rendered_segment_count,
-                    current_count - 1,
-                )
-            if self.path_group and self.scene:
-                all_segments = simulation_state.path_segments
-                with self.scene:
-                    with self.path_group:
-                        for i in range(self._rendered_segment_count, current_count):
-                            segment = all_segments[i]
-                            start_idx = len(self._path_objects)
-                            pp_colors = self._gradient_colors(all_segments, i)
-                            objs, obj_colors = self._render_path_segment(
-                                segment, pp_colors
-                            )
-                            self._path_objects.extend(objs)
-                            self._path_object_colors.extend(obj_colors)
-                            self._segment_object_ranges.append(
-                                (start_idx, len(self._path_objects))
-                            )
-                            if TRACE_ENABLED:
-                                logger.trace(
-                                    "SCENE: Rendered segment %d -> %d objects, "
-                                    "total_path_objects=%d",
-                                    i,
-                                    len(objs),
-                                    len(self._path_objects),
-                                )
-                self._rendered_segment_count = current_count
-
-        elif current_count < self._rendered_segment_count:
-            if TRACE_ENABLED:
-                logger.trace(
-                    "SCENE: Resetting - current(%d) < rendered(%d), "
-                    "clearing %d objects",
-                    current_count,
-                    self._rendered_segment_count,
-                    len(self._path_objects),
-                )
+                logger.trace("SCENE: Clearing all segments (count went to 0)")
             self._clear_path_state()
+        elif new_count > 0 and self.path_group and self.scene:
+            blend_range = int(self._BLEND_RANGE)
+            rebuild_line_map = False
+
+            # Diff existing slots and track first/last non-travel
+            limit = min(new_count, old_count)
+            for i in range(limit):
+                segment = all_segments[i]
+                if segment.is_travel:
+                    fp: tuple = ()
+                else:
+                    fp = _segment_fingerprint(all_segments, i, blend_range)
+                    if first_cmd_idx == -1:
+                        first_cmd_idx = i
+                    last_cmd_idx = i
+
+                old_rs = self._rendered_segments[i]
+                old_fp = old_rs.fingerprint if old_rs is not None else None
+                old_ln = old_rs.line_number if old_rs is not None else -1
+
+                if fp == old_fp:
+                    # Fingerprint matches — check if line number shifted
+                    if segment.line_number != old_ln and old_rs is not None:
+                        self._rendered_segments[i] = old_rs._replace(
+                            line_number=segment.line_number,
+                        )
+                        rebuild_line_map = True
+                    continue
+
+                # Fingerprint differs — delete old objects, render new
+                if old_rs is not None:
+                    for obj in old_rs.objects:
+                        self._safe_delete(obj)
+                if segment.is_travel:
+                    self._rendered_segments[i] = RenderedSegment(
+                        objects=[],
+                        colors=[],
+                        uses_vc=False,
+                        fingerprint=(),
+                        line_number=segment.line_number,
+                    )
+                else:
+                    self._rendered_segments[i] = self._render_and_record_segment(
+                        all_segments,
+                        i,
+                        fp,
+                        segment.line_number,
+                    )
+                rebuild_line_map = True
+                if TRACE_ENABLED:
+                    rs = self._rendered_segments[i]
+                    logger.trace(
+                        "SCENE: Re-rendered segment %d -> %d objects",
+                        i,
+                        len(rs.objects) if rs else 0,
+                    )
+
+            # Append new slots
+            if new_count > old_count:
+                for i in range(old_count, new_count):
+                    segment = all_segments[i]
+                    if segment.is_travel:
+                        self._rendered_segments.append(
+                            RenderedSegment(
+                                objects=[],
+                                colors=[],
+                                uses_vc=False,
+                                fingerprint=(),
+                                line_number=segment.line_number,
+                            )
+                        )
+                    else:
+                        fp = _segment_fingerprint(all_segments, i, blend_range)
+                        self._rendered_segments.append(
+                            self._render_and_record_segment(
+                                all_segments,
+                                i,
+                                fp,
+                                segment.line_number,
+                            )
+                        )
+                        if first_cmd_idx == -1:
+                            first_cmd_idx = i
+                        last_cmd_idx = i
+                    if TRACE_ENABLED:
+                        rs = self._rendered_segments[-1]
+                        logger.trace(
+                            "SCENE: Appended segment %d -> %d objects",
+                            i,
+                            len(rs.objects) if rs else 0,
+                        )
+                rebuild_line_map = True
+
+            # Remove trailing slots
+            if new_count < old_count:
+                for i in range(new_count, old_count):
+                    old_rs = self._rendered_segments[i]
+                    if old_rs is not None:
+                        for obj in old_rs.objects:
+                            self._safe_delete(obj)
+                del self._rendered_segments[new_count:]
+                rebuild_line_map = True
+                if TRACE_ENABLED:
+                    logger.trace(
+                        "SCENE: Removed trailing segments %d-%d",
+                        new_count,
+                        old_count - 1,
+                    )
+
+            # Rebuild line_number -> segment indices map
+            if rebuild_line_map:
+                self._rebuild_line_to_segments()
+
+        # --- Per-item tool action diff rendering ---
+        new_ta_count = len(tool_actions)
+        old_ta_count = len(self._rendered_tool_actions)
+        if new_ta_count > 0 or old_ta_count > 0:
+            ta_limit = min(new_ta_count, old_ta_count)
+            for i in range(ta_limit):
+                action = tool_actions[i]
+                fp = _tool_action_fingerprint(action)
+                old_ri = self._rendered_tool_actions[i]
+                old_fp = old_ri.fingerprint if old_ri is not None else None
+                if fp == old_fp:
+                    # Update segment_index if it changed
+                    if (
+                        old_ri is not None
+                        and action.segment_index != old_ri.segment_index
+                    ):
+                        self._rendered_tool_actions[i] = old_ri._replace(
+                            segment_index=action.segment_index,
+                        )
+                    continue
+                # Fingerprint differs — delete old, render new
+                if old_ri is not None:
+                    for obj in old_ri.objects:
+                        self._safe_delete(obj)
+                if self.path_group and self.scene:
+                    with self.scene:
+                        with self.path_group:
+                            objs = self.render_tool_action(action)
+                    self._rendered_tool_actions[i] = RenderedItem(
+                        objects=objs,
+                        fingerprint=fp,
+                        segment_index=action.segment_index,
+                    )
+                else:
+                    self._rendered_tool_actions[i] = None
+            # Append new
+            if new_ta_count > old_ta_count:
+                for i in range(old_ta_count, new_ta_count):
+                    action = tool_actions[i]
+                    fp = _tool_action_fingerprint(action)
+                    if self.path_group and self.scene:
+                        with self.scene:
+                            with self.path_group:
+                                objs = self.render_tool_action(action)
+                        self._rendered_tool_actions.append(
+                            RenderedItem(
+                                objects=objs,
+                                fingerprint=fp,
+                                segment_index=action.segment_index,
+                            )
+                        )
+                    else:
+                        self._rendered_tool_actions.append(None)
+            # Remove trailing
+            if new_ta_count < old_ta_count:
+                for i in range(new_ta_count, old_ta_count):
+                    old_ri = self._rendered_tool_actions[i]
+                    if old_ri is not None:
+                        for obj in old_ri.objects:
+                            self._safe_delete(obj)
+                del self._rendered_tool_actions[new_ta_count:]
 
         # Highlight path segments matching active cursor line
-        if simulation_state.paths_visible and self._segment_object_ranges:
+        if simulation_state.paths_visible and self._rendered_segments:
             self.update_cursor_line_highlight()
 
-        # Render tool actions (gripper open/close arrows at TCP positions)
-        tool_action_count = len(simulation_state.tool_actions)
-        if tool_action_count > self._rendered_tool_action_count:
+        # Waypoint markers at segment endpoints
+        if self.targets_group and self.scene:
+            self._update_waypoint_and_target_markers(
+                all_segments,
+                targets,
+                first_cmd_idx,
+                last_cmd_idx,
+            )
+
+        # Apply playback opacity AFTER all elements are rendered
+        self.update_playback_opacity()
+
+    def _render_and_record_segment(
+        self,
+        all_segments: Sequence,
+        seg_index: int,
+        fingerprint: tuple,
+        line_number: int,
+    ) -> RenderedSegment:
+        """Render a single path segment and return its RenderedSegment record.
+
+        Callers must ensure ``self.scene`` and ``self.path_group`` are set.
+        """
+        assert self.path_group is not None
+        with self.scene:
+            with self.path_group:
+                segment = all_segments[seg_index]
+                pp_colors = self._gradient_colors(all_segments, seg_index)
+                objs, obj_colors, uses_vc = self._render_path_segment(
+                    segment,
+                    pp_colors,
+                )
+        return RenderedSegment(
+            objects=objs,
+            colors=obj_colors,
+            uses_vc=uses_vc,
+            fingerprint=fingerprint,
+            line_number=line_number,
+        )
+
+    def _rebuild_line_to_segments(self) -> None:
+        """Rebuild the line_number -> segment indices lookup map."""
+        mapping: dict[int, list[int]] = {}
+        for i, rs in enumerate(self._rendered_segments):
+            if rs is not None and rs.line_number > 0:
+                mapping.setdefault(rs.line_number, []).append(i)
+        self._line_to_segments = mapping
+
+    def _update_waypoint_and_target_markers(
+        self,
+        segments: list,
+        targets: list,
+        first_cmd_idx: int,
+        last_cmd_idx: int,
+    ) -> None:
+        """Update start/end waypoint markers and editable target shapes.
+
+        Renders at most 2 non-editable markers (path start diamond, path end square)
+        plus editable targets whose shape depends on position (start/end/intermediate).
+        Uses pre-computed first/last non-travel segment indices from the diff loop.
+        """
+        # Derive first/last command positions from segment indices
+        first_line = last_line = -1
+        first_pos: list[float] | None = None
+        last_pos: list[float] | None = None
+        first_color = last_color = ""
+        first_seg_idx = -1
+        last_seg_idx = -1
+
+        if first_cmd_idx >= 0 and first_cmd_idx < len(segments):
+            seg = segments[first_cmd_idx]
+            if seg.points:
+                first_line = seg.line_number
+                first_pos = seg.points[-1]
+                first_color = get_color_for_move_type(seg.move_type)
+                first_seg_idx = first_cmd_idx
+        if last_cmd_idx >= 0 and last_cmd_idx < len(segments):
+            seg = segments[last_cmd_idx]
+            if seg.points:
+                last_line = seg.line_number
+                last_pos = seg.points[-1]
+                last_color = get_color_for_move_type(seg.move_type)
+                last_seg_idx = last_cmd_idx
+
+        # Build target lookup by line_number
+        target_by_line: dict[int, Any] = {}
+        for t in targets:
+            target_by_line.setdefault(t.line_number, t)
+
+        def shape_for_line(line_no: int) -> str:
+            if line_no == first_line:
+                return "diamond"
+            if line_no == last_line:
+                return "square"
+            return "sphere"
+
+        # --- Non-editable waypoints via per-item diff ---
+        new_waypoints: list[tuple[tuple, str, str, list[float], int]] = []
+        if first_pos is not None and first_line not in target_by_line:
+            fp_w = (tuple(first_pos), "diamond", first_color)
+            new_waypoints.append(
+                (fp_w, "diamond", first_color, first_pos, first_seg_idx)
+            )
+        if (
+            last_pos is not None
+            and last_line not in target_by_line
+            and last_line != first_line
+        ):
+            fp_w = (tuple(last_pos), "square", last_color)
+            new_waypoints.append((fp_w, "square", last_color, last_pos, last_seg_idx))
+
+        new_wp_count = len(new_waypoints)
+        old_wp_count = len(self._rendered_waypoints)
+        wp_limit = min(new_wp_count, old_wp_count)
+
+        for i in range(wp_limit):
+            fp_w, shape, color, pos, seg_idx = new_waypoints[i]
+            old_ri = self._rendered_waypoints[i]
+            old_fp = old_ri.fingerprint if old_ri is not None else None
+            if fp_w == old_fp:
+                continue
+            # Fingerprint differs — delete old, render new
+            if old_ri is not None:
+                for obj in old_ri.objects:
+                    self._safe_delete(obj)
             if self.path_group and self.scene:
                 with self.scene:
                     with self.path_group:
-                        for i in range(
-                            self._rendered_tool_action_count, tool_action_count
-                        ):
-                            action = simulation_state.tool_actions[i]
-                            objs = self.render_tool_action(action)
-                            self._tool_action_objects.extend(objs)
-                self._rendered_tool_action_count = tool_action_count
-        elif tool_action_count < self._rendered_tool_action_count:
-            for obj in self._tool_action_objects:
-                self._safe_delete(obj)
-            self._tool_action_objects.clear()
-            self._rendered_tool_action_count = 0
+                        mk = _create_waypoint_marker(shape, WAYPOINT_SIZE_SMALL, color)
+                        mk.move(pos[0], pos[1], pos[2])
+                self._rendered_waypoints[i] = RenderedItem(
+                    objects=[mk],
+                    fingerprint=fp_w,
+                    segment_index=seg_idx,
+                )
+            else:
+                self._rendered_waypoints[i] = None
 
-        # Update targets - preserve existing targets to maintain TransformControls
-        if self.targets_group and self.scene:
-            active_ids = set()
-            for target in simulation_state.targets:
-                active_ids.add(target.id)
-                if target.id not in self._target_objects:
-                    # Create new target
+        # Append new waypoints
+        if new_wp_count > old_wp_count:
+            for i in range(old_wp_count, new_wp_count):
+                fp_w, shape, color, pos, seg_idx = new_waypoints[i]
+                if self.path_group and self.scene:
                     with self.scene:
-                        with self.targets_group:
-                            target_group = ui.scene.group().with_name(
-                                f"targetgroup:{target.id}"
+                        with self.path_group:
+                            mk = _create_waypoint_marker(
+                                shape, WAYPOINT_SIZE_SMALL, color
                             )
-                            with target_group:
-                                sphere = ui.scene.sphere(0.008)
-                                target_color = get_color_for_move_type(target.move_type)
-                                sphere.material(target_color)
-                                sphere.with_name(f"target:{target.id}")
-
-                        target_group.move(
-                            target.pose[0], target.pose[1], target.pose[2]
+                            mk.move(pos[0], pos[1], pos[2])
+                    self._rendered_waypoints.append(
+                        RenderedItem(
+                            objects=[mk],
+                            fingerprint=fp_w,
+                            segment_index=seg_idx,
                         )
-
-                        self._target_objects[target.id] = {
-                            "group": target_group,
-                            "sphere": sphere,
-                        }
+                    )
                 else:
-                    # Target exists - update position only if NOT currently being edited
-                    target_data = self._target_objects[target.id]
-                    if target.id != self._editing_target_id:
-                        target_data["group"].move(
-                            target.pose[0], target.pose[1], target.pose[2]
-                        )
+                    self._rendered_waypoints.append(None)
 
-            # Remove stale targets
-            for tid in list(self._target_objects.keys()):
-                if tid not in active_ids:
-                    target_data = self._target_objects[tid]
+        # Remove trailing waypoints
+        if new_wp_count < old_wp_count:
+            for i in range(new_wp_count, old_wp_count):
+                old_ri = self._rendered_waypoints[i]
+                if old_ri is not None:
+                    for obj in old_ri.objects:
+                        self._safe_delete(obj)
+            del self._rendered_waypoints[new_wp_count:]
+
+        # --- Reconcile editable targets ---
+        active_ids: set[str] = set()
+        for target in targets:
+            active_ids.add(target.id)
+            shape = shape_for_line(target.line_number)
+            color = (
+                PathColors.INVALID
+                if not target.is_valid
+                else get_color_for_move_type(target.move_type)
+            )
+
+            # Derive segment_index from line_to_segments map
+            seg_indices = self._line_to_segments.get(target.line_number)
+            seg_idx = seg_indices[0] if seg_indices else -1
+
+            if target.id not in self._target_objects:
+                with self.scene:
+                    with self.targets_group:
+                        grp = (
+                            ui.scene.group()
+                            .with_name(f"targetgroup:{target.id}")
+                            .hoverable()
+                        )
+                        with grp:
+                            mk = _create_waypoint_marker(
+                                shape, WAYPOINT_SIZE_LARGE, color
+                            )
+                            mk.with_name(f"target:{target.id}")
+                    grp.move(target.pose[0], target.pose[1], target.pose[2])
+                self._target_objects[target.id] = {
+                    "group": grp,
+                    "marker": mk,
+                    "shape_type": shape,
+                    "color": color,
+                    "segment_index": seg_idx,
+                }
+            else:
+                td = self._target_objects[target.id]
+                td["segment_index"] = seg_idx
+                # Detect shape or color change — recreate marker
+                if td.get("shape_type") != shape or td.get("color") != color:
+                    # Delete old group and recreate
                     if self.scene:
                         try:
-                            self.scene.disable_transform_controls(
-                                target_data["group"].id
+                            self.scene.disable_transform_controls(td["group"].id)
+                        except (RuntimeError, KeyError):
+                            pass
+                    self._safe_delete(td["group"])
+                    with self.scene:
+                        with self.targets_group:
+                            grp = (
+                                ui.scene.group()
+                                .with_name(f"targetgroup:{target.id}")
+                                .hoverable()
                             )
-                        except RuntimeError:
-                            pass  # Client deleted during shutdown
-                    self._safe_delete(target_data["group"])
-                    del self._target_objects[tid]
-                    if self._editing_target_id == tid:
-                        self._editing_target_id = None
+                            with grp:
+                                mk = _create_waypoint_marker(
+                                    shape, WAYPOINT_SIZE_LARGE, color
+                                )
+                                mk.with_name(f"target:{target.id}")
+                        grp.move(target.pose[0], target.pose[1], target.pose[2])
+                    td["group"] = grp
+                    td["marker"] = mk
+                    td["shape_type"] = shape
+                    td["color"] = color
+                elif target.id != self._editing_target_id:
+                    td["group"].move(target.pose[0], target.pose[1], target.pose[2])
+
+        # Remove stale editable targets
+        for tid in list(self._target_objects):
+            if tid not in active_ids:
+                td = self._target_objects.pop(tid)
+                if self.scene:
+                    try:
+                        self.scene.disable_transform_controls(td["group"].id)
+                    except RuntimeError:
+                        pass
+                self._safe_delete(td["group"])
+                if self._editing_target_id == tid:
+                    self._editing_target_id = None
 
     def _safe_delete(self, obj: Any) -> None:
         """Safely delete a scene object, handling cases where it's already deleted."""
@@ -728,10 +1094,10 @@ class UrdfScene(
 
     @staticmethod
     def _glow_color(hex_color: str) -> str:
-        """Brighten a hex color toward white to create a glow effect."""
+        """Brighten a hex color toward white so it exceeds the bloom threshold."""
         h = hex_color.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        factor = 0.55
+        factor = 0.85
         r = int(r + (255 - r) * factor)
         g = int(g + (255 - g) * factor)
         b = int(b + (255 - b) * factor)
@@ -806,6 +1172,19 @@ class UrdfScene(
             return None
         return colors
 
+    def _restore_segment_material(self, seg_index: int) -> None:
+        """Restore a segment's objects to their display color/vertex-color state."""
+        if seg_index >= len(self._rendered_segments):
+            return
+        rs = self._rendered_segments[seg_index]
+        if rs is None or not rs.objects:
+            return
+        for j, obj in enumerate(rs.objects):
+            if j == 0 and rs.uses_vc:
+                obj.material(None)
+            else:
+                obj.material(rs.colors[j] if j < len(rs.colors) else "")
+
     def update_cursor_line_highlight(self) -> None:
         """Highlight path objects for the segment matching the editor cursor line."""
         cursor_line = simulation_state.active_cursor_line
@@ -813,46 +1192,54 @@ class UrdfScene(
             return
         prev_line = self._highlighted_line
         self._highlighted_line = cursor_line
-        segments = simulation_state.path_segments
-        n_colors = len(self._path_object_colors)
 
         # Restore previously highlighted segments to their display color
         if prev_line > 0:
-            for i, seg in enumerate(segments):
-                if seg.line_number == prev_line and i < len(
-                    self._segment_object_ranges
-                ):
-                    start, end = self._segment_object_ranges[i]
-                    for j in range(start, min(end, len(self._path_objects))):
-                        c = self._path_object_colors[j] if j < n_colors else seg.color
-                        self._path_objects[j].material(c)
+            for i in self._line_to_segments.get(prev_line, ()):
+                self._restore_segment_material(i)
 
         # Apply glow highlight to segments matching the new cursor line
         if cursor_line > 0:
-            for i, seg in enumerate(segments):
-                if seg.line_number == cursor_line and i < len(
-                    self._segment_object_ranges
-                ):
-                    start, end = self._segment_object_ranges[i]
-                    for j in range(start, min(end, len(self._path_objects))):
-                        base = (
-                            self._path_object_colors[j] if j < n_colors else seg.color
-                        )
-                        self._path_objects[j].material(self._glow_color(base))
+            for i in self._line_to_segments.get(cursor_line, ()):
+                if i >= len(self._rendered_segments):
+                    continue
+                rs = self._rendered_segments[i]
+                if rs is None or not rs.objects:
+                    continue
+                for j, obj in enumerate(rs.objects):
+                    base = rs.colors[j] if j < len(rs.colors) else ""
+                    obj.material(self._glow_color(base))
 
     def _clear_path_state(self) -> None:
         """Delete all rendered path objects and reset bookkeeping."""
-        for obj in self._path_objects:
-            self._safe_delete(obj)
-        self._path_objects.clear()
-        self._path_object_colors.clear()
-        self._segment_object_ranges.clear()
+        for rs in self._rendered_segments:
+            if rs is not None:
+                for obj in rs.objects:
+                    self._safe_delete(obj)
+        self._rendered_segments.clear()
+        self._line_to_segments.clear()
         self._highlighted_line = 0
-        self._rendered_segment_count = 0
-        for obj in self._tool_action_objects:
-            self._safe_delete(obj)
-        self._tool_action_objects.clear()
-        self._rendered_tool_action_count = 0
+        self._rendered_playback_step = -1
+        for ri in self._rendered_tool_actions:
+            if ri is not None:
+                for obj in ri.objects:
+                    self._safe_delete(obj)
+        self._rendered_tool_actions.clear()
+        for ri in self._rendered_waypoints:
+            if ri is not None:
+                for obj in ri.objects:
+                    self._safe_delete(obj)
+        self._rendered_waypoints.clear()
+        # Clear editable targets (path data fully replaced on re-simulation)
+        for td in self._target_objects.values():
+            if self.scene:
+                try:
+                    self.scene.disable_transform_controls(td["group"].id)
+                except (RuntimeError, KeyError):
+                    pass
+            self._safe_delete(td["group"])
+        self._target_objects.clear()
+        self._editing_target_id = None
 
     def invalidate_paths(self) -> None:
         """Clear rendered paths and reset cache, forcing a full re-render on next update.
@@ -860,6 +1247,96 @@ class UrdfScene(
         Call this when switching tabs or when the path data has completely changed.
         """
         self._clear_path_state()
+
+    def update_playback_opacity(self) -> None:
+        """Fade completed elements to 50% opacity based on current_step_index.
+
+        Applies opacity to ALL element types: segments, tool actions,
+        non-editable waypoints, and editable targets.
+        Only touches items whose opacity actually changed.
+        """
+        step = simulation_state.current_step_index
+        prev = self._rendered_playback_step
+        n_rendered = len(self._rendered_segments)
+        has_any = (
+            n_rendered > 0
+            or self._rendered_tool_actions
+            or self._rendered_waypoints
+            or self._target_objects
+        )
+        if step == prev or not has_any:
+            return
+        self._rendered_playback_step = step
+
+        # --- Segments: only update indices that transitioned ---
+        if n_rendered > 0:
+            if prev >= 0:
+                lo, hi = min(prev, step), max(prev, step)
+                for i in range(lo, min(hi, n_rendered)):
+                    rs = self._rendered_segments[i]
+                    if rs is None or not rs.objects:
+                        continue
+                    opacity = 0.5 if (step > 0 and i < step) else 1.0
+                    for j, obj in enumerate(rs.objects):
+                        if j == 0 and rs.uses_vc:
+                            obj.material(None, opacity)
+                        else:
+                            c = rs.colors[j] if j < len(rs.colors) else ""
+                            obj.material(c, opacity)
+            else:
+                # First update — apply all segments
+                for i in range(n_rendered):
+                    rs = self._rendered_segments[i]
+                    if rs is None or not rs.objects:
+                        continue
+                    opacity = 0.5 if (step > 0 and i < step) else 1.0
+                    for j, obj in enumerate(rs.objects):
+                        if j == 0 and rs.uses_vc:
+                            obj.material(None, opacity)
+                        else:
+                            c = rs.colors[j] if j < len(rs.colors) else ""
+                            obj.material(c, opacity)
+
+        # --- Tool actions, waypoints, targets: only update items that transitioned ---
+        # An item at segment_index=s changed opacity iff it crossed the step boundary.
+        if prev >= 0:
+            lo, hi = min(prev, step), max(prev, step)
+        else:
+            lo, hi = 0, n_rendered  # first update — touch all
+
+        for ri in self._rendered_tool_actions:
+            if ri is None or not ri.objects or ri.segment_index < 0:
+                continue
+            if prev >= 0 and not (lo <= ri.segment_index < hi):
+                continue
+            opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
+            for obj in ri.objects:
+                obj.material("#FF9800", opacity)
+
+        for ri in self._rendered_waypoints:
+            if ri is None or not ri.objects or ri.segment_index < 0:
+                continue
+            if prev >= 0 and not (lo <= ri.segment_index < hi):
+                continue
+            opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
+            color = ri.fingerprint[2] if len(ri.fingerprint) > 2 else ""
+            for obj in ri.objects:
+                obj.material(color, opacity)
+
+        for td in self._target_objects.values():
+            seg_idx = td.get("segment_index", -1)
+            if seg_idx < 0:
+                continue
+            if prev >= 0 and not (lo <= seg_idx < hi):
+                continue
+            opacity = 0.5 if (step > 0 and seg_idx < step) else 1.0
+            color = td.get("color", "")
+            marker = td.get("marker")
+            if marker is not None:
+                try:
+                    marker.material(color, opacity)
+                except (RuntimeError, KeyError):
+                    pass
 
     # --------- Public API ---------
 
@@ -871,7 +1348,7 @@ class UrdfScene(
         """
         self._update_jog_ball_from_robot_state()
         self._update_envelope_from_robot_state()
-        self._update_tool_animation()
+        self.update_tool_animation()
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
         """Set a single joint axis value.
@@ -974,6 +1451,12 @@ class UrdfScene(
         if len(origin) != 3 or len(rpy) != 3:
             raise ValueError("origin and rpy must each have exactly 3 elements")
         self.tcp_offset.move(*origin).rotate(*rpy)
+
+    def apply_tool(self, tool_key: str, variant_key: str | None = None) -> None:
+        """Update TCP, swap meshes, and invalidate FK cache for a tool change."""
+        self.update_tcp_pose_from_tool(tool_key, variant_key=variant_key)
+        self.swap_tool_mesh(tool_key, variant_key=variant_key)
+        self.invalidate_fk_cache()
 
     def update_tcp_pose_from_tool(
         self,
@@ -1107,7 +1590,7 @@ class UrdfScene(
                             (float(rpy[0]), float(rpy[1]), float(rpy[2]))
                         )
 
-    def _update_tool_animation(self) -> None:
+    def update_tool_animation(self) -> None:
         """Animate tool meshes based on ``ToolSpec.motions`` descriptors.
 
         Each motion reads its DOF position from ``robot_state.tool_status.positions``

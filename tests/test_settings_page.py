@@ -173,11 +173,13 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
     )
     await user.should_see("Variant")
 
-    # NONE has no variants — selector should disappear
+    # NONE has no variants — selector should be disabled but still visible
     select_el.set_value("NONE")
     await asyncio.sleep(0.1)
-    with pytest.raises(AssertionError):
-        user.find(marker="select-tool-variant")
+    variant_select = user.find(marker="select-tool-variant")
+    assert len(variant_select.elements) == 1, (
+        "Variant selector should still be visible for NONE (but disabled)"
+    )
 
 
 @pytest.mark.integration
@@ -200,11 +202,13 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     x_inputs = user.find(kind=ui.number, content="X")
     assert len(x_inputs.elements) >= 1, "X offset input should exist"
 
-    # NONE — offset inputs should disappear
+    # NONE — offset inputs should still be visible (but disabled)
     select_el.set_value("NONE")
     await asyncio.sleep(0.1)
-    with pytest.raises(AssertionError):
-        user.find(kind=ui.number, content="X")
+    x_inputs = user.find(kind=ui.number, content="X")
+    assert len(x_inputs.elements) >= 1, (
+        "X offset input should still exist for NONE (but disabled)"
+    )
 
 
 @pytest.mark.integration

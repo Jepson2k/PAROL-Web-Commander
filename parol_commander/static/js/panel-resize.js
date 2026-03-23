@@ -825,6 +825,66 @@
 
     // ========== Public API ==========
 
+    /**
+     * Programmatically resize a panel to specific dimensions or a named preset.
+     * @param {string} panelId - Panel identifier (e.g. "gripper")
+     * @param {string|object} dims - "default", "camera", or {width, height}
+     */
+    function resizePanel(panelId, dims) {
+        const panelCfg = config.panels[panelId];
+        if (!panelCfg) return;
+
+        let width, height;
+        if (typeof dims === 'string') {
+            if (dims === 'camera') {
+                width = panelCfg.cameraWidth;
+                height = panelCfg.cameraHeight;
+            } else {
+                width = panelCfg.defaultWidth;
+                height = panelCfg.defaultHeight;
+            }
+        } else {
+            width = dims.width;
+            height = dims.height;
+        }
+
+        // Clamp to constraints
+        const maxW = getMaxWidth();
+        const maxH = getMaxHeight();
+        if (width) width = Math.max(panelCfg.minWidth || 200, Math.min(width, maxW));
+        if (height) height = Math.max(panelCfg.minHeight || 100, Math.min(height, maxH));
+
+        // Find container
+        const containerSelector = panelCfg.group === 'top'
+            ? config.selectors.topContainer
+            : config.selectors.bottomContainer;
+        const container = containerSelector ? document.querySelector(containerSelector) : null;
+
+        if (container) {
+            if (width) container.style.setProperty('width', width + 'px', 'important');
+            if (height) container.style.setProperty('height', height + 'px', 'important');
+        }
+
+        // Save to localStorage
+        const panel = document.querySelector(panelCfg.selector);
+        if (panel) {
+            savePanelSize(panel, width, height);
+        } else {
+            // Panel not in DOM yet — save directly
+            if (!panelSizes[panelId]) panelSizes[panelId] = {};
+            if (width) {
+                panelSizes[panelId].width = width;
+                document.documentElement.style.setProperty(`--panel-width-${panelId}`, width + 'px');
+            }
+            if (height) {
+                panelSizes[panelId].height = height;
+                document.documentElement.style.setProperty(`--panel-height-${panelId}`, height + 'px');
+            }
+            panelSizes[panelId].group = panelCfg.group;
+            savePanelSizes();
+        }
+    }
+
     window.PanelResize = {
         configure: configure,
         init: initAllPanels,
@@ -836,6 +896,7 @@
         onAppReady: onAppReady,
         getSavedSize: getSavedPanelSize,
         getActiveTabs: getActiveTabs,
+        resizePanel: resizePanel,
         clearAllSizes: function() {
             panelSizes = {};
             savePanelSizes();

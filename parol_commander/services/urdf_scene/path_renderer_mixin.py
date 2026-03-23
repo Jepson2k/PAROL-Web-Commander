@@ -20,6 +20,12 @@ _PI_ROTATION_RPY = [math.pi, 0.0, 0.0]
 _ZERO_ROTATION_RPY = [0.0, 0.0, 0.0]
 
 
+def _hex_to_rgb(hex_color: str) -> list[float]:
+    """Convert '#RRGGBB' to [r, g, b] floats in 0-1 range."""
+    h = hex_color.lstrip("#")
+    return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+
+
 class PathRendererMixin:
     """Mixin providing path segment rendering functionality."""
 
@@ -30,86 +36,94 @@ class PathRendererMixin:
         self,
         segment: PathSegment,
         point_pair_colors: list[str] | None = None,
-    ) -> tuple[list[Any], list[str]]:
-        """Render a path segment with optional dashing and direction arrows.
+        *,
+        opacity: float = 1.0,
+        force_dashed: bool = False,
+    ) -> tuple[list[Any], list[str], bool]:
+        """Render a path segment as a single polyline plus direction arrow cones.
 
         Args:
             segment: PathSegment object with points, color, is_dashed, show_arrows
             point_pair_colors: Optional per-point-pair colors (one per consecutive
                 point pair). If None, uses segment.color for all objects.
+            opacity: Material opacity (1.0 = fully opaque).
+            force_dashed: Force dashed rendering regardless of segment.is_dashed.
 
         Returns:
-            Tuple of (scene objects, display color per object)
+            Tuple of (scene objects, display color per object, uses_vertex_colors).
+            The first object is always the polyline (if any points exist).
         """
         objects: list[Any] = []
         object_colors: list[str] = []
         points = segment.points
         default_color = segment.color
-        is_dashed = segment.is_dashed
+        is_dashed = segment.is_dashed or force_dashed
         show_arrows = segment.show_arrows
+        uses_vertex_colors = False
 
         if len(points) < 2:
-            return objects, object_colors
+            return objects, object_colors, uses_vertex_colors
 
-        # Dash parameters
-        dash_length = 0.008  # 8mm dash
-        gap_length = 0.004  # 4mm gap
-        arrow_interval = 20  # Arrow every N point-pairs (density tracks speed)
+        arrow_distance = 0.020  # Arrow every 20mm of TCP arc-length
         arrow_scale = 0.003  # Arrow cone size
 
-        # Convert to numpy array once to avoid per-iteration allocation
         pts = np.asarray(points, dtype=np.float64)
+        pts_list = pts.tolist()
 
-        for i in range(len(points) - 1):
-            color = point_pair_colors[i] if point_pair_colors else default_color
+        # Build per-vertex colors if gradient is needed
+        vertex_colors = None
+        if point_pair_colors is not None:
+            uses_vertex_colors = True
+            # N points → N-1 pairs; each vertex gets the color of the pair it starts
+            # Last vertex gets the color of the last pair
+            vertex_colors = []
+            for i, hex_c in enumerate(point_pair_colors):
+                vertex_colors.append(_hex_to_rgb(hex_c))
+            # Add final vertex color (same as last pair)
+            vertex_colors.append(_hex_to_rgb(point_pair_colors[-1]))
 
-            p1 = pts[i]
-            p2 = pts[i + 1]
+        # Single polyline for the entire segment
+        line = ui.scene.polyline(
+            pts_list,
+            colors=vertex_colors,
+            dashed=is_dashed,
+            dash_size=0.008,
+            gap_size=0.004,
+        )
+        if vertex_colors:
+            # Enable vertex color mode (color=None tells Three.js to use vertex colors)
+            line.material(None, opacity)
+        else:
+            line.material(default_color, opacity)
+        objects.append(line)
+        object_colors.append(default_color)
 
-            segment_vec = p2 - p1
-            segment_length = float(np.linalg.norm(segment_vec))
+        # Direction arrow cones at uniform arc-length intervals
+        if show_arrows:
+            accum = 0.0
+            for i in range(1, len(points)):
+                d = float(np.linalg.norm(pts[i] - pts[i - 1]))
+                accum += d
+                if accum >= arrow_distance:
+                    seg_vec = pts[i] - pts[i - 1]
+                    seg_len = float(np.linalg.norm(seg_vec))
+                    if seg_len < 1e-6:
+                        continue
+                    direction = seg_vec / seg_len
+                    midpoint = (pts[i - 1] + pts[i]) * 0.5
+                    color = (
+                        point_pair_colors[min(i, len(point_pair_colors) - 1)]
+                        if point_pair_colors
+                        else default_color
+                    )
+                    cone = self._create_direction_cone(
+                        midpoint, direction, arrow_scale, color, opacity
+                    )
+                    objects.append(cone)
+                    object_colors.append(color)
+                    accum = 0.0
 
-            if segment_length < 1e-6:
-                continue
-
-            direction = segment_vec / segment_length
-
-            if is_dashed:
-                # Draw dashed line segments
-                current_pos = 0.0
-                drawing = True  # Start with a dash
-
-                while current_pos < segment_length:
-                    if drawing:
-                        dash_end = min(current_pos + dash_length, segment_length)
-                        start = p1 + direction * current_pos
-                        end = p1 + direction * dash_end
-                        line = ui.scene.line(start, end)
-                        line.material(color)
-                        objects.append(line)
-                        object_colors.append(color)
-                        current_pos = dash_end
-                    else:
-                        # Skip gap
-                        current_pos += gap_length
-                    drawing = not drawing
-            else:
-                # Draw solid line
-                line = ui.scene.line(p1, p2)
-                line.material(color)
-                objects.append(line)
-                object_colors.append(color)
-
-            # Add direction arrows at regular point intervals
-            if show_arrows and i % arrow_interval == 0:
-                midpoint = (p1 + p2) * 0.5
-                cone = self._create_direction_cone(
-                    midpoint, direction, arrow_scale, color
-                )
-                objects.append(cone)
-                object_colors.append(color)
-
-        return objects, object_colors
+        return objects, object_colors, uses_vertex_colors
 
     def _create_direction_cone(
         self,
@@ -117,18 +131,9 @@ class PathRendererMixin:
         direction: np.ndarray,
         scale: float,
         color: str,
+        opacity: float = 0.9,
     ) -> Any:
-        """Create a small cone pointing in the given direction.
-
-        Args:
-            position: [x, y, z] position for the cone
-            direction: [dx, dy, dz] normalized direction vector
-            scale: Size of the cone
-            color: Hex color for the cone
-
-        Returns:
-            Scene cone object
-        """
+        """Create a small cone pointing in the given direction."""
         cross = np.cross(_DEFAULT_CONE_AXIS, direction)
         dot = np.dot(_DEFAULT_CONE_AXIS, direction)
 
@@ -147,13 +152,13 @@ class PathRendererMixin:
             top_radius=0.0,
             bottom_radius=scale,
             height=scale * 2,
-            radial_segments=8,
+            radial_segments=24,
             height_segments=1,
             wireframe=False,
         )
         cone.move(*position)
         cone.rotate(*rpy)
-        cone.material(color, 0.9)
+        cone.material(color, opacity)
 
         return cone
 
@@ -162,23 +167,37 @@ class PathRendererMixin:
         action: ToolAction,
         color: str = "#FF9800",
     ) -> list[Any]:
-        """Render a tool action as arrows at the TCP position.
+        """Render a tool action as arrows at the TCP position(s).
 
-        For linear motions: paired arrows showing jaw direction.
-        For rotary motions: not yet implemented (ignored).
-
-        Args:
-            action: ToolAction with tcp_pose, motions, target_positions, etc.
-            color: Hex color for the arrows.
-
-        Returns:
-            List of scene objects created.
+        If the action has a tcp_path (multiple TCP samples over the action
+        duration), renders cascading jaw-tip arrows that show the gripper
+        closing while the arm moves.  Otherwise falls back to a single
+        pair of arrows at the final TCP position.
         """
         objects: list[Any] = []
         if action.tcp_pose is None or len(action.tcp_pose) < 3:
             return objects
 
+        # Use cascading path if available, otherwise single-point
+        if action.tcp_path and len(action.tcp_path) >= 2:
+            return self._render_cascading_tool_action(action, color)
+
+        return self._render_single_tool_action(action, color)
+
+    def _render_single_tool_action(
+        self,
+        action: ToolAction,
+        color: str,
+    ) -> list[Any]:
+        """Render arrows at a single TCP position (fallback when no tcp_path)."""
+        objects: list[Any] = []
+        assert action.tcp_pose is not None
         px, py, pz = action.tcp_pose[0], action.tcp_pose[1], action.tcp_pose[2]
+
+        has_rotation = len(action.tcp_pose) >= 6
+        if has_rotation:
+            rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
+            tcp_rot = ScipyRotation.from_euler("xyz", [rx, ry, rz])
 
         for idx, motion in enumerate(action.motions):
             target = (
@@ -186,47 +205,211 @@ class PathRendererMixin:
                 if idx < len(action.target_positions)
                 else 0.0
             )
-            axis = motion.get("axis", (0, 0, 1))
+            local_axis = np.asarray(motion.get("axis", (0, 0, 1)), dtype=np.float64)
+            if has_rotation:
+                world_axis = tcp_rot.apply(local_axis)
+            else:
+                world_axis = local_axis
 
             if motion.get("type") == "linear":
                 travel = motion.get("travel_m", 0.01)
+                symmetric = motion.get("symmetric", True)
+                jaw_travel = travel if symmetric else travel * 0.5
                 arrow_length = travel * 0.5
-                head_length = min(0.003, arrow_length * 0.4)
-                head_width = head_length
+                head_length = arrow_length * 0.5
+                head_width = head_length * 1.5
+                color_int = int(color.lstrip("#"), 16)
+                shaft_width = 3.0
+                # Use start position for jaw offset (where jaws are now)
+                start_val = (
+                    action.start_positions[idx]
+                    if idx < len(action.start_positions)
+                    else (0.0 if target > 0.5 else 1.0)
+                )
+                closing = target > start_val
+                jaw_offset = jaw_travel * (1.0 - start_val)
 
-                # Opening (target=1) → outward arrows, closing (target=0) → inward arrows
-                outward = target > 0.5
-
-                if motion.get("symmetric", True):
+                if symmetric:
                     for sign in [1.0, -1.0]:
-                        d = [axis[0] * sign, axis[1] * sign, axis[2] * sign]
-                        if not outward:
-                            d = [-d[0], -d[1], -d[2]]
-                        offset = travel * 0.5 * sign
+                        d = world_axis * sign
+                        if closing:
+                            d = -d  # point inward when closing
+                        # Shift base outward for inward arrows so head lands at jaw
+                        origin_dist = (
+                            jaw_offset + arrow_length if closing else jaw_offset
+                        ) * sign
                         arrow_origin = [
-                            px + axis[0] * offset,
-                            py + axis[1] * offset,
-                            pz + axis[2] * offset,
+                            px + world_axis[0] * origin_dist,
+                            py + world_axis[1] * origin_dist,
+                            pz + world_axis[2] * origin_dist,
                         ]
                         arrow = ui.scene.arrow_helper(
-                            direction=d,
+                            direction=d.tolist(),
                             origin=arrow_origin,
                             length=arrow_length,
+                            color=color_int,
                             head_length=head_length,
                             head_width=head_width,
+                            line_width=shaft_width,
                         )
-                        arrow.material(color, 0.9)
                         objects.append(arrow)
                 else:
-                    d = list(axis) if outward else [-axis[0], -axis[1], -axis[2]]
+                    d = -world_axis if closing else world_axis
+                    origin_dist = jaw_offset + arrow_length if closing else jaw_offset
+                    origin = [
+                        px + world_axis[0] * origin_dist,
+                        py + world_axis[1] * origin_dist,
+                        pz + world_axis[2] * origin_dist,
+                    ]
                     arrow = ui.scene.arrow_helper(
-                        direction=d,
-                        origin=[px, py, pz],
+                        direction=d.tolist(),
+                        origin=origin,
                         length=arrow_length,
+                        color=color_int,
                         head_length=head_length,
                         head_width=head_width,
+                        line_width=shaft_width,
                     )
-                    arrow.material(color, 0.9)
+                    objects.append(arrow)
+
+        return objects
+
+    def _render_cascading_tool_action(
+        self,
+        action: ToolAction,
+        color: str,
+    ) -> list[Any]:
+        """Render cascading jaw-tip arrows along the TCP path.
+
+        Arrows are placed at consistent time intervals along tcp_path.
+        Each arrow pair shows where the jaw tips physically are in 3D space
+        at that time step — both the arm translation and jaw closing are
+        interpolated simultaneously.
+        """
+        objects: list[Any] = []
+        assert action.tcp_pose is not None and action.tcp_path is not None
+        path = action.tcp_path
+        n = len(path)
+
+        # Use rotation from tcp_pose (6-element) for axis transformation
+        has_rotation = len(action.tcp_pose) >= 6
+        if has_rotation:
+            rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
+            tcp_rot = ScipyRotation.from_euler("xyz", [rx, ry, rz])
+
+        color_int = int(color.lstrip("#"), 16)
+
+        for idx, motion in enumerate(action.motions):
+            if motion.get("type") != "linear":
+                continue
+
+            target = (
+                action.target_positions[idx]
+                if idx < len(action.target_positions)
+                else 0.0
+            )
+            local_axis = np.asarray(motion.get("axis", (0, 0, 1)), dtype=np.float64)
+            if has_rotation:
+                world_axis = tcp_rot.apply(local_axis)
+            else:
+                world_axis = local_axis
+
+            travel = motion.get("travel_m", 0.01)
+            symmetric = motion.get("symmetric", True)
+
+            jaw_travel = travel if symmetric else travel * 0.5
+            arrow_scale = travel * 0.3
+            head_length = arrow_scale * 0.5
+            head_width = head_length * 1.5
+
+            # Use actual start/target positions for interpolation
+            # Position 0=open (offset=jaw_travel), 1=closed (offset=0)
+            start_val = (
+                action.start_positions[idx]
+                if idx < len(action.start_positions)
+                else (0.0 if target > 0.5 else 1.0)
+            )
+
+            # Space arrows by combined TCP + jaw movement distance.
+            # Minimum spacing = 3× arrow scale so arrows don't overlap.
+            min_spacing = arrow_scale * 3
+            last_px, last_py, last_pz = path[0][0], path[0][1], path[0][2]
+            last_jaw = jaw_travel * (1.0 - start_val)
+            accum = min_spacing  # place first arrow immediately
+            moving_inward = target > start_val
+
+            for i in range(n):
+                t = i / max(1, n - 1)  # 0.0 → 1.0
+
+                pos = start_val * (1.0 - t) + target * t
+                jaw_offset = jaw_travel * (1.0 - pos)
+
+                pt = path[i]
+                px, py, pz = pt[0], pt[1], pt[2]
+
+                # Combined distance: TCP movement + jaw offset change
+                tcp_dist = (
+                    (px - last_px) ** 2 + (py - last_py) ** 2 + (pz - last_pz) ** 2
+                ) ** 0.5
+                jaw_dist = abs(jaw_offset - last_jaw)
+                accum += tcp_dist + jaw_dist
+                last_px, last_py, last_pz = px, py, pz
+                last_jaw = jaw_offset
+
+                is_first = i == 0
+                is_last = i == n - 1
+                if not is_first and not is_last and accum < min_spacing:
+                    continue
+                accum = 0.0
+
+                opacity = 0.3 + 0.7 * t
+                if symmetric:
+                    for sign in [1.0, -1.0]:
+                        d = world_axis * sign
+                        if moving_inward:
+                            d = -d  # point inward
+                        # Offset the origin so the arrow HEAD is at the jaw
+                        # position. For inward arrows, shift base outward by
+                        # arrow_scale so the head lands at jaw_offset.
+                        origin_offset = (
+                            jaw_offset + arrow_scale if moving_inward else jaw_offset
+                        )
+                        tip_pos = [
+                            px + world_axis[0] * origin_offset * sign,
+                            py + world_axis[1] * origin_offset * sign,
+                            pz + world_axis[2] * origin_offset * sign,
+                        ]
+                        arrow = ui.scene.arrow_helper(
+                            direction=d.tolist(),
+                            origin=tip_pos,
+                            length=arrow_scale,
+                            color=color_int,
+                            head_length=head_length,
+                            head_width=head_width,
+                            line_width=2.0,
+                        )
+                        arrow.material(color, opacity)
+                        objects.append(arrow)
+                else:
+                    d = world_axis if not moving_inward else -world_axis
+                    origin_offset = (
+                        jaw_offset + arrow_scale if moving_inward else jaw_offset
+                    )
+                    tip_pos = [
+                        px + world_axis[0] * origin_offset,
+                        py + world_axis[1] * origin_offset,
+                        pz + world_axis[2] * origin_offset,
+                    ]
+                    arrow = ui.scene.arrow_helper(
+                        direction=d.tolist(),
+                        origin=tip_pos,
+                        length=arrow_scale,
+                        color=color_int,
+                        head_length=head_length,
+                        head_width=head_width,
+                        line_width=2.0,
+                    )
+                    arrow.material(color, opacity)
                     objects.append(arrow)
 
         return objects

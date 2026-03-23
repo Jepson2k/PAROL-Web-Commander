@@ -1,16 +1,16 @@
 import logging
+import time
 from collections.abc import Callable
 
 from nicegui import ui
 
 from waldoctl import (
-    ActivationType,
     ElectricGripperTool,
     GripperTool,
-    LinearMotion,
     RobotClient,
 )
 
+from parol_commander.constants import config
 from parol_commander.services.camera_service import camera_service
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.state import robot_state, ui_state
@@ -19,8 +19,19 @@ logger = logging.getLogger(__name__)
 
 # Chart colors
 _CLR_POS = "#2dd4bf"  # teal-400
-_CLR_FORCE = "#f87171"  # red-400
 _CLR_CUR = "#fbbf24"  # amber-400
+
+
+def _make_mark_line(value: float, color: str, name: str) -> dict:
+    return {
+        "silent": True,
+        "symbol": "none",
+        "animation": False,
+        "lineStyle": {"type": "dashed", "color": color, "width": 1},
+        "label": {"show": False},
+        "data": [{"yAxis": value, "name": name}],
+    }
+
 
 # Tool state dot colors (by ToolStatus.state int)
 _STATE_DOTS: dict[int, tuple[str, str]] = {
@@ -36,9 +47,15 @@ class GripperPage:
 
     def __init__(self, client: RobotClient) -> None:
         self.client = client
-        self._timers: list[ui.timer] = []
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
+        # Live slider state
+        self._slider_dragging: bool = False
+        self._slider_drag_ts: float = 0.0
+        self._last_slider_send: float = 0.0
+        self._user_dragging: bool = False
+        # Target position initialized flag
+        self._target_initialized: bool = False
 
     # ---- Helpers ----
 
@@ -75,439 +92,486 @@ class GripperPage:
             logger.error("Gripper %s failed: %s", label.lower(), e)
             ui.notify(f"{label} failed: {e}", color="negative")
 
-    async def _grip_open(self) -> None:
-        await self._grip_set(0.0, "Open")
-
-    async def _grip_close(self) -> None:
-        await self._grip_set(1.0, "Close")
-
-    async def _grip_cal(self) -> None:
-        try:
-            tool = self._get_active_gripper()
-            if not isinstance(tool, ElectricGripperTool):
-                ui.notify("Only electric grippers support calibration", color="warning")
-                return
-            await tool.calibrate()
-            motion_recorder.record_action("gripper", calibrate=True)
-        except Exception as e:
-            logger.error("Gripper calibrate failed: %s", e)
-            ui.notify(f"Calibrate failed: {e}", color="negative")
-
-    async def _grip_move(self) -> None:
-        pos = self._pos_slider.value / 100.0 if self._pos_slider else 0.0
-        await self._grip_set(pos, "Move")
-
-    def _get_tool_info_text(self) -> str:
-        tool = self._get_active_gripper()
-        if tool is None:
-            return ""
-        parts: list[str] = []
-        motions = tool.motions
-        linear: LinearMotion | None = None
-        for m in motions:
-            if isinstance(m, LinearMotion):
-                linear = m
-                break
-        if linear is not None:
-            stroke_mm = linear.travel_m * 1000 * (2 if linear.symmetric else 1)
-            parts.append(f"Stroke: {stroke_mm:.1f} mm")
-            if tool.activation_type == ActivationType.BINARY:
-                if linear.estimated_speed_m_s:
-                    travel_time_ms = (
-                        linear.travel_m / linear.estimated_speed_m_s
-                    ) * 1000
-                    parts.append(f"Travel: ~{travel_time_ms:.0f} ms")
-        return " | ".join(parts)
-
     # ---- Build ----
 
     def build(self) -> None:
         self._pos_slider: ui.slider | None = None
         self._cur_slider: ui.slider | None = None
-        self._chart: ui.echart | None = None
+        self._combined_chart: ui.echart | None = None
+        self._camera_card: ui.card | None = None
+        self._camera_image: ui.interactive_image | None = None
+        self._last_camera_active: bool = camera_service.active
 
+        # Status elements (updated from status consumer)
+        self._state_dot: ui.icon | None = None
+        self._state_label: ui.label | None = None
+        self._part_dot: ui.icon | None = None
+        self._engaged_dot: ui.icon | None = None
+        self._fault_label: ui.label | None = None
+
+        # Dirty checking for status updates
+        self._last_status_key: tuple = ()
+
+        # Current max for chart Y axis — set when chart is built lazily
+        self._current_max: float = 0.0
+        # Dirty flag for markLine-only changes (avoids competing update() calls)
+        self._mark_lines_dirty: bool = False
+
+        _tile = "bg-neutral-800 p-2 rounded"
         with ui.column().classes("w-full gap-2"):
-            # Header row
-            self._build_header()
-            # Camera
-            self._build_camera_section()
-            # Chart
-            self._build_chart()
-            # Status + Controls
-            self._build_status_and_controls()
-
-    # ---- Header ----
-
-    def _build_header(self) -> None:
-        with ui.row().classes("items-center gap-4 w-full"):
-            (
-                ui.label("Tool: -")
-                .bind_text_from(
-                    robot_state,
-                    "tool_key",
-                    backward=lambda v: f"Tool: {v}",
-                )
-                .classes("text-sm font-medium")
+            # Camera section (visible when camera is active)
+            self._camera_card = (
+                ui.card()
+                .props("flat")
+                .classes("w-full p-0 overflow-hidden rounded bg-neutral-800")
             )
-            (
-                ui.label("")
-                .bind_text_from(
-                    robot_state,
-                    "tool_key",
-                    backward=lambda _: self._get_tool_info_text(),
-                )
-                .bind_visibility_from(
-                    robot_state,
-                    "tool_key",
-                    backward=lambda k: k != "NONE" and bool(self._get_tool_info_text()),
-                )
-                .classes("text-xs text-[var(--ctk-muted)]")
-            )
-
-    # ---- Camera ----
-
-    def _build_camera_section(self) -> None:
-        with ui.column().classes("w-full").mark("gripper-camera-section"):
-            if camera_service.active:
-                (
+            with self._camera_card:
+                self._camera_image = (
                     ui.interactive_image(
                         "/tool/camera/stream",
                         cross=True,
                     )
-                    .classes("w-full")
-                    .style("max-height: 240px; object-fit: contain;")
+                    .classes("w-full rounded")
+                    .mark("gripper-camera-section")
                 )
-            else:
-                with (
-                    ui.column()
-                    .classes("w-full items-center justify-center p-4 rounded-lg")
-                    .style(
-                        "min-height: 80px; background: color-mix(in srgb, var(--ctk-muted) 10%, transparent);"
-                    )
-                ):
-                    ui.label("No camera selected").classes(
-                        "text-sm text-[var(--ctk-muted)]"
-                    )
-                    ui.label(
-                        "Select a camera device in Settings to enable live feed."
-                    ).classes("text-xs text-[var(--ctk-muted)]")
-                    ui.label(
-                        "AI annotations: webcam \u2192 your script \u2192 pyvirtualcam \u2192 select virtual device"
-                    ).classes("text-xs text-[var(--ctk-muted)]")
-                    ui.label("Linux: sudo apt install v4l2loopback-dkms").classes(
-                        "text-xs text-[var(--ctk-muted)] font-mono"
-                    )
+            self._camera_card.set_visibility(camera_service.active)
 
-    # ---- Chart ----
+            with ui.row().classes("w-full gap-2 items-stretch"):
+                with (
+                    ui.card()
+                    .props("flat")
+                    .classes(f"flex-1 min-w-65 overflow-hidden {_tile}")
+                ):
+                    self._chart_column = ui.column().classes("w-full")
+                with ui.card().props("flat").classes(f"shrink-0 {_tile}"):
+                    self._build_status_column()
+                with ui.card().props("flat").classes(f"shrink-0 {_tile}"):
+                    self._build_controls_column()
+
+    # ---- Combined dual-axis chart ----
 
     def _build_chart(self) -> None:
-        self._chart = (
+        y_axis_left: dict = {
+            "type": "value",
+            "name": "%",
+            "nameTextStyle": {"fontSize": 11, "color": _CLR_POS},
+            "axisLabel": {"fontSize": 11, "color": _CLR_POS},
+            "splitLine": {"lineStyle": {"color": "rgba(128,128,128,0.15)"}},
+            "min": 0,
+            "max": 100,
+        }
+        y_axis_right: dict = {
+            "type": "value",
+            "name": "mA",
+            "nameTextStyle": {"fontSize": 11, "color": _CLR_CUR},
+            "axisLabel": {"fontSize": 11, "color": _CLR_CUR},
+            "splitLine": {"show": False},
+            "min": 0,
+        }
+        if self._current_max > 0:
+            y_axis_right["max"] = self._current_max
+
+        self._combined_chart = (
             ui.echart(
                 {
-                    "animation": False,
-                    "renderer": "canvas",
+                    "animation": True,
+                    "animationDuration": 50,
+                    "animationEasing": "linear",
+                    "renderer": "svg",
                     "grid": {
-                        "top": 28,
-                        "right": 52,
-                        "bottom": 24,
-                        "left": 48,
+                        "top": 24,
+                        "right": 48,
+                        "bottom": 4,
+                        "left": 38,
                         "containLabel": False,
                     },
                     "legend": {
-                        "data": ["Position %", "Force N", "Current mA"],
+                        "data": ["Position", "Current"],
                         "top": 0,
-                        "textStyle": {"fontSize": 10, "color": "var(--ctk-text)"},
-                        "itemWidth": 14,
+                        "left": 40,
+                        "textStyle": {"fontSize": 11, "color": "var(--ctk-text)"},
+                        "itemWidth": 12,
                         "itemHeight": 8,
                     },
                     "xAxis": {
                         "type": "time",
                         "axisLabel": {"show": False},
+                        "axisTick": {"show": False},
                         "splitLine": {"show": False},
-                        "axisLine": {"lineStyle": {"color": "var(--ctk-muted)"}},
+                        "axisLine": {"show": False},
                     },
-                    "yAxis": [
-                        {
-                            "type": "value",
-                            "name": "%/N",
-                            "nameTextStyle": {
-                                "fontSize": 9,
-                                "color": "var(--ctk-muted)",
-                            },
-                            "axisLabel": {"fontSize": 9, "color": "var(--ctk-muted)"},
-                            "splitLine": {
-                                "lineStyle": {"color": "rgba(128,128,128,0.15)"}
-                            },
-                            "min": 0,
-                        },
-                        {
-                            "type": "value",
-                            "name": "mA",
-                            "nameTextStyle": {
-                                "fontSize": 9,
-                                "color": "var(--ctk-muted)",
-                            },
-                            "axisLabel": {"fontSize": 9, "color": "var(--ctk-muted)"},
-                            "splitLine": {"show": False},
-                            "min": 0,
-                        },
-                    ],
+                    "yAxis": [y_axis_left, y_axis_right],
                     "series": [
                         {
-                            "name": "Position %",
+                            "name": "Position",
                             "type": "line",
                             "yAxisIndex": 0,
                             "showSymbol": False,
+                            "smooth": True,
                             "lineStyle": {"width": 1.5, "color": _CLR_POS},
                             "itemStyle": {"color": _CLR_POS},
+                            "markLine": _make_mark_line(0, _CLR_POS, "target"),
                             "data": [],
                         },
                         {
-                            "name": "Force N",
-                            "type": "line",
-                            "yAxisIndex": 0,
-                            "showSymbol": False,
-                            "lineStyle": {"width": 1.5, "color": _CLR_FORCE},
-                            "itemStyle": {"color": _CLR_FORCE},
-                            "data": [],
-                        },
-                        {
-                            "name": "Current mA",
+                            "name": "Current",
                             "type": "line",
                             "yAxisIndex": 1,
                             "showSymbol": False,
+                            "smooth": True,
                             "lineStyle": {"width": 1.5, "color": _CLR_CUR},
                             "itemStyle": {"color": _CLR_CUR},
+                            "markLine": _make_mark_line(0, _CLR_CUR, "limit"),
                             "data": [],
                         },
                     ],
                 }
             )
             .classes("w-full")
-            .style("height: 160px;")
+            .style("height: 100px;")
             .mark("gripper-chart")
         )
 
-        t = ui.timer(0.1, self._update_chart)
-        self._timers.append(t)
+    def _ensure_chart_built(self) -> bool:
+        """Build chart lazily when tool is first available. Returns True if chart exists."""
+        if self._combined_chart is not None:
+            return True
+        tool = self._get_active_gripper()
+        if tool is None:
+            return False
+        # Compute current max from tool spec
+        if isinstance(tool, ElectricGripperTool):
+            for ch in tool.channel_descriptors:
+                if ch.name == "Current" and ch.max > 0:
+                    self._current_max = ch.max
+        with self._chart_column:
+            self._build_chart()
+        return True
 
-    def _update_chart(self) -> None:
-        if self._chart is None:
+    def update_chart(self) -> None:
+        if not self._ensure_chart_built():
             return
-        timestamps, positions, forces, currents = (
-            robot_state.tool_time_series.get_series()
-        )
-        if not timestamps:
+        result = robot_state.tool_time_series.get_series_if_dirty()
+        if result is None and not self._mark_lines_dirty:
             return
-        # Convert timestamps to JS-epoch (ms) for ECharts time axis
-        pos_data = [
-            [t * 1000, round(p * 100, 1)] for t, p in zip(timestamps, positions)
-        ]
-        frc_data = [[t * 1000, round(f, 2)] for t, f in zip(timestamps, forces)]
-        cur_data = [[t * 1000, round(c, 1)] for t, c in zip(timestamps, currents)]
-        self._chart.run_chart_method(
-            "setOption",
-            {"series": [{"data": pos_data}, {"data": frc_data}, {"data": cur_data}]},
+        self._mark_lines_dirty = False
+
+        target_pos_pct = round(ui_state.tool_target_position * 100, 1)
+        current_limit = ui_state.gripper_current
+
+        if result is not None:
+            timestamps, positions, currents = result
+            ts_ms = [t * 1000 for t in timestamps]
+            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
+                "setOption",
+                {
+                    "series": [
+                        {
+                            "data": [
+                                [t, round(p * 100, 1)] for t, p in zip(ts_ms, positions)
+                            ],
+                            "markLine": _make_mark_line(
+                                target_pos_pct, _CLR_POS, "target"
+                            ),
+                        },
+                        {
+                            "data": [[t, round(c, 1)] for t, c in zip(ts_ms, currents)],
+                            "markLine": _make_mark_line(
+                                current_limit, _CLR_CUR, "limit"
+                            ),
+                        },
+                    ]
+                },
+            )
+        else:
+            # markLines-only update (no new time series data)
+            self._combined_chart.run_chart_method(  # ty: ignore[unresolved-attribute]
+                "setOption",
+                {
+                    "series": [
+                        {
+                            "markLine": _make_mark_line(
+                                target_pos_pct, _CLR_POS, "target"
+                            )
+                        },
+                        {"markLine": _make_mark_line(current_limit, _CLR_CUR, "limit")},
+                    ]
+                },
+            )
+
+    def set_target_position(self, position: float) -> None:
+        """Set target position and update the slider. Called by control panel actions."""
+        ui_state.tool_target_position = position
+        if self._pos_slider is not None:
+            self._pos_slider.set_value(round(position * 100))
+        self._update_mark_lines()
+
+    def set_target_current(self, current: int) -> None:
+        """Set target current and update the slider. Called by control panel adjust."""
+        ui_state.gripper_current = current
+        if self._cur_slider is not None:
+            self._cur_slider.set_value(current)
+        self._update_mark_lines()
+
+    def _update_mark_lines(self) -> None:
+        """Mark markLines dirty so the next update_chart() tick pushes them."""
+        self._mark_lines_dirty = True
+
+    # ---- Live slider ----
+
+    def _on_slider_pan(self, e) -> None:
+        """Track user drag state via Quasar pan event (not fired on programmatic changes)."""
+        self._user_dragging = e.args in ("start", True)
+
+    async def _on_slider_drag(self, e) -> None:
+        """Throttled handler for continuous slider drag — streams position at jog rate."""
+        if not self._user_dragging:
+            return
+        self._slider_drag_ts = time.monotonic()
+        self._slider_dragging = True
+        now = self._slider_drag_ts
+        if now - self._last_slider_send < self._slider_interval:
+            return
+        self._last_slider_send = now
+        value = e.value
+        pos = value / 100.0
+        ui_state.tool_target_position = pos
+        self._update_mark_lines()
+        await self._grip_set(pos, "Set")
+
+    async def _on_current_slider_change(self, e) -> None:
+        """Sync current slider value to ui_state, update markLine, and send to gripper."""
+        value = e.value
+        ui_state.gripper_current = int(value)
+        self._mark_lines_dirty = True
+        if not self._user_dragging:
+            return
+        # Send position command with current target position and updated current limit
+        tool = self._get_active_gripper()
+        if isinstance(tool, ElectricGripperTool):
+            try:
+                await tool.set_position(
+                    ui_state.tool_target_position,
+                    current=int(value),
+                )
+            except Exception as exc:
+                logger.debug("Current limit update failed: %s", exc)
+
+    # ---- Status updates (called from status consumer) ----
+
+    def update_status(self) -> None:
+        """Update all status fields from robot_state. Called from status consumer."""
+        # Sync camera card visibility and panel size
+        if self._camera_card is not None:
+            cam_active = camera_service.active
+            self._camera_card.set_visibility(cam_active)
+            if cam_active != self._last_camera_active:
+                self._last_camera_active = cam_active
+                preset = "camera" if cam_active else "default"
+                ui.run_javascript(f'PanelResize.resizePanel("gripper", "{preset}")')
+                # Force MJPEG stream reconnect by re-setting the source
+                if cam_active and self._camera_image is not None:
+                    self._camera_image.set_source(
+                        f"/tool/camera/stream?t={time.time()}"
+                    )
+
+        ts = robot_state.tool_status
+        status_key = (
+            ts.state,
+            robot_state.tool_position,
+            robot_state.tool_current,
+            ts.part_detected,
+            ts.engaged,
+            ts.fault_code,
         )
+        if status_key == self._last_status_key:
+            return
+        self._last_status_key = status_key
+
+        # Initialize target from feedback on first status
+        if not self._target_initialized and robot_state.tool_position > 0:
+            self._target_initialized = True
+            ui_state.tool_target_position = robot_state.tool_position
+            if self._pos_slider is not None:
+                self._pos_slider.set_value(round(robot_state.tool_position * 100))
+
+        # State dot + label
+        s = ts.state
+        color, label = _STATE_DOTS.get(s, _STATE_DOTS[0])
+        if self._state_dot is not None:
+            self._state_dot.style(f"font-size: 10px; color: {color};")
+        if self._state_label is not None:
+            self._state_label.text = label
+
+        # Part detected dot
+        if self._part_dot is not None:
+            part_color = (
+                "var(--color-emerald-400)" if ts.part_detected else "var(--ctk-muted)"
+            )
+            self._part_dot.style(f"font-size: 10px; color: {part_color};")
+
+        # Engaged dot
+        if self._engaged_dot is not None:
+            eng_color = "var(--color-emerald-400)" if ts.engaged else "var(--ctk-muted)"
+            self._engaged_dot.style(f"font-size: 10px; color: {eng_color};")
+
+        # Fault code
+        if self._fault_label is not None:
+            if ts.fault_code != 0:
+                self._fault_label.text = f"Fault: {ts.fault_code}"
+                self._fault_label.set_visibility(True)
+            else:
+                self._fault_label.set_visibility(False)
 
     # ---- Status + Controls ----
-
-    def _build_status_and_controls(self) -> None:
-        with ui.row().classes("w-full gap-4 items-start"):
-            self._build_status_column()
-            self._build_controls_column()
-
     def _build_status_column(self) -> None:
-        with ui.column().classes("gap-1").style("min-width: 90px;"):
-            # State dot + label
-            with ui.row().classes("items-center gap-1"):
-                dot = ui.icon("circle").classes("text-xs").style("font-size: 10px;")
+        _lbl = "text-xs text-[var(--ctk-muted)]"
+        _dot_s = "font-size: 10px;"
 
-                def _poll_state():
-                    s = robot_state.tool_status.state
-                    color, label = _STATE_DOTS.get(s, _STATE_DOTS[0])
-                    dot.style(f"color: {color}; font-size: 10px;")
-                    state_lbl.text = label
-
-                state_lbl = ui.label("Off").classes("text-xs")
-                t = ui.timer(0.5, _poll_state)
-                self._timers.append(t)
+        with ui.grid(columns="auto auto 3.5rem").classes(
+            "gap-x-1 gap-y-1 items-center"
+        ):
+            # State
+            ui.label("State").classes(_lbl)
+            self._state_dot = ui.icon("circle").style(
+                f"{_dot_s} color: var(--ctk-muted);"
+            )
+            self._state_label = ui.label("Off").classes("text-xs")
 
             # Position
+            ui.label("Position").classes(_lbl)
+            ui.icon("circle").style(f"{_dot_s} color: {_CLR_POS};")
             (
-                ui.label("0%")
-                .bind_text_from(
-                    robot_state,
-                    "tool_position",
-                    backward=lambda v: f"{v * 100:.0f}%",
-                )
+                ui.label("0 %")
                 .classes("text-sm font-medium")
-            )
-
-            # Force (estimated)
-            (
-                ui.label("~0.0 N")
                 .bind_text_from(
-                    robot_state,
-                    "tool_force",
-                    backward=lambda v: f"~{v:.1f} N",
+                    robot_state, "tool_position", backward=lambda v: f"{v * 100:.0f} %"
                 )
-                .classes("text-xs text-[var(--ctk-muted)]")
-                .tooltip("Estimated force (derived from current)")
             )
 
-            # Current (primary)
+            # Current
+            ui.label("Current").classes(_lbl)
+            ui.icon("circle").style(f"{_dot_s} color: {_CLR_CUR};")
             (
                 ui.label("0 mA")
-                .bind_text_from(
-                    robot_state,
-                    "tool_current",
-                    backward=lambda v: f"{v:.0f} mA",
-                )
                 .classes("text-sm")
+                .bind_text_from(
+                    robot_state, "tool_current", backward=lambda v: f"{v:.0f} mA"
+                )
             )
 
             # Part detected
-            with ui.row().classes("items-center gap-1"):
-                part_dot = (
-                    ui.icon("circle")
-                    .classes("text-xs")
-                    .style("font-size: 8px; color: var(--ctk-muted);")
-                )
+            ui.label("Part").classes(_lbl)
+            self._part_dot = ui.icon("circle").style(
+                f"{_dot_s} color: var(--ctk-muted);"
+            )
+            ui.label()
 
-                # Update dot color via timer since icon has no bind_style_from
-                def _update_part_dot():
-                    color = (
-                        "var(--color-emerald-400)"
-                        if robot_state.tool_part_detected
-                        else "var(--ctk-muted)"
-                    )
-                    part_dot.style(f"font-size: 8px; color: {color};")
+            # Engaged
+            ui.label("Engaged").classes(_lbl)
+            self._engaged_dot = ui.icon("circle").style(
+                f"{_dot_s} color: var(--ctk-muted);"
+            )
+            ui.label()
 
-                t = ui.timer(0.5, _update_part_dot)
-                self._timers.append(t)
-                ui.label("Part").classes("text-xs text-[var(--ctk-muted)]")
+            # Fault code
+            self._fault_label = ui.label("").classes(
+                "text-xs text-[var(--color-red-400)] col-span-3"
+            )
+            self._fault_label.set_visibility(False)
 
     def _build_controls_column(self) -> None:
-        with ui.column().classes("flex-1 gap-2"):
+        with (
+            ui.grid(columns="auto 100px 2rem")
+            .classes("w-full gap-y-0 gap-x-4")
+            .style("align-items: center; justify-items: start;")
+        ):
             self._build_sliders()
-            self._build_action_buttons()
             self._build_speed_section()
 
     def _build_sliders(self) -> None:
-        # Position slider + input
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.label("Pos").classes("text-xs text-[var(--ctk-muted)] w-8")
-            self._pos_slider = ui.slider(min=0, max=100, value=4, step=1).classes(
-                "flex-1"
-            )
-            pos_input = (
-                ui.number(min=0, max=100, step=1, value=4)
-                .props("dense borderless")
-                .classes("w-14")
-            )
-            pos_input.bind_value(self._pos_slider, "value")
+        self._slider_interval = config.webapp_control_interval_s
+
+        # Position slider + input (target-only: init from feedback, then tracks target)
+        ui.label("Pos").classes("text-xs text-[var(--ctk-muted)]")
+        self._pos_slider = (
+            ui.slider(min=0, max=100, value=0, step=1)
+            .on_value_change(self._on_slider_drag)
+            .on("pan", self._on_slider_pan)
+        )
+        pos_input = ui.number(min=0, max=100, step=1, value=0).props("dense borderless")
+        pos_input.bind_value_from(self._pos_slider, "value")
 
         # Current slider + input (electric only)
-        with (
-            ui.row()
-            .classes("items-center gap-2 w-full")
-            .bind_visibility_from(
-                robot_state,
-                "tool_key",
-                backward=lambda k: k != "NONE" and self._is_electric(),
-            )
-        ):
-            ui.label("mA").classes("text-xs text-[var(--ctk-muted)] w-8")
-            self._cur_slider = ui.slider(min=0, max=1000, value=500, step=10).classes(
-                "flex-1"
-            )
-            cur_input = (
-                ui.number(min=0, max=1000, step=10, value=500)
-                .props("dense borderless")
-                .classes("w-14")
-            )
-            cur_input.bind_value(self._cur_slider, "value")
+        def _electric_visible(k: str) -> bool:
+            return k != "NONE" and self._is_electric()
 
-            # Update current slider range when tool changes
-            def _update_current_range() -> None:
-                if self._cur_slider is None:
-                    return
-                if robot_state.tool_key == self._last_current_tool_key:
-                    return
-                self._last_current_tool_key = robot_state.tool_key
-                tool = self._get_active_gripper()
-                if isinstance(tool, ElectricGripperTool):
-                    lo, hi = tool.current_range
-                    self._cur_slider._props["min"] = lo
-                    self._cur_slider._props["max"] = hi
-                    cur_input._props["min"] = lo
-                    cur_input._props["max"] = hi
-                    self._cur_slider.value = min(lo + 80, hi)
-                    self._cur_slider.update()
+        ui.label("mA").classes("text-xs text-[var(--ctk-muted)]").bind_visibility_from(
+            robot_state,
+            "tool_key",
+            backward=_electric_visible,
+        )
+        self._cur_slider = (
+            ui.slider(min=0, max=1000, value=500, step=10)
+            .on("pan", self._on_slider_pan)
+            .on_value_change(self._on_current_slider_change)
+        ).bind_visibility_from(
+            robot_state,
+            "tool_key",
+            backward=_electric_visible,
+        )
+        cur_input = ui.number(min=0, max=1000, step=10, value=500).props(
+            "dense borderless"
+        )
+        cur_input.bind_value_from(self._cur_slider, "value")
+        cur_input.bind_visibility_from(
+            robot_state,
+            "tool_key",
+            backward=_electric_visible,
+        )
 
-            self._current_range_listener = _update_current_range
-            robot_state.add_change_listener(_update_current_range)
+        # Update current slider range when tool changes
+        def _update_current_range() -> None:
+            if self._cur_slider is None:
+                return
+            if robot_state.tool_key == self._last_current_tool_key:
+                return
+            self._last_current_tool_key = robot_state.tool_key
+            tool = self._get_active_gripper()
+            if isinstance(tool, ElectricGripperTool):
+                lo, hi = tool.current_range
+                self._cur_slider._props["min"] = lo
+                self._cur_slider._props["max"] = hi
+                cur_input._props["min"] = lo
+                cur_input._props["max"] = hi
+                self._cur_slider.value = min(lo + 80, hi)
+                self._cur_slider.update()
 
-    def _build_action_buttons(self) -> None:
-        with ui.row().classes("items-center gap-1"):
-            ui.button(icon="open_in_full", on_click=self._grip_open).props(
-                "flat round dense"
-            ).tooltip("Open").mark("btn-grip-open")
-
-            ui.button(icon="close_fullscreen", on_click=self._grip_close).props(
-                "flat round dense"
-            ).tooltip("Close").mark("btn-grip-close")
-
-            # Calibrate (electric only)
-            (
-                ui.button(icon="build", on_click=self._grip_cal)
-                .props("flat round dense")
-                .tooltip("Calibrate")
-                .bind_visibility_from(
-                    robot_state,
-                    "tool_key",
-                    backward=lambda k: k != "NONE" and self._is_electric(),
-                )
-                .mark("btn-grip-cal")
-            )
-
-            # Move
-            ui.button(icon="play_arrow", on_click=self._grip_move).props(
-                "flat round dense"
-            ).tooltip("Move to position").mark("btn-grip-move")
+        self._current_range_listener = _update_current_range
+        robot_state.add_change_listener(_update_current_range)
+        _update_current_range()  # apply immediately if tool already set
 
     def _build_speed_section(self) -> None:
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.label("Speed").classes("text-xs text-[var(--ctk-muted)] w-12")
-            with ui.row().classes("items-center gap-1"):
-                spd_sync = (
-                    ui.checkbox("Sync", value=ui_state.gripper_speed_sync)
-                    .props("dense")
-                    .classes("text-xs")
-                )
-                spd_sync.bind_value(ui_state, "gripper_speed_sync")
-
+        ui.label("Speed").classes("text-xs text-[var(--ctk-muted)] pt-2")
+        with ui.row().classes("col-span-2 w-full items-center gap-2 no-wrap pt-2"):
+            (
+                ui.switch("Sync", value=ui_state.gripper_speed_sync)
+                .props("dense")
+                .bind_value(ui_state, "gripper_speed_sync")
+            )
             # Synced: show read-only system speed
             (
                 ui.label("")
-                .bind_text_from(
-                    ui_state,
-                    "jog_speed",
-                    backward=lambda v: f"{v}%",
-                )
+                .bind_text_from(ui_state, "jog_speed", backward=lambda v: f"{v}%")
                 .bind_visibility_from(ui_state, "gripper_speed_sync")
                 .classes("text-xs text-[var(--ctk-muted)]")
             )
-
             # Independent: slider
             (
                 ui.slider(min=1, max=100, value=ui_state.gripper_speed, step=1)
                 .bind_value(ui_state, "gripper_speed")
                 .bind_visibility_from(
-                    ui_state,
-                    "gripper_speed_sync",
-                    backward=lambda v: not v,
+                    ui_state, "gripper_speed_sync", backward=lambda v: not v
                 )
                 .classes("flex-1")
             )
@@ -515,9 +579,6 @@ class GripperPage:
     # ---- Cleanup ----
 
     def cleanup(self) -> None:
-        """Cancel timers and remove listeners when panel is destroyed."""
-        for t in self._timers:
-            t.cancel()
-        self._timers.clear()
+        """Remove listeners when panel is destroyed."""
         if self._current_range_listener is not None:
             robot_state.remove_change_listener(self._current_range_listener)

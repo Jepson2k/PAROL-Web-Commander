@@ -105,48 +105,45 @@ class AngleArray:
 
 
 class ToolTimeSeries:
-    """Rolling time series buffer for tool telemetry (position, force, current).
+    """Rolling time series buffer for tool telemetry (position, current).
 
-    Samples at 10 Hz from the 50 Hz status loop.  Chart timers read via
-    ``get_series()`` — no locking needed since both sides run on the
+    Every status update is pushed directly.  Chart reads via
+    ``get_series_if_dirty()`` — no locking needed since both sides run on the
     same asyncio event loop.
 
     Uses column-oriented storage to avoid zip-transpose on every read.
     """
 
-    __slots__ = ("_ts", "_pos", "_frc", "_cur", "_maxlen", "_interval", "_last_ts")
+    __slots__ = ("_ts", "_pos", "_cur", "_maxlen", "_dirty")
 
-    def __init__(self, max_points: int = 300) -> None:
+    def __init__(self, max_points: int = 500) -> None:
         self._maxlen = max_points
         self._ts: deque[float] = deque(maxlen=max_points)
         self._pos: deque[float] = deque(maxlen=max_points)
-        self._frc: deque[float] = deque(maxlen=max_points)
         self._cur: deque[float] = deque(maxlen=max_points)
-        self._interval: float = 0.1  # 10 Hz
-        self._last_ts: float = 0.0
+        self._dirty: bool = False
 
-    def maybe_push(self, position: float, force: float, current: float) -> bool:
-        """Append a sample if ≥ ``_interval`` seconds have elapsed."""
-        now = time.time()
-        if now - self._last_ts < self._interval:
-            return False
-        self._ts.append(now)
+    def push(self, position: float, current: float) -> None:
+        """Append a sample unconditionally."""
+        self._ts.append(time.time())
         self._pos.append(position)
-        self._frc.append(force)
         self._cur.append(current)
-        self._last_ts = now
-        return True
+        self._dirty = True
 
-    def get_series(self) -> tuple[list[float], list[float], list[float], list[float]]:
-        """Return ``(timestamps, positions, forces, currents)`` for charting."""
-        return list(self._ts), list(self._pos), list(self._frc), list(self._cur)
+    def get_series_if_dirty(
+        self,
+    ) -> tuple[list[float], list[float], list[float]] | None:
+        """Return ``(timestamps, positions, currents)`` if new samples exist."""
+        if not self._dirty:
+            return None
+        self._dirty = False
+        return list(self._ts), list(self._pos), list(self._cur)
 
     def clear(self) -> None:
         self._ts.clear()
         self._pos.clear()
-        self._frc.clear()
         self._cur.clear()
-        self._last_ts = 0.0
+        self._dirty = False
 
 
 @dataclass(slots=True)
@@ -156,6 +153,7 @@ class ProgramTarget:
     pose: list[float]  # [x, y, z, rx, ry, rz]
     move_type: str  # "cartesian", "pose", "joints"
     scene_object_id: str  # ID of the 3D marker object in the scene
+    is_valid: bool = True  # False when move failed (out of range, IK failure)
 
     @classmethod
     def from_dict(cls, d: dict) -> "ProgramTarget":
@@ -173,10 +171,19 @@ class PathSegment:
     move_type: str = "cartesian"  # "cartesian", "joints", "smooth_*"
     is_dashed: bool = True  # Whether to render as dashed line
     show_arrows: bool = True  # Whether to show direction arrows
+    joint_trajectory: list[list[float]] | None = (
+        None  # Full joint trajectory for smooth playback
+    )
     # Timing validation fields
     estimated_duration: float | None = None  # Computed duration from trajectory builder
     requested_duration: float | None = None  # User-requested duration
     timing_feasible: bool = True  # Whether motion achievable in requested time
+    checkpoint: str | None = (
+        None  # Checkpoint type (e.g. "home") — playback pauses here
+    )
+    is_travel: bool = (
+        False  # True for travel-to-start segments (before first motion command)
+    )
 
     @classmethod
     def from_dict(cls, d: dict) -> "PathSegment":
@@ -192,6 +199,15 @@ class ToolAction:
     activation_type: str
     line_number: int
     method: str
+    start_positions: tuple[
+        float, ...
+    ] = ()  # Jaw positions at start of action (0=open, 1=closed)
+    estimated_duration: float = 0.0
+    sleep_offset: float = (
+        0.0  # Seconds into preceding non-blocking move when tool fires
+    )
+    segment_index: int = -1  # Index of preceding path segment (-1 if none)
+    tcp_path: list[list[float]] | None = None  # TCP poses sampled over action duration
 
 
 @bindable_dataclass
@@ -208,6 +224,13 @@ class SimulationState(ChangeNotifierMixin):
     envelope_visible: bool = False
     envelope_mode: str = "auto"  # "auto" | "on" | "off"
     active_cursor_line: int = 0  # 1-indexed editor cursor line, 0 = none
+    sim_playback_time: float = 0.0  # Current playback position (seconds)
+    sim_total_duration: float = 0.0  # Total timeline duration (seconds)
+    sim_playback_active: bool = False  # True when simulation playback timer is ticking
+    sim_pose_override: bool = (
+        False  # True while scrubbing/playing — suppresses status-loop URDF updates
+    )
+    last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
     )
@@ -225,7 +248,11 @@ class SimulationState(ChangeNotifierMixin):
         self.envelope_visible = False
         self.envelope_mode = "auto"
         self.active_cursor_line = 0
-        self._change_listeners = []
+        self.sim_playback_time = 0.0
+        self.sim_total_duration = 0.0
+        self.sim_playback_active = False
+        self.sim_pose_override = False
+        self.last_teleport_ts = 0.0
 
 
 @bindable_dataclass
@@ -251,8 +278,8 @@ class RecordingState:
         "io_outputs",
         "io_estop",
         "tool_key",
+        "tool_variant_key",
         "tool_position",
-        "tool_force",
         "tool_current",
         "tool_engaged",
         "tool_part_detected",
@@ -293,8 +320,8 @@ class RobotState(ChangeNotifierMixin):
     io_outputs: list[int] = field(default_factory=list)
     io_estop: int = 1
     tool_key: str = "NONE"
+    tool_variant_key: str = ""
     tool_position: float = 0.0
-    tool_force: float = 0.0
     tool_current: float = 0.0
     tool_engaged: bool = False
     tool_part_detected: bool = False
@@ -337,8 +364,8 @@ class RobotState(ChangeNotifierMixin):
         self.io_outputs = []
         self.io_estop = 1
         self.tool_key = "NONE"
+        self.tool_variant_key = ""
         self.tool_position = 0.0
-        self.tool_force = 0.0
         self.tool_current = 0.0
         self.tool_engaged = False
         self.tool_part_detected = False
@@ -353,7 +380,6 @@ class RobotState(ChangeNotifierMixin):
         self.completed_index = -1
         self.last_update_ts = 0.0
         self.editing_mode = False
-        self._change_listeners = []
 
 
 @dataclass
@@ -408,6 +434,7 @@ class UiState:
     gripper_speed_sync: bool = True
     gripper_speed: int = 50
     gripper_current: int = 500
+    tool_target_position: float = 0.0
 
     # Camera device: -1 = disabled, int = device index, str = device name
     camera_device: int | str = -1
@@ -416,6 +443,8 @@ class UiState:
     response_log: Any = None
     io_page: Any = None
     gripper_page: Any = None
+    _gripper_tab: Any = None
+    _build_gripper_content: Any = None
 
     # Private storage for timers and panels (set post-build)
     _joint_jog_timer: Any = None
@@ -423,6 +452,7 @@ class UiState:
     _editor_panel: Any = None
     _control_panel: Any = None
     _readout_panel: Any = None
+    _playback: Any = None
 
     # Program panel visibility (tracked for tab flash when panel closed)
     program_panel_visible: bool = False
@@ -431,6 +461,7 @@ class UiState:
     editor_panel = _RequiredField()
     control_panel = _RequiredField()
     readout_panel = _RequiredField()
+    playback = _RequiredField()
     joint_jog_timer = _RequiredField()
     cart_jog_timer = _RequiredField()
 
@@ -511,7 +542,6 @@ class EditorTabsState(ChangeNotifierMixin):
     def reset(self) -> None:
         self.tabs = []
         self.active_tab_id = None
-        self._change_listeners = []
 
 
 @dataclass

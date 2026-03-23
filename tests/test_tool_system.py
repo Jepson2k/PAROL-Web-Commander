@@ -188,6 +188,7 @@ async def test_electric_gripper_parameter_ranges(user: User) -> None:
 
     robot = ui_state.active_robot
 
+    expected_current = {"SSG-48": (100, 1300), "MSG": (100, 2800)}
     for key in ("SSG-48", "MSG"):
         tool = robot.tools[key]
         assert isinstance(tool, ElectricGripperTool), (
@@ -195,7 +196,7 @@ async def test_electric_gripper_parameter_ranges(user: User) -> None:
         )
         assert tool.position_range == (0.0, 1.0), f"{key} position_range"
         assert tool.speed_range == (0.0, 1.0), f"{key} speed_range"
-        assert tool.current_range == (100, 1000), f"{key} current_range"
+        assert tool.current_range == expected_current[key], f"{key} current_range"
 
 
 @pytest.mark.integration
@@ -396,8 +397,8 @@ class TestGripperCloseAnimation:
 async def test_tool_quick_action_properties(user: User) -> None:
     """Verify quick-action properties on all tool types.
 
-    Electric grippers: toggle_labels, toggle_icons, force_jog_step within current_range.
-    Pneumatic grippers: toggle_labels, toggle_icons, force_jog_step is None.
+    Electric grippers: action_l_labels, action_l_icons, adjust_step within current_range.
+    Pneumatic grippers: action_l_labels, action_l_icons, adjust_step is None.
     is_open() boundary: 0.49 → True, 0.5 → False.
     """
     await user.open("/")
@@ -409,18 +410,16 @@ async def test_tool_quick_action_properties(user: User) -> None:
     for key in ("SSG-48", "MSG"):
         tool = robot.tools[key]
         assert isinstance(tool, ElectricGripperTool)
-        assert tool.toggle_labels == ("Close", "Open"), f"{key} toggle_labels"
-        assert tool.toggle_icons == ("close_fullscreen", "open_in_full"), (
-            f"{key} toggle_icons"
+        assert tool.action_l_labels == ("Close", "Open"), f"{key} action_l_labels"
+        assert tool.action_l_icons == ("close_fullscreen", "open_in_full"), (
+            f"{key} action_l_icons"
         )
-        assert tool.toggle_mode == ToggleMode.TOGGLE, f"{key} toggle_mode"
+        assert tool.action_l_mode == ToggleMode.TOGGLE, f"{key} action_l_mode"
 
-        step = tool.force_jog_step
-        assert step is not None, f"{key} should have force_jog_step"
+        step = tool.adjust_step
+        assert step is not None, f"{key} should have adjust_step"
         lo, hi = tool.current_range
-        assert 0 < step <= (hi - lo), (
-            f"{key} force_jog_step {step} not in (0, {hi - lo}]"
-        )
+        assert 0 < step <= (hi - lo), f"{key} adjust_step {step} not in (0, {hi - lo}]"
 
         # is_open boundary (0.0 = open, 1.0 = closed)
         assert tool.is_open(0.49), f"{key} is_open(0.49) should be True"
@@ -429,12 +428,12 @@ async def test_tool_quick_action_properties(user: User) -> None:
     # Pneumatic gripper
     pneumatic = robot.tools["PNEUMATIC"]
     assert isinstance(pneumatic, PneumaticGripperTool)
-    assert pneumatic.toggle_labels == ("Close", "Open")
-    assert pneumatic.toggle_icons == ("close_fullscreen", "open_in_full")
-    assert pneumatic.force_jog_step is None
+    assert pneumatic.action_l_labels == ("Close", "Open")
+    assert pneumatic.action_l_icons == ("close_fullscreen", "open_in_full")
+    assert pneumatic.adjust_step is None
 
-    # NONE tool — no toggle
+    # NONE tool — no action buttons
     none_tool = robot.tools["NONE"]
-    assert none_tool.toggle_labels is None
-    assert none_tool.toggle_icons is None
-    assert none_tool.force_jog_step is None
+    assert none_tool.action_l_labels is None
+    assert none_tool.action_l_icons is None
+    assert none_tool.adjust_step is None
