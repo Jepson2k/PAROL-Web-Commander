@@ -93,7 +93,7 @@ Prefer fewer, comprehensive integration tests that mimic manual testing over a l
 - A single comprehensive test that exercises a complete workflow is better than many shallow tests
 - **Merge into one function** - When tests are variations of the same thing (e.g., positive/negative jog), combine into one test with multiple assertions
 - **Class-level fixture sharing** - When tests are logically separate but don't need isolation, group them in a class with class-scoped fixtures to avoid per-test startup/teardown (especially important for expensive browser tests)
-- **Test results are in `test-results.xml`.** Pytest writes JUnit XML to `test-results.xml` automatically. When diagnosing failures, read this file — it contains test names, durations, failure messages, and captured output. This is more reliable than parsing console output.
+- **Test results are in `test-results.xml` — ALWAYS read this file after running tests.** Pytest writes JUnit XML to `test-results.xml` automatically. It contains test names, durations, failure messages, and full tracebacks. **Do NOT re-run tests** just to capture output you missed — the XML file already has everything. Do NOT grep/tail pytest console output; read the XML file instead.
 - **NEVER run parol6 and web commander test suites in parallel** — no proper isolation, they share resources and have timing issues when resource-constrained. Always run sequentially.
 - **NEVER allow subagents to run tests.** Many tests are timing-sensitive and the system doesn't have enough resources for agents and tests to run simultaneously. Only the main conversation should run tests, and only after all agents have completed.
 

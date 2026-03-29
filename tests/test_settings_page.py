@@ -103,12 +103,11 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     envelope_select = user.find(marker="select-envelope-mode")
     assert envelope_select is not None, "Envelope mode select should exist"
 
-    # Verify envelope_mode is set to a valid value
-    assert simulation_state.envelope_mode in (
-        "auto",
-        "on",
-        "off",
-    ), f"Expected valid envelope_mode, got {simulation_state.envelope_mode}"
+    from parol_commander.state import EnvelopeMode
+
+    assert isinstance(simulation_state.envelope_mode, EnvelopeMode), (
+        f"Expected EnvelopeMode, got {simulation_state.envelope_mode}"
+    )
 
 
 @pytest.mark.integration

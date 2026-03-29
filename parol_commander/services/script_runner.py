@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Callable, TypedDict
 
+logger = logging.getLogger(__name__)
+
 
 class ScriptRunConfig(TypedDict):
     """Configuration for running a Python script."""
@@ -40,7 +42,7 @@ async def _stream_output(
             if line:
                 callback(f"{prefix}{line}")
     except Exception as e:
-        logging.error("Stream reader error: %s", e)
+        logger.error("Stream reader error: %s", e)
 
 
 async def run_script(
@@ -132,7 +134,7 @@ async def run_script(
         "start_ts": time.time(),
     }
 
-    logging.info("Started script process: %s (PID: %s)", cfg["filename"], proc.pid)
+    logger.info("Started script process: %s (PID: %s)", cfg["filename"], proc.pid)
     return handle
 
 
@@ -147,7 +149,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
     proc = handle["proc"]
 
     if proc.returncode is not None:
-        logging.info("Script process already terminated (code: %s)", proc.returncode)
+        logger.info("Script process already terminated (code: %s)", proc.returncode)
         return
 
     try:
@@ -157,7 +159,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
                 # Send SIGTERM to the process group
                 pgid = os.getpgid(proc.pid)
                 os.killpg(pgid, 15)  # SIGTERM
-                logging.debug("Sent SIGTERM to process group %s", pgid)
+                logger.debug("Sent SIGTERM to process group %s", pgid)
             except (ProcessLookupError, OSError):
                 # Fall back to regular terminate if process group doesn't exist
                 proc.terminate()
@@ -167,7 +169,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout)
-            logging.info("Script process terminated gracefully")
+            logger.info("Script process terminated gracefully")
         except asyncio.TimeoutError:
             # Force kill if graceful termination failed
             if sys.platform != "win32" and proc.pid:
@@ -175,20 +177,20 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
                     # Send SIGKILL to the process group
                     pgid = os.getpgid(proc.pid)
                     os.killpg(pgid, 9)  # SIGKILL
-                    logging.debug("Sent SIGKILL to process group %s", pgid)
+                    logger.debug("Sent SIGKILL to process group %s", pgid)
                 except (ProcessLookupError, OSError):
                     # Fall back to regular kill
                     proc.kill()
             else:
                 proc.kill()
             await proc.wait()
-            logging.warning("Script process force-killed after timeout")
+            logger.warning("Script process force-killed after timeout")
 
     except ProcessLookupError:
         # Process already dead
         pass
     except Exception as e:
-        logging.error("Error stopping script process: %s", e)
+        logger.error("Error stopping script process: %s", e)
 
     # Cancel streaming tasks
     for task in [handle["stdout_task"], handle["stderr_task"]]:
@@ -199,7 +201,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logging.error("Error canceling stream task: %s", e)
+                logger.error("Error canceling stream task: %s", e)
 
 
 def create_default_config(filename: str, cwd: str | None = None) -> ScriptRunConfig:

@@ -915,7 +915,7 @@ class ControlPanel:
         jog_possible = (
             not robot_state.editing_mode
             and (robot_state.simulator_active or robot_state.connected)
-            and not getattr(ui_state.editor_panel, "script_running", False)
+            and not ui_state.editor_panel.script_running
         )
         if not jog_possible and not self._gizmo_auto_hidden:
             if ui_state.urdf_scene and ui_state.gizmo_visible:
@@ -932,7 +932,7 @@ class ControlPanel:
     def _movement_allowed(notify: bool = True) -> bool:
         """Return True if robot movement is permitted (simulator active or hardware connected, no script running)."""
         editor = ui_state.editor_panel
-        if editor and getattr(editor, "script_running", False):
+        if editor and editor.script_running:
             if notify:
                 ui.notify("Script is running — jog disabled", color="warning")
             return False
@@ -1450,8 +1450,8 @@ class ControlPanel:
         """Toggle between robot and simulator modes and update URDF appearance."""
         try:
             # Stop any running user script before mode switch (safety)
-            editor_panel = getattr(ui_state, "editor_panel", None)
-            if editor_panel and getattr(editor_panel, "script_running", False):
+            editor_panel = ui_state.editor_panel
+            if editor_panel and editor_panel.script_running:
                 logger.info("Stopping running script before mode switch")
                 try:
                     await editor_panel._stop_script_process()

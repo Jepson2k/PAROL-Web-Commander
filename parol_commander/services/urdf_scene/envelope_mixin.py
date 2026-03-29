@@ -20,7 +20,7 @@ from nicegui import app, ui, run
 from nicegui.events import SceneClipPlane
 
 from parol_commander.common.theme import SceneColors
-from parol_commander.state import simulation_state, robot_state
+from parol_commander.state import EnvelopeMode, simulation_state, robot_state
 
 
 logger = logging.getLogger(__name__)
@@ -625,108 +625,63 @@ class EnvelopeMixin:
             return False
 
     def _update_envelope_from_robot_state(self) -> None:
-        """Update envelope visibility based on current robot TCP position."""
-        if not self.scene or not self.simulation_group:
-            return
+        """Update envelope visibility based on mode and robot TCP position.
 
-        # Check if scene is still valid before modifying it
-        if self.scene.is_deleted:
-            return
-
-        # Only handle auto mode here - on/off modes are handled by simulation_state
-        envelope_mode = simulation_state.envelope_mode
-        if envelope_mode != "auto":
-            return
-
-        # Get robot TCP position (convert mm to m)
-        tcp_x = robot_state.x / 1000.0
-        tcp_y = robot_state.y / 1000.0
-        tcp_z = robot_state.z / 1000.0
-
-        show_envelope = self._is_near_boundary(tcp_x, tcp_y, tcp_z)
-
-        if show_envelope:
-            # Create envelope if needed
-            if not self.envelope_object:
-                self._create_envelope_object()
-            elif not self._envelope_visible:
-                self.envelope_object.visible(True)
-                self._envelope_visible = True
-
-            # Apply proximity clipping
-            if self.envelope_object:
-                approaching_positions = [(tcp_x, tcp_y, tcp_z)]
-                clipping_planes = self._calculate_envelope_clipping_planes(
-                    approaching_positions, workspace_envelope.max_reach
-                )
-                if clipping_planes and self.scene:
-                    envelope_id = str(self.envelope_object.id)
-                    self.scene.set_clipping_planes(envelope_id, clipping_planes)
-        else:
-            # Hide envelope
-            if self.envelope_object and self._envelope_visible:
-                self.envelope_object.visible(False)
-                self._envelope_visible = False
-                if self.scene:
-                    envelope_id = str(self.envelope_object.id)
-                    self.scene.clear_clipping_planes(envelope_id)
-
-    def _update_envelope_in_simulation_view(
-        self, approaching_positions: list[tuple[float, float, float]]
-    ) -> None:
-        """Update envelope visibility based on simulation state.
-
-        Called from _update_simulation_view in the main class.
-
-        Args:
-            approaching_positions: List of (x, y, z) positions approaching boundary
+        For OFF/ON modes, only acts on mode transitions (not every tick).
+        For AUTO, checks TCP proximity to the boundary each tick.
         """
-        envelope_mode = simulation_state.envelope_mode
-        show_envelope = False
+        mode = simulation_state.envelope_mode
 
-        if envelope_mode == "on":
-            show_envelope = True
-        elif envelope_mode == "auto":
-            show_envelope = len(approaching_positions) > 0
-        # "off" mode: show_envelope stays False
+        if mode is EnvelopeMode.OFF:
+            if self._envelope_visible:
+                self._hide_envelope()
+            return
 
-        if show_envelope:
-            # Trigger generation if needed (checks cache first)
-            if not workspace_envelope.is_ready:
-                workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
+        if mode is EnvelopeMode.ON:
+            if not self._envelope_visible:
+                self._show_envelope(clipped=False)
+            return
 
-            # Create hull mesh if ready
-            if not self.envelope_object and workspace_envelope.is_ready:
-                self._create_envelope_object()
-            elif self.envelope_object and not self._envelope_visible:
-                self.envelope_object.visible(True)
-                self._envelope_visible = True
+        # Auto — show with proximity clipping when near the boundary
+        tcp = (robot_state.x / 1000.0, robot_state.y / 1000.0, robot_state.z / 1000.0)
+        if self._is_near_boundary(*tcp):
+            self._show_envelope(clipped=True, approaching_positions=[tcp])
+        else:
+            self._hide_envelope()
 
-            # Apply proximity clipping in auto mode
-            if (
-                envelope_mode == "auto"
-                and self.envelope_object
-                and approaching_positions
-            ):
-                clipping_planes = self._calculate_envelope_clipping_planes(
+    def _show_envelope(
+        self,
+        *,
+        clipped: bool,
+        approaching_positions: list[tuple[float, float, float]] | None = None,
+    ) -> None:
+        """Ensure envelope is created, visible, and optionally clipped."""
+        if not workspace_envelope.is_ready:
+            workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
+        if not self.envelope_object and workspace_envelope.is_ready:
+            self._create_envelope_object()
+        elif self.envelope_object and not self._envelope_visible:
+            self.envelope_object.visible(True)
+            self._envelope_visible = True
+
+        if self.envelope_object and self.scene:
+            eid = str(self.envelope_object.id)
+            if clipped and approaching_positions:
+                planes = self._calculate_envelope_clipping_planes(
                     approaching_positions, workspace_envelope.max_reach
                 )
-                if clipping_planes and self.scene:
-                    envelope_id = str(self.envelope_object.id)
-                    self.scene.set_clipping_planes(envelope_id, clipping_planes)
-            elif envelope_mode == "on" and self.envelope_object and self.scene:
-                # In "on" mode, clear any clipping to show the full hull
-                envelope_id = str(self.envelope_object.id)
-                self.scene.clear_clipping_planes(envelope_id)
-        else:
-            # Only call visible(False) if state changed
-            if self.envelope_object and self._envelope_visible:
-                self.envelope_object.visible(False)
-                self._envelope_visible = False
-                # Clear clipping planes when hiding
-                if self.scene:
-                    envelope_id = str(self.envelope_object.id)
-                    self.scene.clear_clipping_planes(envelope_id)
+                if planes:
+                    self.scene.set_clipping_planes(eid, planes)
+            else:
+                self.scene.clear_clipping_planes(eid)
+
+    def _hide_envelope(self) -> None:
+        """Hide envelope and clear clipping planes."""
+        if self.envelope_object and self._envelope_visible:
+            self.envelope_object.visible(False)
+            self._envelope_visible = False
+            if self.scene:
+                self.scene.clear_clipping_planes(str(self.envelope_object.id))
 
     def _calculate_envelope_clipping_planes(
         self,

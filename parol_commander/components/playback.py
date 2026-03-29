@@ -11,7 +11,7 @@ import numpy as np
 from nicegui import ui, context
 
 from parol_commander.common.theme import PathColors
-from parol_commander.services.timeline import Timeline, DEFAULT_SEGMENT_DURATION
+from parol_commander.services.timeline import Timeline
 from parol_commander.state import (
     robot_state,
     simulation_state,
@@ -146,15 +146,24 @@ class PlaybackController:
 
             # 5. Speed FAB (simulator only)
             with (
-                ui.fab(icon="sym_o_acute", color="amber", direction="up")
+                ui.fab(icon="1x_mobiledata", color="amber", direction="up")
                 .props("dense unelevated round size=sm")
                 .tooltip("Playback Speed") as speed_fab
             ):
                 self.speed_fab = speed_fab
                 speed_fab.visible = robot_state.simulator_active
-                ui.fab_action("sym_o_speed_0_5x", on_click=lambda: self._set_speed(0.5))
-                ui.fab_action("1x_mobiledata", on_click=lambda: self._set_speed(1.0))
-                ui.fab_action("sym_o_speed_2x", on_click=lambda: self._set_speed(2.0))
+                ui.fab_action(
+                    "sym_o_speed_0_5x",
+                    on_click=lambda: self._set_speed(0.5),
+                )
+                ui.fab_action(
+                    "1x_mobiledata",
+                    on_click=lambda: self._set_speed(1.0),
+                )
+                ui.fab_action(
+                    "sym_o_speed_2x",
+                    on_click=lambda: self._set_speed(2.0),
+                )
 
             # 6. Record button
             self._editor.record_btn = ui.button(
@@ -533,9 +542,18 @@ class PlaybackController:
 
     # ---- Speed control ----
 
+    _SPEED_ICONS = {
+        0.5: "sym_o_speed_0_5x",
+        1.0: "1x_mobiledata",
+        2.0: "sym_o_speed_2x",
+    }
+
     def _set_speed(self, value: float) -> None:
-        """Set playback speed."""
+        """Set playback speed and update FAB icon to match."""
         simulation_state.playback_speed = value
+        if self.speed_fab:
+            icon = self._SPEED_ICONS.get(value, "1x_mobiledata")
+            self.speed_fab.props(f'icon="{icon}"')
 
     # ---- Play button state ----
 
@@ -576,73 +594,65 @@ class PlaybackController:
     # ---- Scrub bar segments ----
 
     def _do_update_scrub_segments(self) -> None:
-        """Rebuild colored segments in the scrub bar."""
+        """Rebuild the entire scrub bar: segments, checkpoints, and tool markers.
+
+        All elements live inside _scrub_container. A single .clear() removes
+        everything; Python lists are cleared without calling .delete() on
+        individual elements (they're already gone after .clear()).
+        """
         if not self._scrub_container:
             return
 
+        # 1. Remove all children at once — the only deletion point
         self._scrub_container.clear()
         self._segment_elements.clear()
+        self._checkpoint_markers.clear()
+        self._tool_markers.clear()
         self._last_highlighted_index = -1
 
         segments = simulation_state.path_segments
         if not segments:
             return
 
-        num_segments = len(segments)
-
-        # Rebuild timeline and update slider range
+        # 2. Rebuild timeline
         self._timeline = None
         tl = self._ensure_timeline()
         total_dur = tl.total_duration if tl else 0.0
         if self._scrub_slider:
-            text = self._format_time(0.0, total_dur)
-            self._scrub_slider.props(f'label-value="{text}"')
+            self._scrub_slider.props(
+                f'label-value="{self._format_time(0.0, total_dur)}"'
+            )
 
-        # Create segment elements
+        if not tl or total_dur <= 0:
+            return
+
         step = simulation_state.current_step_index
+        cum = tl.cumulative_times
+        seg_durs = tl.segment_durations
+
         with self._scrub_container:
+            # 3. Segment divs — absolute positioned by timeline position
             for idx, segment in enumerate(segments):
                 color = segment.color or PathColors.CARTESIAN
                 is_current = idx == step
-                dur = (
-                    segment.estimated_duration
-                    if segment.estimated_duration is not None
-                    else DEFAULT_SEGMENT_DURATION
-                )
-                width_pct = (
-                    (dur / total_dur * 100) if total_dur > 0 else (100 / num_segments)
-                )
+                left_pct = cum[idx] / total_dur * 100
+                width_pct = seg_durs[idx] / total_dur * 100
                 opacity = "0.4" if idx < step else "1.0"
                 brightness = "1.4" if is_current else "1.0"
                 seg_elem = (
                     ui.element("div")
-                    .classes("h-full transition-all duration-150")
+                    .classes("absolute h-full transition-all duration-150")
                     .style(
-                        f"width: {width_pct:.2f}%; background-color: {color}; "
-                        f"opacity: {opacity}; filter: brightness({brightness}); "
-                        f"box-sizing: border-box;"
+                        f"left: {left_pct:.2f}%; width: {width_pct:.2f}%;"
+                        f" background-color: {color};"
+                        f" opacity: {opacity}; filter: brightness({brightness});"
                     )
                 )
                 self._segment_elements.append(seg_elem)
 
-        # Render checkpoint and tool action markers
-        self._render_scrub_markers(tl)
-
-    def _render_scrub_markers(self, tl: Timeline | None) -> None:
-        """Render checkpoint and tool action markers on the scrubber."""
-        for m in self._checkpoint_markers:
-            m.delete()
-        self._checkpoint_markers.clear()
-        for m in self._tool_markers:
-            m.delete()
-        self._tool_markers.clear()
-
-        if not tl or not self._scrub_parent or tl.total_duration <= 0:
-            return
-
-        with self._scrub_parent:
+            # 4. Checkpoint markers — diamonds at checkpoint times
             for cp in tl.checkpoints:
-                left_pct = cp.time / tl.total_duration * 100
+                left_pct = cp.time / total_dur * 100
                 marker = (
                     ui.element("div")
                     .classes("absolute")
@@ -655,27 +665,35 @@ class PlaybackController:
                 )
                 self._checkpoint_markers.append(marker)
 
+            # 5. Tool action markers — full-height (blocking) or mini (overlapping)
             kf = tl.tool_keyframes
-            i = 0
-            while i < len(kf) - 1:
-                t_start = kf[i].time
-                t_end = kf[i + 1].time
-                if kf[i].positions != kf[i + 1].positions and t_end > t_start:
-                    left_pct = t_start / tl.total_duration * 100
-                    width_pct = (t_end - t_start) / tl.total_duration * 100
-                    marker = (
-                        ui.element("div")
-                        .classes("absolute")
-                        .style(
-                            f"left: {left_pct:.2f}%; top: 25%; height: 50%;"
-                            f" width: {max(width_pct, 0.5):.2f}%;"
-                            f" background: {PathColors.TOOL_ACTION}; opacity: 0.7;"
-                            f" z-index: 1; pointer-events: none;"
-                            f" border-radius: 3px;"
-                        )
+            ta = simulation_state.tool_actions
+            for i in range(0, len(kf) - 1, 2):
+                if (
+                    kf[i].positions == kf[i + 1].positions
+                    or kf[i + 1].time <= kf[i].time
+                ):
+                    continue
+                left_pct = kf[i].time / total_dur * 100
+                width_pct = (kf[i + 1].time - kf[i].time) / total_dur * 100
+                action_idx = i // 2
+                is_blocking = action_idx < len(ta) and ta[action_idx].sleep_offset == 0
+                if is_blocking:
+                    top, height, radius = "0", "100%", "0"
+                else:
+                    top, height, radius = "25%", "50%", "3px"
+                marker = (
+                    ui.element("div")
+                    .classes("absolute")
+                    .style(
+                        f"left: {left_pct:.2f}%; top: {top}; height: {height};"
+                        f" width: {max(width_pct, 0.5):.2f}%;"
+                        f" background: {PathColors.TOOL_ACTION}; opacity: 0.7;"
+                        f" z-index: 1; pointer-events: none;"
+                        f" border-radius: {radius};"
                     )
-                    self._tool_markers.append(marker)
-                i += 2
+                )
+                self._tool_markers.append(marker)
 
     def _highlight_current_segment(self) -> None:
         """Update segment highlighting to show current position.
@@ -705,6 +723,22 @@ class PlaybackController:
                 opacity = "0.4" if idx < step else "1.0"
                 brightness = "1.4" if is_current else "1.0"
                 elem.style(f"opacity: {opacity}; filter: brightness({brightness});")
+
+        # Update tool marker opacity based on current playback time
+        tl = self._timeline
+        if tl and self._tool_markers:
+            t = simulation_state.sim_playback_time
+            kf = tl.tool_keyframes
+            marker_idx = 0
+            for i in range(0, len(kf) - 1, 2):
+                if (
+                    kf[i].positions != kf[i + 1].positions
+                    and kf[i + 1].time > kf[i].time
+                ):
+                    if marker_idx < len(self._tool_markers):
+                        opacity = "0.3" if kf[i + 1].time <= t else "0.7"
+                        self._tool_markers[marker_idx].style(f"opacity: {opacity};")
+                    marker_idx += 1
 
     # ---- Utility ----
 

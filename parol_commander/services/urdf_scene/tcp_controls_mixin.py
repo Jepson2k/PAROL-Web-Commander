@@ -68,7 +68,7 @@ class TCPControlsMixin:
         self._tcp_drag_start_rot_deg: tuple[float, float, float] | None = None
         self._tcp_ball: Any | None = None
         self._tcp_ball_dragging: bool = False
-        self._tcp_fk_solver: EditingIKSolver | None = None
+        self._ik_solver: EditingIKSolver | None = None
         self._editing_rotation: list[float] = [0.0, 0.0, 0.0]
         self._editing_rotation_set: bool = False  # Track if rotation was explicitly set
 
@@ -86,12 +86,12 @@ class TCPControlsMixin:
 
     def _ensure_ik_solver(self) -> EditingIKSolver | None:
         """Lazy-initialize the FK/IK solver, returning it or None on failure."""
-        if self._tcp_fk_solver is None:
+        if self._ik_solver is None:
             try:
-                self._tcp_fk_solver = EditingIKSolver.from_urdf_scene(self)
+                self._ik_solver = EditingIKSolver.from_urdf_scene(self)
             except Exception as e:
                 logger.warning("FK/IK solver init failed: %s", e)
-        return self._tcp_fk_solver
+        return self._ik_solver
 
     def invalidate_fk_cache(self) -> None:
         """Force TCP ball FK recomputation on next update cycle."""
@@ -299,6 +299,16 @@ class TCPControlsMixin:
         # Initial position/orientation based on mode
         self._update_tcp_ball_position()
 
+    def _snap_tcp_to_fk(self) -> None:
+        """Snap TCP ball back to FK position from current editing angles.
+
+        Called on transform_end in editing mode to correct the ball
+        position when IK failed and the ball was dragged to an
+        unreachable position.
+        """
+        self.invalidate_fk_cache()
+        self._update_tcp_ball_position()
+
     def _update_tcp_ball_position(self) -> None:
         """Update TCP ball position from FK, with drift correction.
 
@@ -328,10 +338,10 @@ class TCPControlsMixin:
                 angles_changed = True
 
         if angles_changed:
-            if not self._ensure_ik_solver() or self._tcp_fk_solver is None:
+            if not self._ensure_ik_solver() or self._ik_solver is None:
                 return
             try:
-                ee = self._tcp_fk_solver.forward_kinematics(angles_rad)
+                ee = self._ik_solver.forward_kinematics(angles_rad)
                 self._last_fk_pose = tuple(float(v) for v in ee[:6])
             except Exception as e:
                 logger.debug("FK failed: %s", e)
@@ -442,7 +452,7 @@ class TCPControlsMixin:
         # Ensure FK/IK solver is initialized
         if not self._ensure_ik_solver():
             return
-        assert self._tcp_fk_solver is not None
+        assert self._ik_solver is not None
 
         target_orientation = None
         target_pos = self._target_pos_buffer
@@ -467,7 +477,7 @@ class TCPControlsMixin:
             self._editing_rotation_set = True
 
             # Get current position from FK (maintain position while rotating)
-            fk_result = self._tcp_fk_solver.forward_kinematics(self._editing_angles)
+            fk_result = self._ik_solver.forward_kinematics(self._editing_angles)
             target_pos[0] = fk_result[0]
             target_pos[1] = fk_result[1]
             target_pos[2] = fk_result[2]
@@ -496,7 +506,7 @@ class TCPControlsMixin:
                 target_orientation = orient_buf
 
         # Solve IK with throttling (~30Hz)
-        result = self._tcp_fk_solver.solve(
+        result = self._ik_solver.solve(
             target_pos=target_pos,
             current_angles=self._editing_angles,
             throttle=True,

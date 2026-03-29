@@ -48,6 +48,7 @@ class Timeline:
     cumulative_times: list[float]  # len = num_segments + 1, starts with 0.0
     total_duration: float
     _segments: list[PathSegment]
+    segment_durations: list[float] = field(default_factory=list)  # motion-only (no gap)
     tool_keyframes: list[ToolKeyframe] = field(default_factory=list)
     _tool_times: list[float] = field(default_factory=list)
     checkpoints: list[Checkpoint] = field(default_factory=list)
@@ -78,12 +79,14 @@ class Timeline:
 
         # Build cumulative times with gaps for blocking tool actions
         cum = [0.0]
+        seg_durs: list[float] = []
         for i, seg in enumerate(segments):
             seg_dur = (
                 seg.estimated_duration
                 if seg.estimated_duration is not None
                 else DEFAULT_SEGMENT_DURATION
             )
+            seg_durs.append(seg_dur)
             cum.append(cum[-1] + seg_dur + blocking_gap.get(i, 0.0))
         total = cum[-1] if segments else 0.0
 
@@ -95,7 +98,7 @@ class Timeline:
 
             for act in tool_actions:
                 dur = max(act.estimated_duration, 0.01)
-                if act.segment_index >= 0 and act.segment_index < len(cum):
+                if act.segment_index >= 0 and act.segment_index < len(segments):
                     if act.sleep_offset > 0:
                         # Mid-motion: offset from start of preceding segment
                         t = cum[act.segment_index] + act.sleep_offset
@@ -120,9 +123,12 @@ class Timeline:
         cps: list[Checkpoint] = []
         for idx, seg in enumerate(segments):
             if seg.checkpoint:
+                # Place checkpoint at segment motion end (before any
+                # blocking tool gap) so it appears before tool markers.
+                cp_time = cum[idx] + seg_durs[idx]
                 cps.append(
                     Checkpoint(
-                        time=cum[idx + 1],  # End of checkpoint segment
+                        time=cp_time,
                         segment_index=idx,
                         kind=seg.checkpoint,
                     )
@@ -132,6 +138,7 @@ class Timeline:
             cumulative_times=cum,
             total_duration=total,
             _segments=segments,
+            segment_durations=seg_durs,
             tool_keyframes=tool_kf,
             _tool_times=[k.time for k in tool_kf],
             checkpoints=cps,
@@ -155,10 +162,15 @@ class Timeline:
 
         seg = self._segments[idx]
         seg_start = self.cumulative_times[idx]
-        seg_end = self.cumulative_times[idx + 1]
-        seg_dur = seg_end - seg_start
+        # Use motion-only duration so the arm holds at fraction=1.0
+        # during any blocking tool-action gap after the segment.
+        motion_dur = (
+            self.segment_durations[idx]
+            if self.segment_durations
+            else self.cumulative_times[idx + 1] - seg_start
+        )
 
-        fraction = (t - seg_start) / seg_dur if seg_dur > 0 else 1.0
+        fraction = (t - seg_start) / motion_dur if motion_dur > 0 else 1.0
         fraction = max(0.0, min(1.0, fraction))
 
         joints = self._interpolate_joints(seg, fraction)

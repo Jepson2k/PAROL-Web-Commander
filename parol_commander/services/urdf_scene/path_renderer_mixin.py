@@ -112,7 +112,7 @@ class PathRendererMixin:
                     direction = seg_vec / seg_len
                     midpoint = (pts[i - 1] + pts[i]) * 0.5
                     color = (
-                        point_pair_colors[min(i, len(point_pair_colors) - 1)]
+                        point_pair_colors[min(i - 1, len(point_pair_colors) - 1)]
                         if point_pair_colors
                         else default_color
                     )
@@ -161,6 +161,40 @@ class PathRendererMixin:
         cone.material(color, opacity)
 
         return cone
+
+    def _create_arrow(
+        self,
+        direction: list[float],
+        origin: list[float],
+        length: float,
+        color: str,
+        head_length: float,
+        head_width: float,
+        opacity: float = 1.0,
+    ) -> list[Any]:
+        """Create an arrow from separate line + cone (supports .material()).
+
+        Unlike ArrowHelper, each sub-object can have its opacity updated
+        individually via .material().
+        """
+        d = np.asarray(direction, dtype=np.float64)
+        d_norm = float(np.linalg.norm(d))
+        if d_norm < 1e-9:
+            return []
+        d = d / d_norm
+
+        o = np.asarray(origin, dtype=np.float64)
+        shaft_end = o + d * (length - head_length)
+        head_pos = o + d * (length - head_length * 0.5)
+
+        line = ui.scene.line(o.tolist(), shaft_end.tolist())
+        line.material(color, opacity)
+
+        cone = self._create_direction_cone(
+            head_pos, d, head_width * 0.5, color, opacity
+        )
+
+        return [line, cone]
 
     def render_tool_action(
         self,
@@ -218,8 +252,6 @@ class PathRendererMixin:
                 arrow_length = travel * 0.5
                 head_length = arrow_length * 0.5
                 head_width = head_length * 1.5
-                color_int = int(color.lstrip("#"), 16)
-                shaft_width = 3.0
                 # Use start position for jaw offset (where jaws are now)
                 start_val = (
                     action.start_positions[idx]
@@ -233,8 +265,7 @@ class PathRendererMixin:
                     for sign in [1.0, -1.0]:
                         d = world_axis * sign
                         if closing:
-                            d = -d  # point inward when closing
-                        # Shift base outward for inward arrows so head lands at jaw
+                            d = -d
                         origin_dist = (
                             jaw_offset + arrow_length if closing else jaw_offset
                         ) * sign
@@ -243,16 +274,16 @@ class PathRendererMixin:
                             py + world_axis[1] * origin_dist,
                             pz + world_axis[2] * origin_dist,
                         ]
-                        arrow = ui.scene.arrow_helper(
-                            direction=d.tolist(),
-                            origin=arrow_origin,
-                            length=arrow_length,
-                            color=color_int,
-                            head_length=head_length,
-                            head_width=head_width,
-                            line_width=shaft_width,
+                        objects.extend(
+                            self._create_arrow(
+                                d.tolist(),
+                                arrow_origin,
+                                arrow_length,
+                                color,
+                                head_length,
+                                head_width,
+                            )
                         )
-                        objects.append(arrow)
                 else:
                     d = -world_axis if closing else world_axis
                     origin_dist = jaw_offset + arrow_length if closing else jaw_offset
@@ -261,16 +292,16 @@ class PathRendererMixin:
                         py + world_axis[1] * origin_dist,
                         pz + world_axis[2] * origin_dist,
                     ]
-                    arrow = ui.scene.arrow_helper(
-                        direction=d.tolist(),
-                        origin=origin,
-                        length=arrow_length,
-                        color=color_int,
-                        head_length=head_length,
-                        head_width=head_width,
-                        line_width=shaft_width,
+                    objects.extend(
+                        self._create_arrow(
+                            d.tolist(),
+                            origin,
+                            arrow_length,
+                            color,
+                            head_length,
+                            head_width,
+                        )
                     )
-                    objects.append(arrow)
 
         return objects
 
@@ -296,8 +327,6 @@ class PathRendererMixin:
         if has_rotation:
             rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
             tcp_rot = ScipyRotation.from_euler("xyz", [rx, ry, rz])
-
-        color_int = int(color.lstrip("#"), 16)
 
         for idx, motion in enumerate(action.motions):
             if motion.get("type") != "linear":
@@ -362,7 +391,6 @@ class PathRendererMixin:
                     continue
                 accum = 0.0
 
-                opacity = 0.3 + 0.7 * t
                 if symmetric:
                     for sign in [1.0, -1.0]:
                         d = world_axis * sign
@@ -379,17 +407,16 @@ class PathRendererMixin:
                             py + world_axis[1] * origin_offset * sign,
                             pz + world_axis[2] * origin_offset * sign,
                         ]
-                        arrow = ui.scene.arrow_helper(
-                            direction=d.tolist(),
-                            origin=tip_pos,
-                            length=arrow_scale,
-                            color=color_int,
-                            head_length=head_length,
-                            head_width=head_width,
-                            line_width=2.0,
+                        objects.extend(
+                            self._create_arrow(
+                                d.tolist(),
+                                tip_pos,
+                                arrow_scale,
+                                color,
+                                head_length,
+                                head_width,
+                            )
                         )
-                        arrow.material(color, opacity)
-                        objects.append(arrow)
                 else:
                     d = world_axis if not moving_inward else -world_axis
                     origin_offset = (
@@ -400,16 +427,15 @@ class PathRendererMixin:
                         py + world_axis[1] * origin_offset,
                         pz + world_axis[2] * origin_offset,
                     ]
-                    arrow = ui.scene.arrow_helper(
-                        direction=d.tolist(),
-                        origin=tip_pos,
-                        length=arrow_scale,
-                        color=color_int,
-                        head_length=head_length,
-                        head_width=head_width,
-                        line_width=2.0,
+                    objects.extend(
+                        self._create_arrow(
+                            d.tolist(),
+                            tip_pos,
+                            arrow_scale,
+                            color,
+                            head_length,
+                            head_width,
+                        )
                     )
-                    arrow.material(color, opacity)
-                    objects.append(arrow)
 
         return objects

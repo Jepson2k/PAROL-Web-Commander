@@ -293,7 +293,6 @@ async def start_controller(com_port: str | None) -> None:
     if status_consumer_task is None or status_consumer_task.done():
         status_consumer_task = asyncio.create_task(_status_consumer())
     controller_state.running = True
-    controller_state.com_port = com_port
     logger.info("Controller started")
 
 
@@ -1051,10 +1050,11 @@ async def index_page():
     # previous (deleted) client.
 
     async def _on_disconnect():
-        global _page_client
+        global _page_client, _connection_notification
         # Only clear if this is still the active client (avoid race on refresh)
         if _page_client is this_client:
             _page_client = None
+        _connection_notification = None
 
     this_client.on_disconnect(_on_disconnect)
     # Theme and layout

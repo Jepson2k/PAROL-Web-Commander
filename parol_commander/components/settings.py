@@ -12,7 +12,7 @@ from parol_commander.services.camera_service import (
     camera_service,
     enumerate_video_devices,
 )
-from parol_commander.state import robot_state, simulation_state, ui_state
+from parol_commander.state import EnvelopeMode, robot_state, simulation_state, ui_state
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,9 @@ class SettingsContent:
         return {
             "com_port": ng_app.storage.general.get("com_port", ""),
             "show_route": ng_app.storage.general.get("show_route", True),
-            "envelope_mode": ng_app.storage.general.get("envelope_mode", "auto"),
+            "envelope_mode": EnvelopeMode(
+                ng_app.storage.general.get("envelope_mode", "auto")
+            ),
             "theme_mode": ng_app.storage.general.get("theme_mode", "system"),
             "motion_profile": stored_profile,
         }
@@ -271,27 +273,19 @@ class SettingsContent:
 
     def _build_envelope(self, prefs: dict) -> None:
         async def _on_envelope_mode_change(e):
-            mode = e.value
+            mode = EnvelopeMode(e.value)
             simulation_state.envelope_mode = mode
-            ng_app.storage.general["envelope_mode"] = mode
-            if mode == "off":
-                simulation_state.envelope_visible = False
-            elif mode == "on":
-                simulation_state.envelope_visible = True
+            ng_app.storage.general["envelope_mode"] = mode.value
             simulation_state.notify_changed()
 
         with _setting_row("Workspace Envelope", "Show reachable workspace boundary"):
             ui.select(
-                options={"auto": "Auto", "on": "On", "off": "Off"},
-                value=prefs["envelope_mode"],
+                options={m.value: m.value.capitalize() for m in EnvelopeMode},
+                value=prefs["envelope_mode"].value,
                 on_change=_on_envelope_mode_change,
             ).classes("w-24").props("dense").mark("select-envelope-mode")
 
         simulation_state.envelope_mode = prefs["envelope_mode"]
-        if prefs["envelope_mode"] == "off":
-            simulation_state.envelope_visible = False
-        elif prefs["envelope_mode"] == "on":
-            simulation_state.envelope_visible = True
 
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):

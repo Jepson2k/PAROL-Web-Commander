@@ -92,7 +92,9 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
     assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
 
     # Set envelope mode to 'off' first
-    simulation_state.envelope_mode = "off"
+    from parol_commander.state import EnvelopeMode
+
+    simulation_state.envelope_mode = EnvelopeMode.OFF
     await asyncio.sleep(0.2)  # Let update timer run
 
     # If envelope_object exists, it should be hidden
@@ -102,7 +104,7 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
         )
 
     # Now set envelope mode to 'on'
-    simulation_state.envelope_mode = "on"
+    simulation_state.envelope_mode = EnvelopeMode.ON
     await asyncio.sleep(0.2)  # Let update timer run
 
     # Envelope data should exist

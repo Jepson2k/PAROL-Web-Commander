@@ -50,7 +50,15 @@ from .tcp_controls_mixin import TCPControlsMixin
 from .envelope_mixin import EnvelopeMixin
 from .path_renderer_mixin import PathRendererMixin
 
-logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]
+logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
+
+
+def _lerp_hex(c1: tuple[int, int, int], c2: tuple[int, int, int], factor: float) -> str:
+    """Linearly interpolate two RGB colors and return a hex string."""
+    r = int(c1[0] + (c2[0] - c1[0]) * factor + 0.5)
+    g = int(c1[1] + (c2[1] - c1[1]) * factor + 0.5)
+    b = int(c1[2] + (c2[2] - c1[2]) * factor + 0.5)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 class RenderedSegment(NamedTuple):
@@ -151,13 +159,6 @@ class UrdfScene(
     - TCP offset/orientation updates on tool change
     - Configurable tool pose handling via injection (no hard dependencies)
     """
-
-    # Axis color mapping (class constant)
-    _AXIS_COLORS = {
-        "X": SceneColors.AXIS_X_HEX,
-        "Y": SceneColors.AXIS_Y_HEX,
-        "Z": SceneColors.AXIS_Z_HEX,
-    }
 
     def __init__(self, path: str | Path, config: UrdfSceneConfig | None = None):
         """Load a URDF file to construct a nicegui scene.
@@ -438,8 +439,12 @@ class UrdfScene(
                 if self._joint_controls_suspended:
                     self._enable_joint_transform_controls()
                     self._joint_controls_suspended = False
-                # Notify drag-end to consumers (for jogging mode)
-                if self._appearance_mode != RobotAppearanceMode.EDITING:
+                # In editing mode, snap TCP ball to FK position (in case
+                # IK failed and the ball was dragged to an unreachable spot)
+                if self._appearance_mode == RobotAppearanceMode.EDITING:
+                    self._snap_tcp_to_fk()
+                else:
+                    # Notify drag-end to consumers (for jogging mode)
                     cb = getattr(self, "_tcp_cartesian_move_end_callback", None)
                     if callable(cb):
                         try:
@@ -495,6 +500,23 @@ class UrdfScene(
                     # Ensure pose has no None values before syncing
                     clean_pose = [v if v is not None else 0.0 for v in target.pose]
                     ui_state.editor_panel.sync_code_from_target(target_id, clean_pose)
+
+                    # Quick IK check to update target validity and color
+                    ik_result = self._ik_for_position(clean_pose[:3])
+                    is_valid = ik_result is not None
+                    if target.is_valid != is_valid:
+                        target.is_valid = is_valid
+                        new_color = (
+                            PathColors.INVALID
+                            if not is_valid
+                            else get_color_for_move_type(target.move_type)
+                        )
+                        td = self._target_objects.get(target_id)
+                        if td:
+                            td["color"] = new_color
+                            mk = td.get("marker")
+                            if mk:
+                                mk.material(new_color)
 
     @staticmethod
     def _screen_pos(evt) -> tuple[float, float]:
@@ -1103,20 +1125,12 @@ class UrdfScene(
         b = int(b + (255 - b) * factor)
         return f"#{r:02x}{g:02x}{b:02x}"
 
-    _INVALID_RGB = tuple(
-        int(PathColors.INVALID.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4)
+    _INVALID_RGB = (
+        int(PathColors.INVALID.lstrip("#")[0:2], 16),
+        int(PathColors.INVALID.lstrip("#")[2:4], 16),
+        int(PathColors.INVALID.lstrip("#")[4:6], 16),
     )
-    _BLEND_RANGE = 3.0  # number of segments over which to fade toward red
-
-    @staticmethod
-    def _blend_hex(c1: str, c2_rgb: tuple, factor: float) -> str:
-        """Blend hex color c1 toward c2_rgb by factor (0=c1, 1=c2)."""
-        h = c1.lstrip("#")
-        r1, g1, b1 = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-        r = int(r1 + (c2_rgb[0] - r1) * factor)
-        g = int(g1 + (c2_rgb[1] - g1) * factor)
-        b = int(b1 + (c2_rgb[2] - b1) * factor)
-        return f"#{r:02x}{g:02x}{b:02x}"
+    _BLEND_RANGE = 1.0  # number of segments over which to fade toward red
 
     def _gradient_colors(self, segments, seg_index) -> list[str] | None:
         """Compute per-point-pair colors for a segment near invalid segments.
@@ -1149,21 +1163,22 @@ class UrdfScene(
         if dist_before > rng and dist_after > rng:
             return None
 
+        h = seg.color.lstrip("#")
+        rgb1 = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
         colors = []
         for j in range(n_pairs):
             t = (j + 0.5) / n_pairs  # 0..1 position within segment
 
-            # Continuous distance to invalid region in each direction
-            # At t=0, closest to the preceding segment; at t=1, closest to following
             d_bef = (dist_before - 1) + t
             d_aft = (dist_after - 1) + (1.0 - t)
             min_d = min(d_bef, d_aft)
 
             factor = max(0.0, 1.0 - min_d / self._BLEND_RANGE)
-            factor = factor**1.3  # ease-in for smoother ramp
+            factor = factor**3.0  # steep ramp — stays green, only red near boundary
 
             if factor > 0.001:
-                colors.append(self._blend_hex(seg.color, self._INVALID_RGB, factor))
+                colors.append(_lerp_hex(rgb1, self._INVALID_RGB, factor))
             else:
                 colors.append(seg.color)
 
@@ -1311,7 +1326,7 @@ class UrdfScene(
                 continue
             opacity = 0.5 if (step > 0 and ri.segment_index < step) else 1.0
             for obj in ri.objects:
-                obj.material("#FF9800", opacity)
+                obj.material(PathColors.TOOL_ACTION, opacity)
 
         for ri in self._rendered_waypoints:
             if ri is None or not ri.objects or ri.segment_index < 0:
@@ -1408,8 +1423,7 @@ class UrdfScene(
         # Only apply to robot if in editing mode
         if self._appearance_mode == RobotAppearanceMode.EDITING:
             self._apply_joint_angles(self._editing_angles)
-            # Update TCP ball position via FK
-            self._update_tcp_ball_position_from_editing()
+            self._update_tcp_ball_position()
 
     def get_editing_angles(self) -> list[float]:
         """Get current editing joint angles.
@@ -1419,24 +1433,9 @@ class UrdfScene(
         """
         return list(self._editing_angles)
 
-    def _update_tcp_ball_position_from_editing(self) -> None:
-        """Update TCP ball position based on editing angles using FK.
-
-        This positions the unified TCP ball when in editing mode.
-        """
-        # Use the unified TCP ball position update method
-        self._update_tcp_ball_position()
-
     def get_joint_names(self) -> list[str]:
         """Get list of actuated joint names in order."""
         return list(self.joint_groups.keys())
-
-    def get_joint_limits(self) -> dict[str, dict[str, float | None]]:
-        """Get joint position limits."""
-        return {
-            name: {"min": limits.get("min"), "max": limits.get("max")}
-            for name, limits in self.joint_pos_limits.items()
-        }
 
     def set_tcp_pose(self, origin: Sequence[float], rpy: Sequence[float]) -> None:
         """Directly set TCP offset pose.
@@ -1871,7 +1870,3 @@ class UrdfScene(
         scene.line(origin, [tx + scale, ty, tz]).material(SceneColors.AXIS_X_HEX)
         scene.line(origin, [tx, ty + scale, tz]).material(SceneColors.AXIS_Y_HEX)
         scene.line(origin, [tx, ty, tz + scale]).material(SceneColors.AXIS_Z_HEX)
-
-    def _axis_color(self, axis_letter: str) -> str:
-        """Get standard color for coordinate axis (CVD-aware palette)."""
-        return self._AXIS_COLORS.get(axis_letter.upper(), SceneColors.MATERIAL_DARK_HEX)

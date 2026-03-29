@@ -228,7 +228,7 @@ class TestTimelineToolKeyframes:
     """Test tool action keyframe construction and interpolation."""
 
     def test_tool_keyframes_from_actions(self):
-        """Tool actions produce keyframes at correct absolute times."""
+        """Blocking tool action keyframes start at the end of segment motion."""
         segs = [_seg(duration=2.0), _seg(duration=3.0)]
         actions = [
             ToolAction(
@@ -246,11 +246,11 @@ class TestTimelineToolKeyframes:
         ]
         tl = Timeline.from_segments(segs, tool_actions=actions)
 
-        # Keyframes: start at cum[0]+0.0=0.0, end at 0.0+0.5=0.5
+        # Blocking tool fires at end of segment 0's motion (t=2.0)
         assert len(tl.tool_keyframes) == 2
-        assert tl.tool_keyframes[0].time == pytest.approx(0.0)
+        assert tl.tool_keyframes[0].time == pytest.approx(2.0)
         assert tl.tool_keyframes[0].positions == (0.0,)
-        assert tl.tool_keyframes[1].time == pytest.approx(0.5)
+        assert tl.tool_keyframes[1].time == pytest.approx(2.5)
         assert tl.tool_keyframes[1].positions == (1.0,)
 
     def test_sample_tool_interpolation(self):
@@ -306,3 +306,82 @@ class TestTimelineToolKeyframes:
 
         # Tool ends at 0.5 + 2.0 = 2.5, which exceeds segment duration of 1.0
         assert tl.total_duration == pytest.approx(2.5)
+
+
+class TestTimelineBlockingGap:
+    """Test that arm holds still during blocking tool action gaps."""
+
+    def test_arm_holds_at_fraction_1_during_gap(self):
+        """After a blocking move, sample() returns fraction=1.0 during the gap."""
+        traj = [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+        ]
+        segs = [_seg(duration=2.0, joint_trajectory=traj)]
+        actions = [
+            ToolAction(
+                tcp_pose=[0, 0, 0],
+                motions=[],
+                target_positions=(1.0,),
+                start_positions=(0.0,),
+                activation_type="electric",
+                line_number=1,
+                method="close",
+                estimated_duration=1.0,
+                segment_index=0,
+                sleep_offset=0.0,
+            ),
+        ]
+        tl = Timeline.from_segments(segs, tool_actions=actions)
+
+        # Total = 2.0 (motion) + 1.0 (blocking gap) = 3.0
+        assert tl.total_duration == pytest.approx(3.0)
+
+        # At t=1.0: mid-motion, fraction=0.5
+        s = tl.sample(1.0)
+        assert s.fraction == pytest.approx(0.5)
+        assert s.joints == pytest.approx([5.0, 10.0, 15.0, 20.0, 25.0, 30.0])
+
+        # At t=2.0: motion done, fraction=1.0
+        s = tl.sample(2.0)
+        assert s.fraction == pytest.approx(1.0)
+        assert s.joints == pytest.approx([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+
+        # At t=2.5: mid-gap (tool animating), arm still at fraction=1.0
+        s = tl.sample(2.5)
+        assert s.fraction == pytest.approx(1.0)
+        assert s.joints == pytest.approx([10.0, 20.0, 30.0, 40.0, 50.0, 60.0])
+
+
+class TestGradientBlending:
+    """Test that the path gradient blends green→red sensibly."""
+
+    def test_green_red_midpoint(self):
+        """Blending green and red at 50% produces a mix, not an unchanged color."""
+        from parol_commander.services.urdf_scene.urdf_scene import _lerp_hex
+
+        green = (0x10, 0xB9, 0x81)  # #10b981
+        red = (0xEF, 0x44, 0x44)  # #ef4444
+
+        result = _lerp_hex(green, red, 0.5)
+        r8 = int(result[1:3], 16)
+        g8 = int(result[3:5], 16)
+        b8 = int(result[5:7], 16)
+
+        # Midpoint should have moderate red and green, low blue
+        assert r8 > 100, f"Red channel should be moderate at midpoint, got {r8}"
+        assert g8 > 80, f"Green channel should be moderate at midpoint, got {g8}"
+        assert b8 < 120, f"Blue channel should be low-ish at midpoint, got {b8}"
+
+    def test_low_factor_stays_greenish(self):
+        """At factor=0.1 (far from invalid), green still dominates."""
+        from parol_commander.services.urdf_scene.urdf_scene import _lerp_hex
+
+        green = (0x10, 0xB9, 0x81)
+        red = (0xEF, 0x44, 0x44)
+
+        result = _lerp_hex(green, red, 0.1)
+        r8 = int(result[1:3], 16)
+        g8 = int(result[3:5], 16)
+        # Green channel should still be dominant at low blend factor
+        assert g8 > r8, f"Green should dominate at low factor, got r={r8} g={g8}"

@@ -12,6 +12,15 @@ from waldoctl import ActionState, ToolStatus
 
 from parol_commander.common.loop_timer import PhaseTimer
 
+
+class EnvelopeMode(Enum):
+    """Workspace envelope visibility modes."""
+
+    AUTO = "auto"
+    ON = "on"
+    OFF = "off"
+
+
 logger = logging.getLogger(__name__)
 
 # Type-checking shim for bindable_dataclass to satisfy Pylance without changing runtime
@@ -221,8 +230,7 @@ class SimulationState(ChangeNotifierMixin):
     playback_speed: float = 1.0  # Multiplier
     preview_mode: bool = False  # True=Dry Run, False=Real Execute
     paths_visible: bool = True
-    envelope_visible: bool = False
-    envelope_mode: str = "auto"  # "auto" | "on" | "off"
+    envelope_mode: EnvelopeMode = EnvelopeMode.AUTO
     active_cursor_line: int = 0  # 1-indexed editor cursor line, 0 = none
     sim_playback_time: float = 0.0  # Current playback position (seconds)
     sim_total_duration: float = 0.0  # Total timeline duration (seconds)
@@ -245,8 +253,7 @@ class SimulationState(ChangeNotifierMixin):
         self.playback_speed = 1.0
         self.preview_mode = False
         self.paths_visible = True
-        self.envelope_visible = False
-        self.envelope_mode = "auto"
+        self.envelope_mode = EnvelopeMode.AUTO
         self.active_cursor_line = 0
         self.sim_playback_time = 0.0
         self.sim_total_duration = 0.0
@@ -385,11 +392,9 @@ class RobotState(ChangeNotifierMixin):
 @dataclass
 class ControllerState:
     running: bool = False
-    com_port: str | None = None
 
     def reset(self) -> None:
         self.running = False
-        self.com_port = None
 
 
 class _RequiredField:
@@ -427,7 +432,6 @@ class UiState:
     jog_accel: int = 50
     incremental_jog: bool = False
     joint_step_deg: float = 1.0
-    frame: str = "WRF"
     gizmo_visible: bool = True
 
     # Gripper panel state

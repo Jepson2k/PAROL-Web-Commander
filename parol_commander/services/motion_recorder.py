@@ -47,6 +47,8 @@ class MotionRecorder:
         # Actions queued while a jog is in progress (arm still moving).
         # Each entry: (action_type, params, timestamp_of_click)
         self._pending_actions: list[tuple[str, dict, float]] = []
+        # Wall-clock time of the last recorded action (for inserting gaps)
+        self._last_action_wall_time: float = 0.0
 
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
@@ -149,6 +151,7 @@ class MotionRecorder:
         """Start a new recording session."""
         recording_state.is_recording = True
         self._active_jog = None
+        self._last_action_wall_time = 0.0
 
         # Log the initial position for reference
         if len(robot_state.angles) >= ui_state.active_robot.joints.count:
@@ -216,6 +219,13 @@ class MotionRecorder:
             self._pending_actions.append((action_type, params, time.time()))
             return
 
+        # Insert delay if time has passed since last recorded action
+        # (covers remaining move time after non-blocking moves + idle time)
+        if self._last_action_wall_time > 0 and action_type not in ("moveJ", "moveL"):
+            delay = time.time() - self._last_action_wall_time
+            if delay > 0.05:
+                self._record_action_impl("delay", seconds=delay)
+
         self._record_action_impl(action_type, **params)
 
     def _record_action_impl(self, action_type: str, **params) -> None:
@@ -228,6 +238,7 @@ class MotionRecorder:
         # Generate and insert code
         snippet = self._generate_code(action_type, params, marker_id)
         self._insert_snippet(snippet)
+        self._last_action_wall_time = time.time()
 
         if TRACE_ENABLED:
             logger.log(
@@ -369,6 +380,8 @@ class MotionRecorder:
             self._record_action_impl(action_type, **params)
             last_t = queued_at
 
+        # Track wall time of last flushed action for gap detection
+        self._last_action_wall_time = self._pending_actions[-1][2]
         self._pending_actions.clear()
 
     def capture_current_pose(self, move_type: str = "cartesian") -> None:

@@ -20,6 +20,8 @@ from nicegui import ui
 from parol_commander.constants import CLICK_HOLD_THRESHOLD_S
 from parol_commander.state import simulation_state, ui_state
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Keybinding:
@@ -70,7 +72,7 @@ class KeybindingsManager:
             binding.requires_alt,
         )
         self._bindings[key_id] = binding
-        logging.debug("Registered keybinding: %s -> %s", key_id, binding.description)
+        logger.debug("Registered keybinding: %s -> %s", key_id, binding.description)
 
     def unregister(
         self, key: str, shift: bool = False, ctrl: bool = False, alt: bool = False
@@ -221,7 +223,7 @@ class KeybindingsManager:
             if asyncio.iscoroutine(result):
                 asyncio.create_task(result)
         except Exception as ex:
-            logging.error("Keybinding action failed: %s", ex)
+            logger.error("Keybinding action failed: %s", ex)
 
     def set_editor_focused(self, focused: bool) -> None:
         """Called from JS when editor/input focus changes."""

@@ -51,7 +51,7 @@ class EditingMixin:
     _pre_edit_angles: list[float]
     _tcp_ball: Any
     _tcp_ball_dragging: bool
-    _tcp_fk_solver: EditingIKSolver | None
+    _ik_solver: EditingIKSolver | None
     config: Any
     targets_group: Any
     _target_objects: dict[str, dict[str, Any]]
@@ -315,10 +315,10 @@ class EditingMixin:
         """Solve IK for target position. Returns joint angles in radians."""
         if not self._ensure_ik_solver():
             return None
-        assert self._tcp_fk_solver is not None
+        assert self._ik_solver is not None
 
         current_angles = self._get_robot_angles_rad()
-        result = self._tcp_fk_solver.solve(
+        result = self._ik_solver.solve(
             target_pos=np.array(target_pos, dtype=np.float64),
             current_angles=current_angles,
             throttle=False,
@@ -503,9 +503,26 @@ class EditingMixin:
         self._end_editing_session()
 
     def _confirm_unified_as_joint(self) -> None:
-        """Confirm as joint target."""
+        """Confirm as joint target (converts moveL→moveJ if editing existing)."""
         if not self._editing_unified_target:
             return
+
+        if self._editing_target_id:
+            # Editing existing target — convert to moveJ in place
+            target = self._find_target_by_id(self._editing_target_id)
+            n = len(self.joint_names)
+            angles_deg = list(robot_state.angles.deg[:n])
+            if target:
+                pose = target.pose
+                ui_state.editor_panel.sync_code_from_target(
+                    self._editing_target_id,
+                    pose,
+                    move_type="joints",
+                    joint_angles_deg=angles_deg,
+                )
+            self._end_editing_session()
+            return
+
         self._insert_joint_target_from_editing()
         self._end_editing_session()
 
@@ -613,10 +630,8 @@ class EditingMixin:
                     )
             else:
                 tcp_pos_mm = [0.0, 0.0, 0.0]
-                if self._tcp_fk_solver:
-                    fk = self._tcp_fk_solver.forward_kinematics(
-                        self.get_editing_angles()
-                    )
+                if self._ik_solver:
+                    fk = self._ik_solver.forward_kinematics(self.get_editing_angles())
                     if fk is not None:
                         offset = self._current_tool_offset_z
                         tcp_pos_mm = [
@@ -679,9 +694,9 @@ class EditingMixin:
 
     def _get_current_tcp_z(self) -> float | None:
         """Get current TCP z position in meters via FK."""
-        if not self._ensure_ik_solver() or not self._tcp_fk_solver:
+        if not self._ensure_ik_solver() or not self._ik_solver:
             return None
-        fk = self._tcp_fk_solver.forward_kinematics(self._get_robot_angles_rad())
+        fk = self._ik_solver.forward_kinematics(self._get_robot_angles_rad())
         return float(fk[2]) if fk is not None else None
 
     def _get_editing_tcp_pose(self) -> list[float] | None:
@@ -738,8 +753,8 @@ class EditingMixin:
             angles_rad = self.get_editing_angles()
             robot_state.angles.set_rad(np.asarray(angles_rad))
 
-            if self._tcp_fk_solver:
-                fk = self._tcp_fk_solver.forward_kinematics(angles_rad)
+            if self._ik_solver:
+                fk = self._ik_solver.forward_kinematics(angles_rad)
                 if fk is not None:
                     offset = self._current_tool_offset_z
                     robot_state.x = fk[0] * 1000

@@ -42,11 +42,9 @@ def _atomic_write(path: Path, data: dict) -> None:
 def _read_control(control_file: Path) -> dict:
     """Read control file, return defaults if not exists or parse error."""
     try:
-        if control_file.exists():
-            return json.loads(control_file.read_text())
+        return json.loads(control_file.read_text())
     except (json.JSONDecodeError, OSError):
-        pass
-    return {"paused": True, "step_signal": 0, "step_acked": 0}
+        return {"paused": True, "step_signal": 0, "step_acked": 0}
 
 
 class StepIO:
@@ -80,12 +78,10 @@ class StepIO:
     def _read_events(self) -> list[dict]:
         """Read events from event file."""
         try:
-            if self._event_file.exists():
-                data = json.loads(self._event_file.read_text())
-                return data.get("events", [])
+            data = json.loads(self._event_file.read_text())
+            return data.get("events", [])
         except (json.JSONDecodeError, OSError):
-            pass
-        return []
+            return []
 
     def emit_event(self, event_type: str, method: str, **extra: Any) -> None:
         """
@@ -360,28 +356,22 @@ class GUIStepController:
         Returns list of new events since last poll.
         """
         try:
-            if self._event_file.exists():
-                data = json.loads(self._event_file.read_text())
-                events = data.get("events", [])
-                # Return only new events
-                new_events = events[self._last_event_count :]
-                self._last_event_count = len(events)
-                return new_events
+            data = json.loads(self._event_file.read_text())
+            events = data.get("events", [])
+            new_events = events[self._last_event_count :]
+            self._last_event_count = len(events)
+            return new_events
         except (json.JSONDecodeError, OSError):
-            pass
-        return []
+            return []
 
     def get_step_count(self) -> int:
         """Get the current step count from events."""
         try:
-            if self._event_file.exists():
-                data = json.loads(self._event_file.read_text())
-                events = data.get("events", [])
-                # Count complete events
-                return sum(1 for e in events if e.get("event") == "complete")
+            data = json.loads(self._event_file.read_text())
+            events = data.get("events", [])
+            return sum(1 for e in events if e.get("event") == "complete")
         except (json.JSONDecodeError, OSError):
-            pass
-        return 0
+            return 0
 
     def cleanup(self) -> None:
         """Remove IPC files."""

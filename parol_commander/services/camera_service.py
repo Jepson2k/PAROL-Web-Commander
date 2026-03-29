@@ -95,6 +95,10 @@ class LinuxpyBackend:
             return True
         except Exception:
             logger.debug("linuxpy failed to open device %s", device, exc_info=True)
+            try:
+                dev.close()
+            except OSError:
+                pass
             if self._capture is not None:
                 try:
                     self._capture.close()

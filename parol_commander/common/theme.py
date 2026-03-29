@@ -1194,7 +1194,33 @@ html, body {
 .keys-cell { padding: 6px 16px 6px 0 !important; }
 
 .keybindings-table tbody td { border: none !important; }
+.keybindings-table { background: transparent !important; }
 
+.help-dialog-card .q-stepper,
+.help-dialog-card .q-stepper__content {
+  background: transparent !important;
+}
+
+
+/* ========== File Dialogs ========== */
+.file-upload .q-uploader__header,
+.file-upload .q-uploader__list {
+  border-radius: 12px;
+}
+.file-upload {
+  border-radius: 12px !important;
+  border: none !important;
+}
+.file-upload .q-uploader__header {
+  box-shadow: 0 -8px 16px rgba(0, 0, 0, 0.4);
+}
+
+.file-tree-scroll .q-scrollarea__content { padding: 0 !important; }
+
+/* ========== File Tree ========== */
+.file-tree .q-tree__node-header-content { color: white !important; }
+.file-tree .q-tree__node--selected > .q-tree__node-header .q-tree__node-header-content { color: white !important; font-weight: bold !important; }
+.file-tree .q-tree__node--parent > .q-tree__node-header .q-tree__node-header-content { font-weight: bold !important; }
 
 /* ========== Robot Face Indicator ========== */
 

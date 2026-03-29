@@ -1,12 +1,10 @@
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 # Repository root
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-# Official PAROL6 documentation URL
-PAROL6_OFFICIAL_DOC_URL = "https://github.com/PCrnjak/PAROL-commander-software"
 
 
 class _Config:
@@ -20,7 +18,7 @@ class _Config:
     """
 
     def __init__(self) -> None:
-        self._overrides: dict[str, object] = {}
+        self._overrides: dict[str, Any] = {}
 
     def set(self, key: str, value: object) -> None:
         """Set a runtime override (e.g., from CLI arguments).
@@ -50,12 +48,11 @@ class _Config:
         """Whether to require exclusive controller ownership on start."""
         if "exclusive_start" in self._overrides:
             return bool(self._overrides["exclusive_start"])
-        return os.getenv("PAROL_EXCLUSIVE_START", "1") in (
+        return os.getenv("PAROL_EXCLUSIVE_START", "1").lower() in (
             "1",
             "true",
-            "True",
             "yes",
-            "YES",
+            "on",
         )
 
     @property

@@ -58,6 +58,16 @@ class HelpMenu:
                         ):
                             ui.label("Help").classes("text-lg font-medium")
                             ui.space()
+                            with (
+                                ui.link(
+                                    "",
+                                    "https://jepson2k.github.io/PAROL-Web-Commander/",
+                                    new_tab=True,
+                                )
+                                .classes("text-gray-400")
+                                .tooltip("View tutorials online")
+                            ):
+                                ui.icon("open_in_new", size="sm")
                             ui.button(icon="close", on_click=self._dialog.close).props(
                                 "flat round dense color=white"
                             )
@@ -71,7 +81,12 @@ class HelpMenu:
                             )
                         ):
                             with ui.tab_panel(keybindings_tab).classes("p-0"):
-                                self._build_keybindings_content()
+                                with (
+                                    ui.scroll_area()
+                                    .classes("w-full")
+                                    .style("max-height: 80vh;")
+                                ):
+                                    self._build_keybindings_content()
 
                             with (
                                 ui.tab_panel(quickstart_tab)
@@ -167,8 +182,10 @@ class HelpMenu:
                     """,
                     )
 
+    _TUTORIALS_URL = "https://jepson2k.github.io/PAROL-Web-Commander/videos"
+
     def _build_quickstart_stepper(self, include_safety_step: bool = False) -> None:
-        """Build quick start stepper with GIF placeholders.
+        """Build quick start stepper with tutorial videos.
 
         Args:
             include_safety_step: If True, prepend a safety acknowledgment step.
@@ -178,27 +195,27 @@ class HelpMenu:
             {
                 "title": "Interface Overview",
                 "description": "PAROL Commander has three main areas: the 3D view (center), control panel (bottom-right), and program editor (left). The 3D view shows your robot and lets you interact with it directly.",
-                "gif": "step-1-overview.gif",
+                "video": "basic_control.mp4",
             },
             {
                 "title": "Simulator vs Robot Mode",
                 "description": "Toggle between simulator mode (amber robot) and real hardware control using the robot/controller button. In simulator mode, you can test programs safely without moving the real robot.",
-                "gif": "step-2-simulator.gif",
+                "video": "connecting_to_robot.mp4",
             },
             {
                 "title": "Program Tab",
                 "description": "Write Python programs to control your robot. Why Python? It gives you full programming power - loops, conditionals, math, and access to the complete robot API. Programs run step-by-step so you can pause and inspect.",
-                "gif": "step-3-program.gif",
+                "video": "recording_and_previewing_actions.mp4",
             },
             {
                 "title": "Set Serial Port",
                 "description": "To connect to real hardware, open Settings and select your serial port. The robot status indicator will turn green when connected.",
-                "gif": "step-4-serial.gif",
+                "video": "connecting_to_robot.mp4",
             },
             {
                 "title": "Begin! TCP Controls",
                 "description": "Click the TCP (Tool Center Point) in the 3D view to show movement gizmos. Drag the arrows to jog in cartesian space, or use the rotation rings for orientation. You can also use WASD+QE keys for quick jogging!",
-                "gif": "step-5-tcp.gif",
+                "video": "basic_control.mp4",
             },
         ]
 
@@ -254,21 +271,9 @@ class HelpMenu:
 
                 for i, step in enumerate(steps):
                     with ui.step(step["title"]).classes("gap-2"):
-                        # GIF placeholder
-                        with (
-                            ui.card()
-                            .classes("gif-placeholder")
-                            .style(
-                                "width: 100%; aspect-ratio: 16/9; background: rgba(128,128,128,0.15);"
-                            )
-                        ):
-                            with ui.column().classes(
-                                "w-full h-full items-center justify-center"
-                            ):
-                                ui.icon("movie", size="2rem").classes("text-gray-500")
-                                ui.label(f"Tutorial GIF: {step['title']}").classes(
-                                    "text-center text-gray-500 text-xs"
-                                )
+                        ui.video(f"{self._TUTORIALS_URL}/{step['video']}").classes(
+                            "w-full rounded-lg"
+                        ).props('preload="metadata"').style("max-height: 360px;")
 
                         ui.label(step["description"]).classes("text-sm")
 

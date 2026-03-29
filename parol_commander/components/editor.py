@@ -31,8 +31,12 @@ from parol_commander.services.path_visualizer import path_visualizer
 from parol_commander.services.motion_recorder import motion_recorder
 from parol_commander.services.stepping_client import GUIStepController
 from parol_commander.components.playback import PlaybackController
+from parol_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
+
+# Marker prefix for editable target lines (e.g. "# TARGET:a1b2c3d4")
+TARGET_MARKER = "# TARGET:"
 
 
 def _get_home_joints_rad() -> list[float]:
@@ -143,7 +147,7 @@ def generate_completions_from_commands() -> list[dict]:
     return completions
 
 
-class EditorPanel:
+class EditorPanel(FileOperationsMixin):
     """Program editor panel with script execution and command palette."""
 
     def __init__(self) -> None:
@@ -264,9 +268,8 @@ print(f"Robot status: {{status}}")
 
     def _generate_snippet(self, method_name: str, use_current_position: bool) -> str:
         """Generate Python snippet with optional current position pre-fill."""
-        # Get user's current speed and acceleration settings (convert 1-100 int to 0.0-1.0 fraction)
-        speed = ui_state.jog_speed / 100.0
-        accel = ui_state.jog_accel / 100.0
+        speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+        accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
 
         # Motion commands that can use current position
         if use_current_position:
@@ -291,13 +294,24 @@ print(f"Robot status: {{status}}")
             self.program_textarea.value = val + snippet + "\n"
             logger.info("Added Python snippet: %s", snippet)
 
-    def sync_code_from_target(self, target_id: str, pose: list[float]) -> None:
+    def sync_code_from_target(
+        self,
+        target_id: str,
+        pose: list[float],
+        *,
+        move_type: str | None = None,
+        joint_angles_deg: list[float] | None = None,
+    ) -> None:
         """Update the program code with the new pose for a specific target.
 
         Uses marker-based lookup (# TARGET:uuid) instead of line numbers for stability.
 
         Note: pose is in scene units (meters for position, degrees for rotation).
         Code uses user units (mm for position, degrees for rotation).
+
+        If move_type is provided (e.g. "joints"), the move command is also
+        converted (moveL→moveJ or vice versa). joint_angles_deg must be
+        provided when converting to moveJ.
         """
         if not self.program_textarea:
             return
@@ -316,7 +330,7 @@ print(f"Robot status: {{status}}")
         lines = content.splitlines()
 
         # Find line with TARGET:target_id marker (marker-based lookup)
-        target_marker = f"# TARGET:{target_id}"
+        target_marker = f"{TARGET_MARKER}{target_id}"
         found_line_idx = None
 
         for i, line in enumerate(lines):
@@ -335,28 +349,30 @@ print(f"Robot status: {{status}}")
         match = re.search(r"(\[[\d\.\,\-\s]+\])", line)
 
         if match:
-            # Convert from scene units (meters) to user units (mm) for position
-            # Rotation stays in degrees (unchanged)
-            pose_mm = [
-                pose[0] * 1000.0 if len(pose) > 0 else 0.0,  # x: m → mm
-                pose[1] * 1000.0 if len(pose) > 1 else 0.0,  # y: m → mm
-                pose[2] * 1000.0 if len(pose) > 2 else 0.0,  # z: m → mm
-                pose[3] if len(pose) > 3 else 0.0,  # rx: degrees
-                pose[4] if len(pose) > 4 else 0.0,  # ry: degrees
-                pose[5] if len(pose) > 5 else 0.0,  # rz: degrees
-            ]
+            # Convert move type if requested (e.g. moveL → moveJ)
+            if move_type == "joints" and joint_angles_deg is not None:
+                new_values_str = (
+                    "[" + ", ".join(f"{v:.3f}" for v in joint_angles_deg) + "]"
+                )
+                new_line = line[: match.start()] + new_values_str + line[match.end() :]
+                new_line = new_line.replace("rbt.moveL(", "rbt.moveJ(")
+                new_line = new_line.replace("rbt.moveC(", "rbt.moveJ(")
+            else:
+                # Convert from scene units (meters) to user units (mm) for position
+                pose_mm = [
+                    pose[0] * 1000.0 if len(pose) > 0 else 0.0,
+                    pose[1] * 1000.0 if len(pose) > 1 else 0.0,
+                    pose[2] * 1000.0 if len(pose) > 2 else 0.0,
+                    pose[3] if len(pose) > 3 else 0.0,
+                    pose[4] if len(pose) > 4 else 0.0,
+                    pose[5] if len(pose) > 5 else 0.0,
+                ]
+                new_values_str = "[" + ", ".join(f"{v:.3f}" for v in pose_mm) + "]"
+                new_line = line[: match.start()] + new_values_str + line[match.end() :]
 
-            # Format new pose with reasonable precision
-            new_pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose_mm) + "]"
-
-            # Replace in line (preserve the marker)
-            new_line = line[: match.start()] + new_pose_str + line[match.end() :]
             lines[found_line_idx] = new_line
-
-            # Update text area (this will trigger debounced simulation)
             self.program_textarea.value = "\n".join(lines)
-
-            logger.info("Synced code for target %s: %s", target_id, new_pose_str)
+            logger.info("Synced code for target %s: %s", target_id, new_values_str)
         else:
             logger.warning(
                 "Sync failed: Could not find coordinate list in line: %s", line
@@ -374,7 +390,7 @@ print(f"Robot status: {{status}}")
         lines = content.splitlines()
 
         # Find and remove line with TARGET:target_id marker
-        target_marker = f"# TARGET:{target_id}"
+        target_marker = f"{TARGET_MARKER}{target_id}"
         new_lines = [line for line in lines if target_marker not in line]
 
         if len(new_lines) < len(lines):
@@ -401,20 +417,16 @@ print(f"Robot status: {{status}}")
         # Generate unique marker ID
         marker_id = uuid.uuid4().hex[:8]
 
-        # Get user's current speed and acceleration settings (convert 1-100 int to 0.0-1.0 fraction)
-        speed = ui_state.jog_speed / 100.0
-        accel = ui_state.jog_accel / 100.0
+        speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
+        accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
 
-        # Format the pose with appropriate precision
         pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
 
-        # Generate appropriate code based on move_type with marker
         if move_type == "joints":
-            code_line = f"rbt.moveJ({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
+            code_line = f"rbt.moveJ({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
         else:
-            code_line = f"rbt.moveL({pose_str}, speed={speed}, accel={accel})  # TARGET:{marker_id}"
+            code_line = f"rbt.moveL({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
 
-        # Get current content and add the new line
         content = self.program_textarea.value or ""
 
         # Count lines before adding
@@ -544,161 +556,6 @@ print(f"Robot status: {{status}}")
                                 ui.tooltip(tooltip_text).classes("text-xs").style(
                                     "max-width: 300px; white-space: pre-wrap;"
                                 )
-
-    async def load_program(self, filename: str | None = None) -> None:
-        """Load a program file into a new tab (or switch to existing tab if already open)."""
-        try:
-            # Get filename from parameter or active tab
-            name = filename or ""
-            if not name:
-                tab = editor_tabs_state.get_active_tab()
-                if tab:
-                    name = tab.filename
-            if not name:
-                ui.notify("No filename specified", color="warning")
-                return
-
-            file_path = str(self.PROGRAM_DIR / name)
-
-            # Check if already open - switch to existing tab
-            existing_tab = editor_tabs_state.find_tab_by_path(file_path)
-            if existing_tab:
-                self._switch_to_tab(existing_tab.id)
-                ui.notify(f"Switched to existing tab: {name}", color="info")
-                return
-
-            # Load content and create new tab
-            text = (self.PROGRAM_DIR / name).read_text(encoding="utf-8")
-            tab = self._new_tab(filename=name, content=text)
-            tab.file_path = file_path
-            tab.saved_content = text  # Mark as clean
-
-            # Update dirty indicator
-            widgets = self._tab_widgets.get(tab.id, {})
-            dirty_dot = widgets.get("dirty_dot")
-            if dirty_dot:
-                dirty_dot.set_visibility(False)
-
-            ui.notify(f"Loaded {name}", color="positive")
-            logger.info("Loaded program %s", name)
-        except Exception as e:
-            ui.notify(f"Load failed: {e}", color="negative")
-            logger.error("Load failed: %s", e)
-
-    async def save_program(self, as_name: str | None = None) -> None:
-        """Save the active tab's program to a file."""
-        tab = editor_tabs_state.get_active_tab()
-        if not tab:
-            ui.notify("No active tab to save", color="warning")
-            return
-        await self._save_tab(tab)
-
-    def download_program(self) -> None:
-        """Download the active tab's program content to the user's device."""
-        tab = editor_tabs_state.get_active_tab()
-        if not tab:
-            ui.notify("No active tab to download", color="warning")
-            return
-        self._download_tab(tab)
-
-    def open_file_picker(self) -> None:
-        """Open a file picker dialog to upload a program file into a new tab."""
-        dlg = ui.dialog()
-        with dlg, ui.card().classes("overlay-card w-96"):
-            ui.label("Open Program from Device").classes("text-lg font-medium mb-2")
-
-            # Loading spinner (hidden by default)
-            spinner = ui.spinner("dots", size="lg").classes("mx-auto")
-            spinner.visible = False
-
-            async def _on_upload(e):
-                try:
-                    spinner.visible = True
-
-                    # Read file content in thread pool to avoid blocking
-                    data = await asyncio.to_thread(e.content.read)
-                    name = getattr(e, "name", None) or "uploaded_program.txt"
-                    content = data.decode("utf-8", errors="ignore")
-
-                    # Write file to server
-                    file_path = str(self.PROGRAM_DIR / name)
-                    await asyncio.to_thread((self.PROGRAM_DIR / name).write_bytes, data)
-
-                    # Check if already open - switch to existing tab
-                    existing_tab = editor_tabs_state.find_tab_by_path(file_path)
-                    if existing_tab:
-                        # Update existing tab's content
-                        existing_tab.content = content
-                        existing_tab.saved_content = content
-                        widgets = self._tab_widgets.get(existing_tab.id, {})
-                        textarea = widgets.get("textarea")
-                        if textarea:
-                            textarea.value = content
-                        self._switch_to_tab(existing_tab.id)
-                        ui.notify(f"Updated existing tab: {name}", color="info")
-                    else:
-                        # Create new tab
-                        tab = self._new_tab(filename=name, content=content)
-                        tab.file_path = file_path
-                        tab.saved_content = content
-                        ui.notify(f"Loaded {name}", color="positive")
-
-                    dlg.close()
-                except Exception as ex:
-                    ui.notify(f"Upload failed: {ex}", color="negative")
-                    logger.error("File upload failed: %s", ex)
-                finally:
-                    spinner.visible = False
-
-            ui.upload(on_upload=_on_upload).props(
-                "accept=.py, max-file-size=10485760"
-            ).classes("w-full")
-            ui.label("Max file size: 10MB").classes("text-xs text-gray-500")
-            with ui.row().classes("gap-2 mt-2 justify-end w-full"):
-                ui.button("Cancel", on_click=dlg.close).props("flat")
-        dlg.open()
-
-    def open_server_file_dialog(self) -> None:
-        """Open a dialog to select and load a program file from the server."""
-        dlg = ui.dialog()
-        with dlg, ui.card().classes("overlay-card w-96"):
-            ui.label("Open Program from Server").classes("text-lg font-medium mb-2")
-
-            # List available files from PROGRAM_DIR
-            try:
-                files = sorted(
-                    [
-                        f.name
-                        for f in self.PROGRAM_DIR.iterdir()
-                        if f.is_file() and f.suffix in (".py", ".txt", ".prog", "")
-                    ]
-                )
-            except OSError:
-                files = []
-
-            if not files:
-                ui.label("No program files found").classes("text-gray-500 my-4")
-                with ui.row().classes("gap-2 justify-end w-full"):
-                    ui.button("Close", on_click=dlg.close).props("flat")
-            else:
-                file_select = ui.select(
-                    options=files,
-                    label="Select file",
-                    value=files[0] if files else None,
-                ).classes("w-full")
-
-                async def do_open():
-                    if file_select.value:
-                        await self.load_program(file_select.value)
-                    dlg.close()
-
-                with ui.row().classes("gap-2 mt-4 justify-end w-full"):
-                    ui.button("Cancel", on_click=dlg.close).props("flat")
-                    open_btn = ui.button("Open", on_click=do_open).props(
-                        "color=primary"
-                    )
-                    open_btn.mark("dialog-open-btn")
-        dlg.open()
 
     async def _toggle_run_script(self) -> None:
         """Toggle start/stop script."""
@@ -924,7 +781,6 @@ print(f"Robot status: {{status}}")
         """Run the simulation for the current script.
 
         Args:
-            notify: Whether to show notification toasts (default True)
             tab_id: Optional tab ID to run simulation for. If None, uses active tab.
 
         Returns:
@@ -1004,14 +860,14 @@ print(f"Robot status: {{status}}")
                 line = lines[line_idx]
 
                 # Skip if line already has a TARGET marker
-                if "# TARGET:" in line:
+                if TARGET_MARKER in line:
                     continue
 
                 # Generate new UUID
                 new_id = uuid.uuid4().hex[:8]
 
                 # Add marker to end of line
-                lines[line_idx] = f"{line}  # TARGET:{new_id}"
+                lines[line_idx] = f"{line}  {TARGET_MARKER}{new_id}"
 
                 # Update target ID in simulation_state
                 target.id = new_id
@@ -1142,8 +998,8 @@ print(f"Robot status: {{status}}")
             self.playback.set_enabled(False)
             # Show recording notification at top of screen
             try:
-                client = self._ui_client or context.client
-                with client:
+                ui_client = self._ui_client or context.client
+                with ui_client:
                     self._recording_notification = ui.notification(
                         message="Recording",
                         type="negative",
@@ -1298,12 +1154,6 @@ print(f"Robot status: {{status}}")
                 ).props("color=primary")
         dlg.open()
 
-    async def _save_tab_and_close(self, tab: EditorTab, dlg: ui.dialog) -> None:
-        """Save tab and close it."""
-        await self._save_tab(tab)
-        dlg.close()
-        self._do_close_tab(tab)
-
     def _do_close_tab(self, tab: EditorTab) -> None:
         """Actually close the tab and clean up UI."""
         tab_id = tab.id
@@ -1365,7 +1215,7 @@ print(f"Robot status: {{status}}")
         self.playback.stop_playback()
         self.playback.invalidate_timeline()
 
-        tab = next((t for t in editor_tabs_state.tabs if t.id == tab_id), None)
+        tab = editor_tabs_state.find_tab_by_id(tab_id)
         if not tab:
             return
 
@@ -1554,60 +1404,11 @@ print(f"Robot status: {{status}}")
         """Handle content change for a tab."""
         tab.content = new_value
 
-        # Update dirty indicator visibility
-        widgets = self._tab_widgets.get(tab.id, {})
-        dirty_dot = widgets.get("dirty_dot")
-        if dirty_dot:
-            dirty_dot.set_visibility(tab.is_dirty)
+        self._update_dirty_dot(tab)
 
         # Only run simulation for active tab
         if tab.id == editor_tabs_state.active_tab_id:
             self.schedule_debounced_simulation()
-
-    async def _save_tab(self, tab: EditorTab) -> None:
-        """Save tab content to server."""
-        try:
-            name = tab.filename or "program.py"
-            file_path = str(self.PROGRAM_DIR / name)
-            (self.PROGRAM_DIR / name).write_text(tab.content, encoding="utf-8")
-            tab.file_path = file_path
-            tab.saved_content = tab.content  # Mark as clean
-
-            # Update dirty indicator
-            widgets = self._tab_widgets.get(tab.id, {})
-            dirty_dot = widgets.get("dirty_dot")
-            if dirty_dot:
-                dirty_dot.set_visibility(False)
-
-            ui.notify(f"Saved {name}", color="positive")
-            logger.info("Saved program %s", name)
-        except Exception as e:
-            ui.notify(f"Save failed: {e}", color="negative")
-            logger.error("Save failed: %s", e)
-
-    def _download_tab(self, tab: EditorTab) -> None:
-        """Download tab content to user's device."""
-        content = tab.content
-        if not content:
-            ui.notify("No content to download", color="warning")
-            return
-
-        filename = tab.filename.strip() or "program.py"
-        ui.download(content.encode("utf-8"), filename)
-        ui.notify(f"Downloading {filename}", color="info")
-        logger.info("Downloaded program %s", filename)
-
-    async def _save_active_tab(self) -> None:
-        """Save the currently active tab."""
-        tab = editor_tabs_state.get_active_tab()
-        if tab:
-            await self._save_tab(tab)
-
-    def _download_active_tab(self) -> None:
-        """Download the currently active tab."""
-        tab = editor_tabs_state.get_active_tab()
-        if tab:
-            self._download_tab(tab)
 
     # ---- Line highlighting  ----
 
@@ -1743,50 +1544,35 @@ print(f"Robot status: {{status}}")
                             )
                         )
 
-                        # Add/Open FAB (last element in scrollable area)
-                        with (
-                            ui.fab(icon="add", color="grey-7")
-                            .props("dense unelevated direction=right")
+                        # New tab button (last element in scrollable area)
+                        new_tab_btn = (
+                            ui.button(icon="add", on_click=lambda: self._new_tab())
+                            .props("flat dense color=white")
                             .classes("ml-2")
-                            .tooltip("New / Open")
-                        ):
-                            new_tab_btn = ui.fab_action(
-                                icon="note_add",
-                                on_click=lambda: self._new_tab(),
-                            ).tooltip("New tab")
-                            new_tab_btn.mark("editor-new-tab-btn")
-                            open_server_btn = ui.fab_action(
-                                icon="folder_open",
-                                on_click=self.open_server_file_dialog,
-                            ).tooltip("Open from server")
-                            open_server_btn.mark("editor-open-server-btn")
-                            upload_btn = ui.fab_action(
-                                icon="upload_file",
-                                on_click=self.open_file_picker,
-                            ).tooltip("Upload from device")
-                            upload_btn.mark("editor-upload-btn")
+                            .tooltip("New Tab")
+                        )
+                        new_tab_btn.mark("editor-new-tab-btn")
 
-                # Save FAB (saves active tab, outside scroll area)
-                with (
-                    ui.fab(icon="save", color="grey-7")
-                    .props("dense unelevated direction=right")
+                # Open button
+                open_btn = (
+                    ui.button(icon="folder", on_click=self._show_open_dialog)
+                    .props("flat dense color=white")
+                    .tooltip("Open")
+                )
+                open_btn.mark("editor-open-btn")
+
+                # Save button
+                save_btn = (
+                    ui.button(icon="save", on_click=self._show_save_dialog)
+                    .props("flat dense color=white")
                     .tooltip("Save")
-                ):
-                    save_btn = ui.fab_action(
-                        icon="dns",
-                        on_click=lambda: self._save_active_tab(),
-                    ).tooltip("Save to server")
-                    save_btn.mark("editor-save-btn")
-                    download_btn = ui.fab_action(
-                        icon="download",
-                        on_click=lambda: self._download_active_tab(),
-                    ).tooltip("Download to device")
-                    download_btn.mark("editor-download-btn")
+                )
+                save_btn.mark("editor-save-btn")
 
-                # Command palette menu (outside scroll area)
+                # Command palette menu
                 commands_btn = (
                     ui.button(icon="library_add")
-                    .props("unelevated round dense")
+                    .props("flat dense color=white")
                     .tooltip("Insert Command")
                 )
                 commands_btn.mark("editor-commands-btn")

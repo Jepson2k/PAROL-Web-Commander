@@ -50,7 +50,6 @@ class GripperPage:
         self._last_current_tool_key: str | None = None
         self._current_range_listener: Callable | None = None
         # Live slider state
-        self._slider_dragging: bool = False
         self._slider_drag_ts: float = 0.0
         self._last_slider_send: float = 0.0
         self._user_dragging: bool = False
@@ -328,7 +327,6 @@ class GripperPage:
         if not self._user_dragging:
             return
         self._slider_drag_ts = time.monotonic()
-        self._slider_dragging = True
         now = self._slider_drag_ts
         if now - self._last_slider_send < self._slider_interval:
             return

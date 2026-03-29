@@ -37,7 +37,7 @@ async def test_open_program_tab(user: User) -> None:
     await user.should_see(marker="editor-log-toggle")
     await user.should_see(marker="editor-new-tab-btn")
     await user.should_see(marker="editor-save-btn")
-    await user.should_see(marker="editor-download-btn")
+    await user.should_see(marker="editor-open-btn")
     await user.should_see(marker="editor-commands-btn")
 
 
@@ -514,7 +514,7 @@ rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)
     tab.content = test_script
 
     # Run simulation to populate steps
-    await editor._run_simulation(notify=False)
+    await editor._run_simulation()
     await asyncio.sleep(0.1)
 
     # Step button should be visible after simulation
@@ -578,7 +578,7 @@ rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
     assert "# TARGET:" not in test_script
 
     # Run simulation (this should trigger annotation)
-    await editor._run_simulation(notify=False)
+    await editor._run_simulation()
 
     # Wait for annotation to complete
     await asyncio.sleep(0.1)

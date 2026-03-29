@@ -32,7 +32,7 @@ from parol_commander.state import (
 )
 from parol_commander.common.logging_config import TRACE_ENABLED, TraceLogger
 
-logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]
+logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
 # Configuration constants
 MAX_PATH_SEGMENTS = 10000

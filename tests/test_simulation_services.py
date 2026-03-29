@@ -138,58 +138,41 @@ class TestDryRunClient:
 # ============================================================================
 
 
+def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
+    """Set both robot_state pose values and pose matrix."""
+    robot_state.x = x
+    robot_state.y = y
+    robot_state.z = z
+    robot_state.rx = rx
+    robot_state.ry = ry
+    robot_state.rz = rz
+    robot_state.pose = np.array(
+        [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1],
+        dtype=np.float64,
+    )
+
+
+@pytest.fixture
+def mock_editor():
+    """Create mock editor for motion recorder tests."""
+    mock_editor = MagicMock()
+    mock_textarea = MagicMock()
+    mock_textarea.value = "# Initial code\n"
+    mock_editor.program_textarea = mock_textarea
+    ui_state.editor_panel = mock_editor
+    old_robot = ui_state.robot
+    ui_state.robot = get_robot()
+    yield mock_editor
+    ui_state.editor_panel = None
+    ui_state.robot = old_robot
+
+
 class TestMotionRecorder:
     """Tests for motion recording functionality (code-insertion API)."""
 
-    @pytest.fixture
-    def mock_editor(self):
-        """Create mock editor for testing."""
-        mock_editor = MagicMock()
-        mock_textarea = MagicMock()
-        mock_textarea.value = "# Initial code\n"
-        mock_editor.program_textarea = mock_textarea
-        ui_state.editor_panel = mock_editor
-        old_robot = ui_state.robot
-        ui_state.robot = get_robot()
-        yield mock_editor
-        ui_state.editor_panel = None
-        ui_state.robot = old_robot
-
-    def _set_robot_pose(self, x, y, z, rx=0.0, ry=0.0, rz=0.0):
-        """Helper to set both robot_state pose values and pose matrix."""
-        robot_state.x = x
-        robot_state.y = y
-        robot_state.z = z
-        robot_state.rx = rx
-        robot_state.ry = ry
-        robot_state.rz = rz
-        # Set pose as flattened 4x4 identity-based matrix with translation
-        # Row-major: [r00, r01, r02, tx, r10, r11, r12, ty, r20, r21, r22, tz, 0, 0, 0, 1]
-        robot_state.pose = np.array(
-            [
-                1.0,
-                0.0,
-                0.0,
-                x,
-                0.0,
-                1.0,
-                0.0,
-                y,
-                0.0,
-                0.0,
-                1.0,
-                z,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            ],
-            dtype=np.float64,
-        )
-
     def test_capture_current_pose_inserts_code(self, mock_editor):
         """capture_current_pose should insert moveL code into editor."""
-        self._set_robot_pose(150.0, 250.0, 350.0)
+        set_robot_pose(150.0, 250.0, 350.0)
 
         recorder = MotionRecorder()
         recorder.capture_current_pose()
@@ -226,7 +209,7 @@ class TestMotionRecorder:
 
     def test_jog_recording_lifecycle(self, mock_editor):
         """Test complete jog recording cycle: start sets state, end inserts code."""
-        self._set_robot_pose(100.0, 200.0, 300.0)
+        set_robot_pose(100.0, 200.0, 300.0)
         robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
@@ -242,7 +225,7 @@ class TestMotionRecorder:
         # --- Part 2: on_jog_end should insert code ---
         # Simulate robot movement during jog (need time to pass > 0.1s)
         time.sleep(0.15)
-        self._set_robot_pose(150.0, 250.0, 350.0)
+        set_robot_pose(150.0, 250.0, 350.0)
 
         recorder.on_jog_end()
 
@@ -327,7 +310,7 @@ class TestMotionRecorder:
 
     def test_multiple_jogs_insert_multiple_code_lines(self, mock_editor):
         """Multiple jog start/end cycles should insert multiple code lines."""
-        self._set_robot_pose(100.0, 100.0, 100.0)
+        set_robot_pose(100.0, 100.0, 100.0)
         robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
@@ -336,13 +319,13 @@ class TestMotionRecorder:
         # First jog
         recorder.on_jog_start("cartesian", "X+")
         time.sleep(0.15)  # Need time > 0.1s
-        self._set_robot_pose(150.0, 100.0, 100.0)
+        set_robot_pose(150.0, 100.0, 100.0)
         recorder.on_jog_end()
 
         # Second jog
         recorder.on_jog_start("cartesian", "Y+")
         time.sleep(0.15)
-        self._set_robot_pose(150.0, 200.0, 100.0)
+        set_robot_pose(150.0, 200.0, 100.0)
         recorder.on_jog_end()
 
         recorder.toggle_recording()  # Stop
@@ -354,7 +337,7 @@ class TestMotionRecorder:
 
     def test_stop_recording_ends_active_jog(self, mock_editor):
         """Stopping recording should end any active jog."""
-        self._set_robot_pose(100.0, 100.0, 100.0)
+        set_robot_pose(100.0, 100.0, 100.0)
         robot_state.angles.set_deg(np.zeros(6))
 
         recorder = MotionRecorder()
@@ -363,7 +346,7 @@ class TestMotionRecorder:
         # Start jog but don't end it
         recorder.on_jog_start("cartesian", "X+")
         time.sleep(0.15)
-        self._set_robot_pose(150.0, 100.0, 100.0)
+        set_robot_pose(150.0, 100.0, 100.0)
 
         # Stop recording should capture the active jog
         recorder.toggle_recording()  # Stop
@@ -371,6 +354,107 @@ class TestMotionRecorder:
         # Check that code was inserted
         inserted_code = mock_editor.program_textarea.value
         assert "rbt.moveL(" in inserted_code
+
+
+class TestMotionRecorderWaitTimeGaps:
+    """Tests for recorder inserting delays after non-blocking moves."""
+
+    def test_wall_time_initialized_on_recording_start(self, mock_editor):
+        """_last_action_wall_time resets to 0 when recording starts."""
+        recorder = MotionRecorder()
+        recorder._last_action_wall_time = 99.0
+        recorder.toggle_recording()
+        assert recorder._last_action_wall_time == 0.0
+        recorder.toggle_recording()
+
+    def test_wall_time_updated_after_record_action(self, mock_editor):
+        """_last_action_wall_time is stamped after each recorded action."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+        assert recorder._last_action_wall_time == 0.0
+
+        set_robot_pose(100, 200, 300)
+        recorder.capture_current_pose()
+        assert recorder._last_action_wall_time > 0
+
+        recorder.toggle_recording()
+
+    def test_gap_inserted_between_non_jog_actions(self, mock_editor):
+        """A time.sleep() is inserted when wall-clock time elapses between actions."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+
+        # Record first action
+        recorder.record_action("gripper", position=0.5)
+        first_wall = recorder._last_action_wall_time
+        assert first_wall > 0
+
+        # Simulate elapsed time
+        time.sleep(0.2)
+
+        # Record second action — should insert a delay
+        recorder.record_action("gripper", position=1.0)
+
+        inserted_code = mock_editor.program_textarea.value
+        assert "time.sleep(" in inserted_code, (
+            "Expected time.sleep() to be inserted for gap between actions"
+        )
+
+        recorder.toggle_recording()
+
+    def test_no_gap_for_motion_actions(self, mock_editor):
+        """Motion actions (moveJ/moveL) don't get delay inserted before them."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+
+        # Record a gripper action first
+        recorder.record_action("gripper", position=0.5)
+        time.sleep(0.2)
+
+        # Record a motion — should NOT get a delay
+        set_robot_pose(100, 200, 300)
+        recorder.record_action(
+            "moveJ",
+            angles=[0, 0, 0, 0, 0, 0],
+            speed=0.5,
+            accel=0.5,
+        )
+
+        inserted_code = mock_editor.program_textarea.value
+        # time.sleep should NOT appear between gripper and moveJ
+        lines = inserted_code.strip().split("\n")
+        # Find the moveJ line and check the line before it
+        for i, line in enumerate(lines):
+            if "rbt.moveJ" in line and i > 0:
+                assert "time.sleep" not in lines[i - 1], (
+                    "No delay should be inserted before a motion command"
+                )
+
+        recorder.toggle_recording()
+
+    def test_flush_sets_wall_time_to_last_pending(self, mock_editor):
+        """After flushing pending actions, wall time = last pending action time."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+
+        set_robot_pose(100, 200, 300)
+        recorder.on_jog_start("cartesian", "X+")
+
+        # Queue a pending action during the jog
+        time.sleep(0.1)
+        recorder.record_action("gripper", position=0.5)
+        assert len(recorder._pending_actions) == 1
+        queued_time = recorder._pending_actions[0][2]
+
+        # End the jog — flushes pending actions
+        set_robot_pose(200, 200, 300)
+        time.sleep(0.1)
+        recorder.on_jog_end()
+
+        # Wall time should be set to the queued action's timestamp
+        assert recorder._last_action_wall_time == pytest.approx(queued_time, abs=0.01)
+
+        recorder.toggle_recording()
 
 
 # ============================================================================
@@ -543,33 +627,6 @@ class TestEditorAutoSimulation:
             assert panel._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio
-    async def test_run_simulation_notify_modes(self):
-        """_run_simulation notify parameter controls ui.notify behavior."""
-        from parol_commander.components.editor import EditorPanel
-
-        with patch("parol_commander.components.editor.ui") as mock_ui:
-            with patch(
-                "parol_commander.components.editor.path_visualizer"
-            ) as mock_visualizer:
-
-                async def mock_update(content, tab_id=None):
-                    pass
-
-                mock_visualizer.update_path_visualization = mock_update
-
-                panel = EditorPanel()
-                panel.program_textarea = MagicMock()
-                panel.program_textarea.value = "# some code"
-
-                # Part 1: Silent mode - no notifications
-                await panel._run_simulation(notify=False)
-                mock_ui.notify.assert_not_called()
-
-                # Part 2: Verbose mode - shows notifications
-                await panel._run_simulation(notify=True)
-                assert mock_ui.notify.call_count >= 1
-
-    @pytest.mark.asyncio
     async def test_run_simulation_calls_path_visualizer(self):
         """_run_simulation should call path_visualizer.update_path_visualization."""
         from parol_commander.components.editor import EditorPanel
@@ -593,7 +650,7 @@ class TestEditorAutoSimulation:
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = "rbt.moveJ([0,0,0,0,0,0])"
 
-                await panel._run_simulation(notify=False)
+                await panel._run_simulation()
 
                 assert update_called is True
                 assert update_content == "rbt.moveJ([0,0,0,0,0,0])"
@@ -619,7 +676,7 @@ class TestEditorAutoSimulation:
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = ""  # Empty content
 
-                await panel._run_simulation(notify=False)
+                await panel._run_simulation()
 
                 # Should NOT call update_path_visualization for empty content
                 assert update_called is False

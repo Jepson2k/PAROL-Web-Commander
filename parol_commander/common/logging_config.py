@@ -43,8 +43,8 @@ class TraceLogger(logging.Logger):
 
 # Install trace on the base Logger class so *all* loggers support it
 if not hasattr(logging.Logger, "trace"):
-    logging.Logger.trace = TraceLogger.trace  # type: ignore[attr-defined]
-    logging.TRACE = TRACE  # type: ignore[attr-defined]
+    logging.Logger.trace = TraceLogger.trace  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+    logging.TRACE = TRACE  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
 
 # Environment guard to make hot-path trace zero-cost unless explicitly enabled
 TRACE_ENABLED = str(os.getenv("PAROL_TRACE", "0")).lower() in ("1", "true", "yes", "on")
