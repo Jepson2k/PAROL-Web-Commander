@@ -1,6 +1,6 @@
-# PAROL-Web-Commander
+# PAROL Web Commander
 
-A modern web interface for controlling the PAROL6 desktop robotic arm. This app provides a NiceGUI-based UI for jogging, monitoring I/O, running calibrations, and controlling grippers over the UDP-based PAROL6 headless controller.
+A modern web interface for controlling the PAROL6 desktop robotic arm. This app provides a NiceGUI-based UI for jogging, monitoring I/O, running programs, and 3D visualization over the UDP-based PAROL6 headless controller.
 
 This project integrates:
 - Hardware: PAROL6 robot and control board
@@ -20,29 +20,37 @@ Note: To run a real robot, you must have a PAROL6 control board: https://source-
 
 ## Features
 
-- Live robot telemetry (joint angles, pose, I/O, gripper data)
-- Joint and Cartesian jogging
-- Calibration utilities
+- Live robot telemetry (joint angles, Cartesian pose, I/O, gripper data)
+- Joint and Cartesian jogging with keyboard shortcuts (WASD + Q/E)
 - Digital I/O control and status
 - SSG-48 electric gripper control
-- Built-in program editor and runner (Python) with streamed console output
-- Auto status polling and E-stop status display
-- URDF viewer with live joint visualization
-- Uses UDP client/server from PAROL6 Python API for low-latency control
+- Multi-tab program editor and runner (Python) with streamed console output
+- Command palette with auto-complete from robot client API
+- Path preview with dry-run simulation and per-pose IK validity
+- Motion recording (manual, continuous, and post-jog modes)
+- URDF 3D viewer with live joint visualization and interactive gizmo
+- Stepping/debug mode for script execution
+- Theme switching (light/dark/system)
+- E-stop status display and keyboard shortcut
 
 ## How it fits together
 
 - Headless controller (server)
   - Runs on the machine connected to the robot over USB/Serial
   - Listens for UDP commands on port 5001 (default)
-  - Provided by the PAROL6 Python API (e.g., `controller.py`)
+  - Provided by the PAROL6 Python API (`parol6.server.controller`)
 - Web app (client + UI)
   - This repository runs a NiceGUI server
   - Renders control pages and sends commands via `parol6.AsyncRobotClient`
-  - Manages the controller process via `parol6.ServerManager` using `ensure_server(...)`
+  - Manages the controller process via `parol6.Robot`, which handles lifecycle (start/stop) internally
 - Networking
   - Default controller target is `127.0.0.1:5001`
+  - Status is pushed via UDP multicast (239.255.0.101:50510) — no polling
   - Can be reconfigured to a remote controller via environment variables (see Configuration)
+
+### Robot backends
+
+The web commander communicates with robot hardware through a backend that satisfies the `Robot` ABC defined in the [`waldoctl`](https://github.com/Jepson2k/waldoctl) package. The default (and currently only) backend is [PAROL6 Python API](https://github.com/Jepson2k/PAROL6-python-API), installed as an optional dependency (`pip install parol-commander[parol6]`). Other backends can be used as long as they extend the same base classes.
 
 ## Requirements
 
@@ -50,8 +58,8 @@ Note: To run a real robot, you must have a PAROL6 control board: https://source-
 - Other supported platforms: x86_64 Linux, macOS, and Windows are supported for both the UI and the headless controller as long as timing targets and serial/USB requirements are met (performance depends on your CPU and OS).
 - OS:
   - Controller: 64-bit Linux recommended (e.g., Raspberry Pi OS 64-bit Bookworm). Other OSes can work if they meet timing targets.
-  - UI: Any modern OS with Python 3.11.
-- Python: 3.11+
+  - UI: Any modern OS with Python 3.12+.
+- Python: 3.12+
 - Hardware: PAROL6 robot with PAROL6 control board connected via USB
 - Notes:
   - Ensure your user has permission to access the serial device (e.g., add to the `dialout` group or set udev rules on Linux).
@@ -59,33 +67,29 @@ Note: To run a real robot, you must have a PAROL6 control board: https://source-
 
 ## Quick start (local controller + UI on the same PC)
 
-1) Clone with submodules (required for external assets and references):
+1) Clone:
 ```bash
-git clone --recurse-submodules https://github.com/Jepson2k/PAROL-Web-Commander.git
+git clone https://github.com/Jepson2k/PAROL-Web-Commander.git
 cd PAROL-Web-Commander
-```
-If you cloned without `--recurse-submodules` then in the repo root run:
-```bash
-git submodule update --init --recursive
 ```
 
 2) Create and activate a virtual environment (examples):
 
 macOS/Linux:
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 ```
 
 Windows (PowerShell):
 ```powershell
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv
 . .\.venv\Scripts\Activate.ps1
 ```
 
-3) Install dependencies for the web UI:
+3) Install with the PAROL6 backend:
 ```bash
-pip install -r app/requirements.txt
+pip install -e ".[parol6]"
 ```
 
 4) Connect the robot via USB. Identify the port (examples):
@@ -95,18 +99,16 @@ pip install -r app/requirements.txt
 
 5) Run the web UI:
 ```bash
-python -m app.main
+parol-commander
 ```
 Open the printed URL in your browser.
 
-6) In the footer, set the serial port and click “Set Port”. On launch the app will, by default, auto-start the headless controller (configurable via `PAROL_AUTO_START` or `--disable-auto-start`). The Set Port action stores the value in local storage and sends it to the controller.
+6) In the Settings panel, set the serial port and click "Set Port". On launch the app will, by default, auto-start the headless controller (configurable via `PAROL_AUTO_START=0`). The Set Port action stores the value in local storage and sends it to the controller.
 
 ### CLI Options
 
-The web UI accepts several command-line arguments:
-
 ```bash
-python -m app.main [options]
+parol-commander [options]
 ```
 
 Options:
@@ -114,26 +116,23 @@ Options:
 - `--port PORT`: Webserver bind port (default: `8080`)
 - `--controller-host HOST`: Controller host to connect to (default: `127.0.0.1`)
 - `--controller-port PORT`: Controller UDP port (default: `5001`)
-- `--disable-auto-start`: Disable automatic controller start (overrides `PAROL_AUTO_START`)
 - `--log-level LEVEL`: Set log level (TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL)
-- `-v`, `-vv`, `-vvv`: Increase verbosity (INFO / DEBUG / TRACE)
+- `-v`, `-vv`: Increase verbosity (INFO / DEBUG)
 - `-q`: Enable WARNING logging
+- `--reload`: Enable auto-reload on file changes (dev mode)
 
 Examples:
 ```bash
-# Disable automatic controller start (CLI overrides environment)
-python -m app.main --disable-auto-start
-
 # Custom ports and more verbose logging
-python -m app.main --port 8081 --controller-port 5002 -vv
+parol-commander --port 8081 --controller-port 5002 -vv
 
 # Disable auto-start via environment variable
-PAROL_AUTO_START=0 python -m app.main
+PAROL_AUTO_START=0 parol-commander
 ```
 
 ## Configuration
 
-Environment variables (read in `app/constants.py` and at runtime):
+Environment variables (read in `parol_commander/constants.py` and at runtime):
 
 - `PAROL_CONTROLLER_IP`: Controller host (default: `127.0.0.1`)
 - `PAROL_CONTROLLER_PORT`: Controller UDP port (default: `5001`)
@@ -141,7 +140,7 @@ Environment variables (read in `app/constants.py` and at runtime):
 - `PAROL_SERVER_PORT`: NiceGUI HTTP port (default: `8080`)
 - `PAROL_AUTO_START`: Enable automatic controller start on app launch (default: `1`; set to `0` to disable)
 - `PAROL_LOG_LEVEL`: `DEBUG` | `INFO` | `WARNING` | `ERROR` | `CRITICAL` (default: `WARNING`)
-- `PAROL_WEBAPP_CONTROL_RATE_HZ`: Jog emission cadence from UI to controller (default: `50`)
+- `PAROL_WEBAPP_CONTROL_RATE_HZ`: Jog emission cadence from UI to controller (default: `20`)
 - `PAROL_WEBAPP_AUTO_SIMULATOR`: If no serial port is configured, auto-enable simulator on startup (default: `1`)
 - `PAROL_WEBAPP_REQUIRE_READY`: Wait for server ready and enable stream_on at startup (default: `1`)
 - `PAROL_TRACE`: Enable TRACE-level logging in console/UI logs (`1` / `true` / `yes` / `on`)
@@ -157,8 +156,8 @@ export PAROL_AUTO_START=1
 ```
 
 Notes:
-- The UI persists the last-used COM port in its local storage; you can also set it directly from the footer input field.
-- The app instantiates `parol6.ServerManager()` to manage the headless controller process and `parol6.AsyncRobotClient()` to send commands/status queries.
+- The UI persists the last-used COM port in its local storage; you can also set it from the Settings panel.
+- The app uses `parol6.Robot` to manage the headless controller process and `parol6.AsyncRobotClient` to send commands and receive status.
 
 ## Remote controller scenario (advanced)
 
@@ -167,25 +166,70 @@ If your headless controller runs on a different machine:
 1. Start the controller there using the PAROL6 Python API.
 2. Ensure UDP port 5001 is open on the controller host.
 3. Run this web app on any machine and set:
-   - `PAROL_CONTROLLER_IP` to the controller’s IP (e.g. `192.168.1.100`)
+   - `PAROL_CONTROLLER_IP` to the controller's IP (e.g. `192.168.1.100`)
    - `PAROL_CONTROLLER_PORT` as needed (default `5001`)
 
 For best results and fewer timing issues, run the web app and controller on the same machine connected to the robot.
 
 ## Program editor
 
-The Move tab includes a built-in program editor and runner:
-- Default snippet uses `parol6.RobotClient` and is prefilled with the current controller host/port.
+The Program tab includes a multi-tab code editor and runner:
+- **Multi-tab editing**: Create, open, and save multiple Python scripts. Each tab tracks unsaved changes and maintains its own simulation results.
+- **Default template**: Uses `parol6.RobotClient` and is prefilled with the current controller host/port.
+- **Execution**: "Start" spawns a Python subprocess and streams stdout/stderr into the UI log. "Stop" requests a graceful termination and force-kills on timeout if needed.
+- **Stepping mode**: Execute scripts one command at a time with state inspection after each step.
+- **Command palette**: Auto-complete suggestions generated from `AsyncRobotClient` methods with signatures and docstrings, organized by category.
+- **Path preview**: Dry-run simulation shows motion paths in the 3D viewer with per-pose IK validity (green/yellow/red) and estimated duration before running on hardware.
+- **Motion recording**: Record robot movements as Python code in three modes:
+  - *Manual*: Click to capture the current pose
+  - *Continuous*: Record positions at fixed intervals during motion
+  - *Post-jog*: Auto-capture endpoints after jogging completes
 - Scripts are saved under `./programs` by default (directory is created if missing).
-- “Start” spawns a Python subprocess and streams stdout/stderr into the UI log; `stream_on` is paused during execution and restored when the script completes.
-- “Stop” requests a graceful termination and force-kills on timeout if needed.
-- “Open” supports uploading text-based programs into the editor.
+- "Open" supports uploading text-based programs into the editor.
+
+## 3D visualization
+
+The URDF viewer provides live visualization of the robot:
+- **Live joint tracking**: Joint angles update in real-time from robot telemetry.
+- **Interactive gizmo**: Drag the TCP gizmo to manually position the robot end-effector.
+- **Target placement**: Click in 3D space to place motion targets, or use the target editor for precise XYZ + RPY input.
+- **Path rendering**: Simulated motion paths are rendered with color-coded IK validity and direction arrows.
+- **Workspace envelope**: Optional visualization of the robot's reachable workspace.
+- **Theme aware**: Automatically adapts to light/dark theme selection.
+
+## Keyboard shortcuts
+
+| Key | Action | Category |
+|-----|--------|----------|
+| **H** | Home robot | Robot Control |
+| **Esc** | Emergency Stop | Robot Control |
+| **Space** | Play/Pause | Playback |
+| **S** | Step forward (while running) | Playback |
+| **W/S** | Jog Y+/Y- | Cartesian Jog |
+| **A/D** | Jog X-/X+ | Cartesian Jog |
+| **Q/E** | Jog Z-/Z+ | Cartesian Jog |
+| **[/]** | Decrease/Increase jog speed | Speed Control |
+| **T** | Add target at current position | Recording |
+
+Jog keys support click-vs-hold: a quick press sends a single step; holding the key jogs continuously.
+
+## Settings
+
+Accessible from the gear icon in the UI:
+- **Serial port**: Auto-detected from available ports, or enter manually
+- **Theme**: Light, Dark, or System
+- **Motion profile**: TOPPRA (default), RUCKIG, QUINTIC, TRAPEZOID, LINEAR
+- **Envelope visualization**: Auto, On, or Off
+
+## Connection status
+
+The UI shows live connection indicators:
+- **CTRL**: Controller process status (green = running, red = stopped)
+- **ROBOT**: Hardware connection (green = connected, grey = simulator active)
 
 ## Control rates
 
-Jog emission cadence is governed by `PAROL_WEBAPP_CONTROL_RATE_HZ` (default 50 Hz). The UI uses timers to send joint/cartesian jog updates and will log warnings if measured cadence drift exceeds a small tolerance. See:
-- `tests/test_webapp_rate.py`
-- `tests/test_e2e_rate.py`
+Jog emission cadence is governed by `PAROL_WEBAPP_CONTROL_RATE_HZ` (default 20 Hz). The UI uses timers to send joint/Cartesian jog updates and will log warnings if measured cadence drift exceeds a small tolerance.
 
 ## Development and tests
 
@@ -202,15 +246,8 @@ pytest
 ```
 
 Test configuration/env notes:
-- Unit/acceptance tests avoid hardware by default and prevent simulator/stream waits:
-  - `PAROL_WEBAPP_AUTO_SIMULATOR=0`
-  - `PAROL_WEBAPP_REQUIRE_READY=0`
-- Integration tests may spawn the headless server with fake serial:
-  - `PAROL6_FAKE_SERIAL=1`
-- Benchmarks are gated to avoid nondeterministic CI noise:
-  - Set `PAROL6_RUN_BENCHMARKS=1` to enable the control-loop benchmarks in:
-    - `tests/test_control_rate_benchmark.py`
-    - `tests/test_control_rate_benchmark_stream.py`
+- Integration tests spawn the headless server with fake serial — all configured automatically in `conftest.py`.
+- Do **not** prefix `pytest` with environment variables; everything is set in `conftest.py`.
 
 Project config:
 - `pyproject.toml` configures `pytest`, `ruff`, and `mypy`.

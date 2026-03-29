@@ -1,0 +1,7 @@
+site_name: PAROL Web Commander
+site_url: https://jepson2k.github.io/PAROL-Web-Commander/
+repo_url: https://github.com/Jepson2k/PAROL-Web-Commander
+theme:
+  name: material
+  palette:
+    scheme: slate

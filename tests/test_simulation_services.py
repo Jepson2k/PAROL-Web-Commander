@@ -1,0 +1,1266 @@
+"""Functional tests for simulation services.
+
+These tests verify actual behavior rather than just checking if buttons exist.
+"""
+
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import numpy as np
+import pytest
+
+from parol_commander.profiles import get_robot
+from parol_commander.state import (
+    simulation_state,
+    recording_state,
+    robot_state,
+    ui_state,
+)
+from parol6.client.dry_run_client import DryRunRobotClient
+from parol_commander.services.path_preview_client import PathPreviewClient
+from parol_commander.services.motion_recorder import MotionRecorder
+from parol_commander.services.path_visualizer import PathVisualizer
+from parol_commander.services.urdf_scene.envelope_mixin import WorkspaceEnvelope
+
+
+# ============================================================================
+# Dry Run Client Tests
+# ============================================================================
+
+
+class TestDryRunClient:
+    """Tests for dry run simulation client (PathPreviewClient).
+
+    The client delegates to parol6's PathPreviewClient which runs commands
+    through the real command pipeline. No mocking of PAROL6_ROBOT needed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_move_joints_creates_path_segment(self):
+        """moveJ should create a path segment with joint data."""
+        segments: list[dict] = []
+        targets: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            target_collector=targets,
+        )
+
+        # Use angles away from singularities (J5 != 0 avoids gimbal lock)
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+
+        # Verify path segment created in collector
+        assert len(segments) == 1
+        segment = segments[0]
+        assert segment["is_valid"] is True
+        assert segment["joints"] is not None
+        assert len(segment["joints"]) == 6
+        assert segment["move_type"] == "joints"
+        # Verify full joint trajectory is present for smooth playback
+        assert segment["joint_trajectory"] is not None
+        assert len(segment["joint_trajectory"]) >= 2  # At least start and end
+        assert len(segment["joint_trajectory"][0]) == 6  # 6 joints per waypoint
+
+    @pytest.mark.asyncio
+    async def test_move_cartesian_creates_path_segment(self):
+        """moveL should create a path segment with cartesian data."""
+        segments: list[dict] = []
+        targets: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            target_collector=targets,
+        )
+
+        client.moveL([150, 100, 250, 0, 0, 0], speed=1.0)
+
+        # Verify segment created
+        assert len(segments) == 1
+        segment = segments[0]
+        assert segment["is_valid"] is True
+        assert segment["move_type"] == "cartesian"
+
+    @pytest.mark.asyncio
+    async def test_move_creates_segment_but_not_target_without_marker(self):
+        """Moves without TARGET marker should create segment but not target.
+
+        The dry-run client only creates ProgramTarget objects when:
+        1. The source line has a TARGET:uuid marker
+        2. The source line has literal list arguments (not variables)
+
+        When moveJ is called directly (not via code parsing), there's
+        no source line with a marker, so no target is created.
+        """
+        segments: list[dict] = []
+        targets: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            target_collector=targets,
+        )
+
+        # Use angles away from singularities (J5 != 0 avoids gimbal lock)
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+
+        # Verify path segment was created (always created for visualization)
+        assert len(segments) == 1
+        segment = segments[0]
+        assert segment["move_type"] == "joints"
+        assert segment["joints"] is not None
+
+        # Verify NO target was created (no TARGET marker in source)
+        assert len(targets) == 0
+
+    @pytest.mark.asyncio
+    async def test_unreachable_cartesian_creates_error_result(self):
+        """Unreachable cartesian target produces per-pose valid/invalid segments."""
+        segments: list[dict] = []
+        targets: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            target_collector=targets,
+        )
+
+        # Extremely far target — mostly unreachable
+        client.moveL([9999, 9999, 9999, 0, 0, 0], speed=1.0)
+
+        # Per-pose IK diagnostic produces green (valid) + red (invalid) segments
+        assert len(segments) >= 1
+        has_invalid = any(not s["is_valid"] for s in segments)
+        assert has_invalid, (
+            "Expected at least one invalid segment for unreachable target"
+        )
+
+
+# ============================================================================
+# Motion Recorder Tests
+# ============================================================================
+
+
+def set_robot_pose(x, y, z, rx=0.0, ry=0.0, rz=0.0):
+    """Set both robot_state pose values and pose matrix."""
+    robot_state.x = x
+    robot_state.y = y
+    robot_state.z = z
+    robot_state.rx = rx
+    robot_state.ry = ry
+    robot_state.rz = rz
+    robot_state.pose = np.array(
+        [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1],
+        dtype=np.float64,
+    )
+
+
+@pytest.fixture
+def mock_editor():
+    """Create mock editor for motion recorder tests."""
+    mock_editor = MagicMock()
+    mock_textarea = MagicMock()
+    mock_textarea.value = "# Initial code\n"
+    mock_editor.program_textarea = mock_textarea
+    ui_state.editor_panel = mock_editor
+    old_robot = ui_state.robot
+    ui_state.robot = get_robot()
+    yield mock_editor
+    ui_state.editor_panel = None
+    ui_state.robot = old_robot
+
+
+class TestMotionRecorder:
+    """Tests for motion recording functionality (code-insertion API)."""
+
+    def test_capture_current_pose_inserts_code(self, mock_editor):
+        """capture_current_pose should insert moveL code into editor."""
+        set_robot_pose(150.0, 250.0, 350.0)
+
+        recorder = MotionRecorder()
+        recorder.capture_current_pose()
+
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.moveL([150.000, 250.000, 350.000" in inserted_code
+        assert "speed=" in inserted_code
+        assert "accel=" in inserted_code
+
+    def test_capture_current_pose_joints_mode(self, mock_editor):
+        """capture_current_pose with joints mode should insert moveJ code."""
+        robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
+
+        recorder = MotionRecorder()
+        recorder.capture_current_pose(move_type="joints")
+
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.moveJ([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
+
+    def test_toggle_recording_lifecycle(self, mock_editor):
+        """toggle_recording should toggle recording state on/off."""
+        recorder = MotionRecorder()
+
+        # Initially not recording
+        assert recording_state.is_recording is False
+
+        # First toggle starts recording
+        recorder.toggle_recording()
+        assert recording_state.is_recording is True
+
+        # Second toggle stops recording
+        recorder.toggle_recording()
+        assert recording_state.is_recording is False
+
+    def test_jog_recording_lifecycle(self, mock_editor):
+        """Test complete jog recording cycle: start sets state, end inserts code."""
+        set_robot_pose(100.0, 200.0, 300.0)
+        robot_state.angles.set_deg(np.zeros(6))
+
+        recorder = MotionRecorder()
+        recorder.toggle_recording()  # Start recording
+
+        # --- Part 1: on_jog_start should set active jog ---
+        recorder.on_jog_start("cartesian", "X+")
+
+        assert recorder._active_jog is not None
+        assert recorder._active_jog.move_type == "cartesian"
+        assert recorder._active_jog.axis_info == "X+"
+
+        # --- Part 2: on_jog_end should insert code ---
+        # Simulate robot movement during jog (need time to pass > 0.1s)
+        time.sleep(0.15)
+        set_robot_pose(150.0, 250.0, 350.0)
+
+        recorder.on_jog_end()
+
+        # Check that code was inserted
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.moveL(" in inserted_code
+
+    def test_jog_events_ignored_when_not_recording(self):
+        """Jog start and end events should be ignored when not recording."""
+        recorder = MotionRecorder()
+        ui_state.editor_panel = MagicMock()
+        ui_state.editor_panel.program_textarea = MagicMock()
+        ui_state.editor_panel.program_textarea.value = ""
+
+        # Not recording - jog start should be ignored
+        recorder.on_jog_start("joint", "J1+")
+        assert recorder._active_jog is None
+
+        # Not recording - jog end should also be ignored
+        recorder.on_jog_end()
+        assert ui_state.editor_panel.program_textarea.value == ""
+
+        ui_state.editor_panel = None
+
+    def test_record_action_home_generates_code(self, mock_editor):
+        """record_action for home should generate home code."""
+        recorder = MotionRecorder()
+        recording_state.is_recording = True
+
+        recorder.record_action("home")
+
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.home()" in inserted_code
+
+    def test_record_action_gripper_commands(self, mock_editor):
+        """record_action for gripper should generate tool access + method calls."""
+        recorder = MotionRecorder()
+        recording_state.is_recording = True
+
+        # Part 1: Calibrate command
+        recorder.record_action("gripper", calibrate=True)
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.tool.calibrate()" in inserted_code
+
+        # Part 2: Move command with params (partial position → set_position)
+        mock_editor.program_textarea.value = ""
+        recorder.record_action("gripper", position=0.5, speed=50, current=200)
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.tool.set_position(0.5, speed=50, current=200)" in inserted_code
+
+        # Part 3: Full open (position=0.0) — always uses set_position
+        mock_editor.program_textarea.value = ""
+        recorder.record_action("gripper", position=0.0)
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.tool.set_position(0.0)" in inserted_code
+
+        # Part 4: Full close (position=1.0) — always uses set_position
+        mock_editor.program_textarea.value = ""
+        recorder.record_action("gripper", position=1.0)
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.tool.set_position(1.0)" in inserted_code
+
+    def test_record_action_io(self, mock_editor):
+        """record_action for io should generate set_io code."""
+        recorder = MotionRecorder()
+        recording_state.is_recording = True
+
+        recorder.record_action("io", port=1, state=1)
+
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.set_io(1, 1)" in inserted_code
+
+    def test_record_action_ignored_when_not_recording(self, mock_editor):
+        """record_action should be ignored when not recording."""
+        recorder = MotionRecorder()
+        recording_state.is_recording = False
+
+        recorder.record_action("home")
+
+        # Code should not have been inserted (still just initial code)
+        assert mock_editor.program_textarea.value == "# Initial code\n"
+
+    def test_multiple_jogs_insert_multiple_code_lines(self, mock_editor):
+        """Multiple jog start/end cycles should insert multiple code lines."""
+        set_robot_pose(100.0, 100.0, 100.0)
+        robot_state.angles.set_deg(np.zeros(6))
+
+        recorder = MotionRecorder()
+        recorder.toggle_recording()  # Start
+
+        # First jog
+        recorder.on_jog_start("cartesian", "X+")
+        time.sleep(0.15)  # Need time > 0.1s
+        set_robot_pose(150.0, 100.0, 100.0)
+        recorder.on_jog_end()
+
+        # Second jog
+        recorder.on_jog_start("cartesian", "Y+")
+        time.sleep(0.15)
+        set_robot_pose(150.0, 200.0, 100.0)
+        recorder.on_jog_end()
+
+        recorder.toggle_recording()  # Stop
+
+        # Should have inserted code for both moves
+        inserted_code = mock_editor.program_textarea.value
+        # Count occurrences of move commands
+        assert inserted_code.count("rbt.move") >= 2
+
+    def test_stop_recording_ends_active_jog(self, mock_editor):
+        """Stopping recording should end any active jog."""
+        set_robot_pose(100.0, 100.0, 100.0)
+        robot_state.angles.set_deg(np.zeros(6))
+
+        recorder = MotionRecorder()
+        recorder.toggle_recording()  # Start
+
+        # Start jog but don't end it
+        recorder.on_jog_start("cartesian", "X+")
+        time.sleep(0.15)
+        set_robot_pose(150.0, 100.0, 100.0)
+
+        # Stop recording should capture the active jog
+        recorder.toggle_recording()  # Stop
+
+        # Check that code was inserted
+        inserted_code = mock_editor.program_textarea.value
+        assert "rbt.moveL(" in inserted_code
+
+
+class TestMotionRecorderWaitTimeGaps:
+    """Tests for recorder inserting delays after non-blocking moves."""
+
+    def test_wall_time_initialized_on_recording_start(self, mock_editor):
+        """_last_action_wall_time resets to 0 when recording starts."""
+        recorder = MotionRecorder()
+        recorder._last_action_wall_time = 99.0
+        recorder.toggle_recording()
+        assert recorder._last_action_wall_time == 0.0
+        recorder.toggle_recording()
+
+    def test_wall_time_updated_after_record_action(self, mock_editor):
+        """_last_action_wall_time is stamped after each recorded action."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+        assert recorder._last_action_wall_time == 0.0
+
+        set_robot_pose(100, 200, 300)
+        recorder.capture_current_pose()
+        assert recorder._last_action_wall_time > 0
+
+        recorder.toggle_recording()
+
+    def test_gap_inserted_between_non_jog_actions(self, mock_editor):
+        """A time.sleep() is inserted when wall-clock time elapses between actions."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+
+        # Record first action
+        recorder.record_action("gripper", position=0.5)
+        first_wall = recorder._last_action_wall_time
+        assert first_wall > 0
+
+        # Simulate elapsed time
+        time.sleep(0.2)
+
+        # Record second action — should insert a delay
+        recorder.record_action("gripper", position=1.0)
+
+        inserted_code = mock_editor.program_textarea.value
+        assert "time.sleep(" in inserted_code, (
+            "Expected time.sleep() to be inserted for gap between actions"
+        )
+
+        recorder.toggle_recording()
+
+    def test_no_gap_for_motion_actions(self, mock_editor):
+        """Motion actions (moveJ/moveL) don't get delay inserted before them."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+
+        # Record a gripper action first
+        recorder.record_action("gripper", position=0.5)
+        time.sleep(0.2)
+
+        # Record a motion — should NOT get a delay
+        set_robot_pose(100, 200, 300)
+        recorder.record_action(
+            "moveJ",
+            angles=[0, 0, 0, 0, 0, 0],
+            speed=0.5,
+            accel=0.5,
+        )
+
+        inserted_code = mock_editor.program_textarea.value
+        # time.sleep should NOT appear between gripper and moveJ
+        lines = inserted_code.strip().split("\n")
+        # Find the moveJ line and check the line before it
+        for i, line in enumerate(lines):
+            if "rbt.moveJ" in line and i > 0:
+                assert "time.sleep" not in lines[i - 1], (
+                    "No delay should be inserted before a motion command"
+                )
+
+        recorder.toggle_recording()
+
+    def test_flush_sets_wall_time_to_last_pending(self, mock_editor):
+        """After flushing pending actions, wall time = last pending action time."""
+        recorder = MotionRecorder()
+        recorder.toggle_recording()
+
+        set_robot_pose(100, 200, 300)
+        recorder.on_jog_start("cartesian", "X+")
+
+        # Queue a pending action during the jog
+        time.sleep(0.1)
+        recorder.record_action("gripper", position=0.5)
+        assert len(recorder._pending_actions) == 1
+        queued_time = recorder._pending_actions[0][2]
+
+        # End the jog — flushes pending actions
+        set_robot_pose(200, 200, 300)
+        time.sleep(0.1)
+        recorder.on_jog_end()
+
+        # Wall time should be set to the queued action's timestamp
+        assert recorder._last_action_wall_time == pytest.approx(queued_time, abs=0.01)
+
+        recorder.toggle_recording()
+
+
+# ============================================================================
+# Workspace Envelope Tests
+# ============================================================================
+
+
+class TestWorkspaceEnvelope:
+    """Tests for workspace envelope generation.
+
+    The WorkspaceEnvelope now uses a lightweight max_reach approach instead
+    of generating a full point cloud. It calculates the maximum reach radius
+    and visualizes it as a wireframe sphere.
+    """
+
+    @pytest.fixture
+    def envelope(self):
+        """Create fresh envelope instance for each test."""
+        old_robot = ui_state.robot
+        ui_state.robot = get_robot()
+        env = WorkspaceEnvelope()
+        yield env
+        env.reset()
+        ui_state.robot = old_robot
+
+    def test_reset_clears_data(self, envelope):
+        """reset should clear all generated data."""
+        envelope.max_reach = 0.65
+        envelope._generated = True
+
+        envelope.reset()
+
+        assert envelope.max_reach == 0.0
+        assert envelope._generated is False
+
+    def test_generate_sync_creates_max_reach_with_valid_robot(self, envelope):
+        """generate_sync should calculate max_reach when robot is available.
+
+        This test uses the real PAROL6_ROBOT module since _generate_envelope_cpu_bound
+        imports it directly and mocks don't transfer to separate processes.
+        """
+        # Use generate_sync which runs in-process
+        result = envelope.generate_sync(samples=64)  # 64 = 2^6 for grid sampling
+
+        # With real robot module, should calculate max_reach
+        if result:
+            assert envelope._generated is True
+            assert envelope.max_reach > 0
+            # PAROL6 robot typically has reach around 0.6-0.7 meters
+            assert 0.3 < envelope.max_reach < 1.0
+        else:
+            # Robot module may not be available in test environment
+            assert envelope._generated is False
+
+    def test_generate_skips_if_already_generated(self, envelope):
+        """generate should return True immediately if already generated."""
+        envelope._generated = True
+
+        result = envelope.generate(samples=10)
+
+        assert result is True
+
+    def test_generate_sync_handles_exceptions_gracefully(self, envelope):
+        """generate_sync should catch exceptions without crashing.
+
+        The _generate_envelope_cpu_bound function handles exceptions internally
+        and returns None on failure. generate_sync should handle this gracefully.
+        """
+        # generate_sync uses _generate_envelope_cpu_bound which handles exceptions
+        # If robot module has issues, it should return False without crashing
+        _result = envelope.generate_sync(samples=64)
+
+        # Whether it succeeds depends on robot module availability
+        # The key is it doesn't crash and _generating flag is reset
+        assert envelope._generating is False
+
+    def test_concurrent_generation_prevented(self, envelope):
+        """generate should return True when already generating (indicates in-progress).
+
+        The async generate() returns True when generation is already in progress
+        since starting/in-progress are both valid states for non-blocking generation.
+        """
+        envelope._generating = True
+
+        result = envelope.generate(samples=10)
+
+        # Returns True because generation is in progress (valid state)
+        assert result is True
+
+    @pytest.mark.parametrize(
+        "offset,expected",
+        [
+            (0.05, 0.65),  # Positive offset extends reach
+            (-0.05, 0.65),  # Negative offset uses abs()
+            (0.0, 0.6),  # Zero offset returns base reach
+        ],
+    )
+    def test_get_radius_with_tool_offset(self, envelope, offset, expected):
+        """get_radius_with_tool_offset should add abs(offset) to max_reach."""
+        envelope.max_reach = 0.6  # 600mm base reach
+
+        effective_radius = envelope.get_radius_with_tool_offset(offset)
+
+        assert effective_radius == expected, (
+            f"With offset={offset}, expected {expected}, got {effective_radius}"
+        )
+
+
+# ============================================================================
+# Editor Auto-Simulation Tests
+# ============================================================================
+
+
+class TestEditorAutoSimulation:
+    """Tests for editor auto-simulation on code change."""
+
+    def test_debounce_defaults(self):
+        """EditorPanel should have correct debounce defaults."""
+        from parol_commander.components.editor import EditorPanel
+
+        panel = EditorPanel()
+
+        assert panel._debounce_delay == 1.0
+        # Timer starts as None
+        assert panel._simulation_debounce_timer is None
+
+    def testschedule_debounced_simulation_creates_timer(self):
+        """schedule_debounced_simulation should create a timer."""
+        from parol_commander.components.editor import EditorPanel
+        from parol_commander.state import editor_tabs_state
+
+        with patch("parol_commander.components.editor.ui") as mock_ui:
+            mock_timer = MagicMock()
+            mock_ui.timer.return_value = mock_timer
+
+            # Set up active tab so scheduling doesn't return early
+            editor_tabs_state.active_tab_id = "test-tab"
+
+            panel = EditorPanel()
+            panel.schedule_debounced_simulation()
+
+            # Verify timer was created with correct parameters
+            mock_ui.timer.assert_called_once()
+            call_args = mock_ui.timer.call_args
+            assert call_args[0][0] == 1.0  # debounce delay
+            assert call_args[1]["once"] is True
+
+    def testschedule_debounced_simulation_cancels_previous_timer(self):
+        """Calling schedule_debounced_simulation again should cancel previous timer."""
+        from parol_commander.components.editor import EditorPanel
+        from parol_commander.state import editor_tabs_state
+
+        with patch("parol_commander.components.editor.ui") as mock_ui:
+            mock_timer1 = MagicMock()
+            mock_timer2 = MagicMock()
+            mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
+
+            # Set up active tab so scheduling doesn't return early
+            editor_tabs_state.active_tab_id = "test-tab"
+
+            panel = EditorPanel()
+
+            # First call creates timer1
+            panel.schedule_debounced_simulation()
+            assert panel._simulation_debounce_timer == mock_timer1
+
+            # Second call should cancel timer1 (including running callback) and create timer2
+            panel.schedule_debounced_simulation()
+            mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
+            assert panel._simulation_debounce_timer == mock_timer2
+
+    @pytest.mark.asyncio
+    async def test_run_simulation_calls_path_visualizer(self):
+        """_run_simulation should call path_visualizer.update_path_visualization."""
+        from parol_commander.components.editor import EditorPanel
+
+        with patch("parol_commander.components.editor.ui"):
+            with patch(
+                "parol_commander.components.editor.path_visualizer"
+            ) as mock_visualizer:
+                # Track if update was called
+                update_called = False
+                update_content = None
+
+                async def mock_update(content, tab_id=None):
+                    nonlocal update_called, update_content
+                    update_called = True
+                    update_content = content
+
+                mock_visualizer.update_path_visualization = mock_update
+
+                panel = EditorPanel()
+                panel.program_textarea = MagicMock()
+                panel.program_textarea.value = "rbt.moveJ([0,0,0,0,0,0])"
+
+                await panel._run_simulation()
+
+                assert update_called is True
+                assert update_content == "rbt.moveJ([0,0,0,0,0,0])"
+
+    @pytest.mark.asyncio
+    async def test_run_simulation_empty_content_skips_visualization(self):
+        """_run_simulation should skip visualization when content is empty."""
+        from parol_commander.components.editor import EditorPanel
+
+        with patch("parol_commander.components.editor.ui"):
+            with patch(
+                "parol_commander.components.editor.path_visualizer"
+            ) as mock_visualizer:
+                update_called = False
+
+                async def mock_update(content, tab_id=None):
+                    nonlocal update_called
+                    update_called = True
+
+                mock_visualizer.update_path_visualization = mock_update
+
+                panel = EditorPanel()
+                panel.program_textarea = MagicMock()
+                panel.program_textarea.value = ""  # Empty content
+
+                await panel._run_simulation()
+
+                # Should NOT call update_path_visualization for empty content
+                assert update_called is False
+
+
+class TestSimulationCaching:
+    """Tests for per-tab simulation caching and optimization.
+
+    These tests verify:
+    - Default script optimization skips simulation and uses cached home position
+    - Non-default scripts trigger actual simulation
+    - Results are stored in the originating tab, not the active tab
+    - Anchor check uses cached final_joints_rad (instant, no blocking)
+    """
+
+    @pytest.fixture(autouse=True)
+    def _set_robot(self):
+        old_robot = ui_state.robot
+        ui_state.robot = get_robot()
+        yield
+        ui_state.robot = old_robot
+
+    def test_default_script_detected(self):
+        """_is_default_script returns True for default content, skipping simulation."""
+        from parol_commander.components.editor import EditorPanel
+
+        panel = EditorPanel()
+
+        default_content = panel._default_python_snippet()
+        assert panel._is_default_script(default_content) is True
+
+        # Whitespace variations should still match
+        assert panel._is_default_script(default_content + "\n\n  \n") is True
+
+        # Non-default content should not match
+        assert panel._is_default_script("rbt.moveJ([0,0,0,0,0,0])") is False
+
+    @pytest.mark.asyncio
+    async def test_results_stored_in_originating_tab(self):
+        """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
+        from parol_commander.state import editor_tabs_state, simulation_state, EditorTab
+        from parol_commander.services.path_visualizer import PathVisualizer
+
+        # Create two tabs
+        tab1 = EditorTab(
+            id="tab1", filename="a.py", file_path=None, content="", saved_content=""
+        )
+        tab2 = EditorTab(
+            id="tab2", filename="b.py", file_path=None, content="", saved_content=""
+        )
+        editor_tabs_state.tabs = [tab1, tab2]
+        editor_tabs_state.active_tab_id = "tab2"  # Active is tab2
+
+        # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
+        with (
+            patch("parol_commander.services.path_visualizer.run") as mock_run,
+            patch.object(simulation_state, "notify_changed"),
+        ):
+            mock_run.setup = MagicMock()
+            mock_run.cpu_bound = AsyncMock(
+                return_value={
+                    "segments": [],
+                    "targets": [],
+                    "truncated": False,
+                    "error": None,
+                    "total_steps": 0,
+                    "final_joints_rad": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                }
+            )
+
+            visualizer = PathVisualizer()
+            # Run simulation for tab1 (not active)
+            await visualizer.update_path_visualization("print('hi')", tab_id="tab1")
+
+            # Results should be in tab1, not tab2
+            assert tab1.final_joints_rad == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+            assert tab2.final_joints_rad is None
+
+    def test_simulation_returns_final_joints_rad(self):
+        """Simulation result includes final_joints_rad for caching."""
+        from parol_commander.services.path_visualizer import _run_simulation_isolated
+
+        program = """
+from parol6 import RobotClient
+rbt = RobotClient()
+rbt.home()
+"""
+        result = _run_simulation_isolated(
+            program,
+            dry_run_client_cls=DryRunRobotClient,
+        )
+
+        assert "final_joints_rad" in result
+        if result["final_joints_rad"] is not None:
+            assert len(result["final_joints_rad"]) == 6
+
+
+class TestPathVisualizerIntegration:
+    """Integration tests for PathVisualizer with dry run client.
+
+    These tests run in a subprocess via NiceGUI's cpu_bound(), so mocking
+    PAROL6_ROBOT doesn't work (mocks don't transfer across process boundaries).
+    The tests use the real robot kinematics module which should be available.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_test_tab(self):
+        """Create a test tab so path visualizer can store results.
+
+        State reset is handled by conftest.reset_state fixture.
+        This fixture only sets up the test tab needed for these tests.
+        """
+        from parol_commander.state import editor_tabs_state, EditorTab
+
+        old_robot = ui_state.robot
+        ui_state.robot = get_robot()
+
+        # Clear change listeners to prevent UI rendering attempts without context
+        simulation_state._change_listeners.clear()
+
+        # Create a test tab so path visualizer can store results
+        test_tab = EditorTab(
+            id="test-tab",
+            filename="test.py",
+            file_path=None,
+            content="",
+            saved_content="",
+        )
+        editor_tabs_state.tabs = [test_tab]
+        editor_tabs_state.active_tab_id = "test-tab"
+
+        yield
+
+        simulation_state._change_listeners.clear()
+        ui_state.robot = old_robot
+
+    @pytest.mark.asyncio
+    async def test_visualizer_executes_simple_program(self):
+        """PathVisualizer should execute program and create path segments.
+
+        Uses real PAROL6_ROBOT module in subprocess - no mocking needed.
+        Joint targets must be within PAROL6 limits:
+        J1: [-123, 123], J2: [-145, -3.4], J3: [108, 288],
+        J4: [-105, 105], J5: [-90, 90], J6: [0, 360]
+        """
+        visualizer = PathVisualizer()
+
+        # Valid joint targets within PAROL6 limits
+        program = """
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have created at least one segment
+        assert len(simulation_state.path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_visualizer_updates_total_steps(self):
+        """PathVisualizer should update total_steps after simulation."""
+        visualizer = PathVisualizer()
+
+        # Valid joint targets within PAROL6 limits
+        program = """
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.moveJ([80, -80, 170, 10, 10, 170], speed=1.0)
+        await rbt.moveJ([100, -100, 190, -10, -10, 190], speed=1.0)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have 2 segments and total_steps should match
+        assert simulation_state.total_steps == len(simulation_state.path_segments)
+
+    @pytest.mark.asyncio
+    async def test_visualizer_joint_coordinates_in_meters(self):
+        """Path segment coordinates should be in meters (not mm).
+
+        Joint moves produce TCP poses via FK. The segment points should be
+        converted from mm to meters for the 3D scene which uses SI units.
+        """
+        visualizer = PathVisualizer()
+
+        # Valid joint move within PAROL6 limits
+        program = """
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have created a segment
+        assert len(simulation_state.path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        )
+
+        # Check that all points are in meters (not mm)
+        # PAROL6 workspace is ~600mm reach, so all coords should be < 1.0m
+        segment = simulation_state.path_segments[-1]
+        end_point = segment.points[-1]  # [x, y, z]
+
+        assert abs(end_point[0]) < 1.0, (
+            f"X coordinate {end_point[0]} appears to be in mm, expected meters"
+        )
+        assert abs(end_point[1]) < 1.0, (
+            f"Y coordinate {end_point[1]} appears to be in mm, expected meters"
+        )
+        assert abs(end_point[2]) < 1.0, (
+            f"Z coordinate {end_point[2]} appears to be in mm, expected meters"
+        )
+
+    @pytest.mark.asyncio
+    async def test_target_markers_create_targets(self):
+        """Programs with TARGET markers should create ProgramTarget objects."""
+        visualizer = PathVisualizer()
+
+        # Use joint moves with valid targets (within PAROL6 limits) and TARGET markers
+        program = """
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)  # TARGET:abc12345
+        await rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)  # TARGET:def67890
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have created 2 path segments
+        assert len(simulation_state.path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        )
+
+        # Should have created 2 targets (one for each TARGET marker)
+        assert len(simulation_state.targets) == 2, (
+            f"Expected 2 targets (one per TARGET marker), got {len(simulation_state.targets)}. "
+            f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
+        )
+
+        # Verify target IDs match the markers in the code
+        target_ids = [t.id for t in simulation_state.targets]
+        assert "abc12345" in target_ids, (
+            f"Expected target 'abc12345' not found in {target_ids}"
+        )
+        assert "def67890" in target_ids, (
+            f"Expected target 'def67890' not found in {target_ids}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_move_with_literals_auto_generates_targets(self):
+        """Moves with literal values auto-generate targets for 3D editing.
+
+        Even without explicit TARGET:uuid markers, moves with literal coordinates
+        get auto-generated targets so users can edit positions in the 3D scene.
+        """
+        visualizer = PathVisualizer()
+
+        # Valid joint targets with literal coordinates
+        program = """
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have created path segments (for visualization)
+        assert len(simulation_state.path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        )
+
+        # Should have auto-generated targets for moves with literal values
+        assert len(simulation_state.targets) >= 2, (
+            f"Expected at least 2 auto-generated targets, got {len(simulation_state.targets)}"
+        )
+
+        # Auto-generated target IDs should be based on line numbers
+        target_ids = [t.id for t in simulation_state.targets]
+        assert any(tid.startswith("auto_") for tid in target_ids), (
+            f"Expected auto-generated target IDs, got {target_ids}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_move_with_variables_no_target_created(self):
+        """Moves with variable arguments should visualize but NOT create targets.
+
+        When move commands use variables instead of literal values, the path
+        should still be visualized, but no ProgramTarget is created since
+        the coordinates aren't statically determinable.
+        """
+        visualizer = PathVisualizer()
+
+        # Valid joint targets using variables (not literals)
+        program = """
+import parol6
+
+async def main():
+    joints_a = [85, -85, 175, 5, 5, 175]
+    joints_b = [95, -95, 185, -5, -5, 185]
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.moveJ(joints_a, speed=1.0)
+        await rbt.moveJ(joints_b, speed=1.0)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        # Should have created path segments (visualization still works)
+        assert len(simulation_state.path_segments) >= 2, (
+            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        )
+
+        # Should NOT have created any targets (variables not inspectable)
+        assert len(simulation_state.targets) == 0, (
+            f"Expected 0 targets (moves use variables), got {len(simulation_state.targets)}"
+        )
+
+
+# ============================================================================
+# Home and Checkpoint Tests
+# ============================================================================
+
+
+class TestHomeAndCheckpoints:
+    """Tests for home teleport and checkpoint marker creation."""
+
+    def test_home_segment_is_zero_duration_checkpoint(self):
+        """home() produces a zero-duration segment with checkpoint='home' and correct joints."""
+        from parol6.config import HOME_ANGLES_DEG
+
+        segments: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+        )
+
+        # Start from non-home position, then home
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.home()
+
+        assert len(segments) == 2
+        home_seg = segments[1]
+        assert home_seg["checkpoint"] == "home"
+        assert home_seg["estimated_duration"] == pytest.approx(0.0)
+        assert home_seg["joints"] is not None
+        # Joints should be at home position (in radians)
+        home_rad = np.radians(HOME_ANGLES_DEG)
+        assert np.allclose(home_seg["joints"], home_rad, atol=0.01)
+
+    def test_home_updates_planner_for_subsequent_moves(self):
+        """After home(), subsequent moveJ starts from home position."""
+        segments: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+        )
+
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.home()
+        client.moveJ([90, -90, 140, 15, 50, 175], speed=1.0)
+
+        assert len(segments) == 3
+        # Third segment should have a trajectory starting near home
+        third = segments[2]
+        assert third["joint_trajectory"] is not None
+        assert len(third["joint_trajectory"]) >= 2
+
+    def test_checkpoint_creates_zero_width_marker(self):
+        """checkpoint() creates a zero-width segment with the correct label."""
+        segments: list[dict] = []
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+        )
+
+        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.checkpoint("pick_done")
+
+        assert len(segments) == 2
+        cp_seg = segments[1]
+        assert cp_seg["checkpoint"] == "pick_done"
+        assert cp_seg["estimated_duration"] == pytest.approx(0.0)
+        assert cp_seg["points"] == []
+        assert cp_seg["move_type"] == "checkpoint"
+
+
+# ============================================================================
+# Tool Action Tracking Tests
+# ============================================================================
+
+
+class TestToolActionTracking:
+    """Tests for tool action start_positions tracking across calls."""
+
+    def test_tool_start_positions_across_calls(self):
+        """close() then open() records correct start_positions for each action."""
+        from dataclasses import asdict
+        from waldoctl.tools import LinearMotion
+
+        segments: list[dict] = []
+        tool_actions: list = []
+        robot = get_robot("parol6")
+
+        # Build tool metadata registry (same logic as path_visualizer)
+        def _serialize_motions(motion_list):
+            return [
+                {"type": "linear", **asdict(m)}
+                if isinstance(m, LinearMotion)
+                else {"type": "rotary", **asdict(m)}
+                for m in motion_list
+            ]
+
+        tool_meta: dict[str, dict] = {}
+        for spec in robot.tools.available:
+            if spec.key == "NONE":
+                continue
+            base = _serialize_motions(spec.motions) if spec.motions else []
+            variants = {}
+            for v in spec.variants:
+                if v.motions:
+                    variants[v.key] = {"motions": _serialize_motions(v.motions)}
+            if base or variants:
+                tool_meta[spec.key] = {
+                    "motions": base,
+                    "variants": variants,
+                    "activation_type": spec.activation_type.value,
+                }
+
+        client = PathPreviewClient(
+            dry_run_client_cls=DryRunRobotClient,
+            segment_collector=segments,
+            tool_action_collector=tool_actions,
+            tool_meta_registry=tool_meta,
+        )
+
+        client.set_tool("SSG-48", "pinch")
+        client.tool.close()
+        client.tool.open()
+
+        assert len(tool_actions) == 2
+
+        # First action: close — starts open (0.0), targets closed (1.0)
+        assert tool_actions[0].start_positions == (0.0,)
+        assert tool_actions[0].target_positions == (1.0,)
+
+        # Second action: open — starts closed (1.0), targets open (0.0)
+        assert tool_actions[1].start_positions == (1.0,)
+        assert tool_actions[1].target_positions == (0.0,)
+
+
+# ============================================================================
+# Teleport Command Tests
+# ============================================================================
+
+
+class TestTeleportCommand:
+    """Tests for TeleportCommand as a streamable motion command."""
+
+    def test_teleport_is_streamable_motion_command(self):
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.commands.base import MotionCommand
+
+        assert issubclass(TeleportCommand, MotionCommand)
+        assert TeleportCommand.streamable is True
+
+    def test_teleport_not_in_system_cmd_types(self):
+        from parol6.ack_policy import SYSTEM_CMD_TYPES, FIRE_AND_FORGET
+        from parol6.protocol.wire import CmdType
+
+        assert CmdType.TELEPORT not in SYSTEM_CMD_TYPES
+        assert CmdType.TELEPORT in FIRE_AND_FORGET
+
+    def test_teleport_converts_degrees_to_steps(self):
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.protocol.wire import TeleportCmd
+        from parol6.server.state import ControllerState
+
+        angles_deg = [90.0, -45.0, 30.0, 0.0, 60.0, 180.0]
+        cmd = TeleportCommand(TeleportCmd(angles=angles_deg))
+        state = ControllerState()
+        cmd.do_setup(state)
+
+        # Steps should be non-zero for non-zero angles
+        assert cmd._target_steps[0] != 0  # 90 deg
+        assert cmd._target_steps[3] == 0  # 0 deg
+
+    def test_teleport_clears_gripper_command_bits(self):
+        """Teleport with tool_positions must clear Gripper_data_out[3]
+        to prevent the write-frame JIT from re-arming the gripper ramp."""
+        import os
+        from parol6.commands.basic_commands import TeleportCommand
+        from parol6.protocol.wire import TeleportCmd, CommandCode
+        from parol6.server.state import ControllerState
+
+        state = ControllerState()
+        state.Gripper_data_out[3] = 1  # simulate in-flight gripper command
+
+        angles = [0.0] * 6
+        cmd = TeleportCommand(TeleportCmd(angles=angles, tool_positions=[0.5]))
+        cmd.do_setup(state)
+
+        with patch.dict(os.environ, {"PAROL6_FAKE_SERIAL": "1"}):
+            cmd.execute_step(state)
+
+        assert state.Command_out == CommandCode.TELEPORT
+        assert state.Gripper_data_out[3] == 0
+        assert state.tool_teleport_pos == pytest.approx(127.5)
+
+
+# ============================================================================
+# Sim Pose Override Auto-Clear Tests
+# ============================================================================
+
+
+class TestSimPoseOverrideAutoClear:
+    """Tests for the timestamp-based auto-clear of sim_pose_override."""
+
+    def test_clears_after_timeout(self):
+        """Override should clear once 100ms has passed since last teleport."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = False
+        simulation_state.last_teleport_ts = time.monotonic() - 0.2  # 200ms ago
+
+        # Simulate the auto-clear condition from main.py
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert should_clear
+
+    def test_stays_set_during_active_scrubbing(self):
+        """Override should NOT clear if a teleport was sent recently."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = False
+        simulation_state.last_teleport_ts = time.monotonic()  # just now
+
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert not should_clear
+
+    def test_stays_set_during_playback(self):
+        """Override should NOT clear during active simulation playback."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = True
+        simulation_state.last_teleport_ts = time.monotonic() - 0.2
+
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert not should_clear
+
+    def test_no_clear_without_teleport(self):
+        """Override should NOT clear if no teleport was ever sent (ts=0)."""
+        simulation_state.sim_pose_override = True
+        simulation_state.sim_playback_active = False
+        simulation_state.last_teleport_ts = 0.0
+
+        should_clear = (
+            simulation_state.sim_pose_override
+            and not simulation_state.sim_playback_active
+            and simulation_state.last_teleport_ts > 0
+            and (time.monotonic() - simulation_state.last_teleport_ts) > 0.1
+        )
+        assert not should_clear

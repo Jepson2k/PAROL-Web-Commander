@@ -3,33 +3,66 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parol-web-commander"
+name = "parol-commander"
 version = "1.0.0"
 description = "Web interface for PAROL robot control"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-  "nicegui>=2.0.0",
+  "nicegui @ git+https://github.com/Jepson2k/nicegui.git@feature/additional_scene_features",
   "python-dotenv>=1.0.0",
   "urchin>=0.0.27",
-  "numpy>=1.24",
   "scipy>=1.10",
+  "xxhash>=3.0.0",
+  "pyserial>=3.5",
+  "numpy-stl>=3.0.0",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git",
+  "opencv-python-headless>=4.8",
+
+  # pinokin: Pinocchio-based FK/IK bindings
+  # https://github.com/Jepson2k/pinokin/releases/tag/v0.1.5
+
+  # macOS ARM64 (Apple Silicon)
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-macosx_15_0_arm64.whl ; python_version == '3.11' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-macosx_15_0_arm64.whl ; python_version == '3.12' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-macosx_15_0_arm64.whl ; python_version == '3.13' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-macosx_15_0_arm64.whl ; python_version == '3.14' and platform_system == 'Darwin' and platform_machine == 'arm64'",
+
+  # Windows AMD64
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-win_amd64.whl ; python_version == '3.11' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-win_amd64.whl ; python_version == '3.12' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-win_amd64.whl ; python_version == '3.13' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-win_amd64.whl ; python_version == '3.14' and platform_system == 'Windows' and platform_machine == 'AMD64'",
+
+  # Linux x86_64
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-manylinux_2_39_x86_64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-manylinux_2_39_x86_64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-manylinux_2_39_x86_64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-manylinux_2_39_x86_64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'x86_64'",
+
+  # Linux aarch64 (ARM64)
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp311-cp311-manylinux_2_39_aarch64.whl ; python_version == '3.11' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp312-cp312-manylinux_2_39_aarch64.whl ; python_version == '3.12' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp313-cp313-manylinux_2_39_aarch64.whl ; python_version == '3.13' and platform_system == 'Linux' and platform_machine == 'aarch64'",
+  "pinokin @ https://github.com/Jepson2k/pinokin/releases/download/v0.1.5/pinokin-0.1.5-cp314-cp314-manylinux_2_39_aarch64.whl ; python_version == '3.14' and platform_system == 'Linux' and platform_machine == 'aarch64'",
 ]
 
 [project.optional-dependencies]
-dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "pre-commit"]
+parol6 = ["parol6>=0.1.0"]
+v4l2 = ["linuxpy>=0.24"]
+dev = ["parol6>=0.1.0", "ruff", "ty", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
 
-[tool.ruff]
-extend-exclude = [
-  "external/",
-  "PAROL*/"
-]
+[project.scripts]
+parol-commander = "parol_commander.main:main"
 
-[tool.mypy]
-exclude = '(?x)(^external/|PAROL.*/)$'
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["parol_commander*"]
 
-[[tool.mypy.overrides]]
-module = ["parol6", "parol6.*", "roboticstoolbox", "roboticstoolbox.*", "spatialmath", "spatialmath.*"]
-ignore_missing_imports = true
+[tool.setuptools.package-data]
+parol_commander = ["static/**/*"]
+
+[tool.ty.environment]
+extra-paths = ["PAROL6-python-API"]
 
 # ---- Pytest configuration ----
 [tool.pytest.ini_options]
@@ -41,9 +74,25 @@ asyncio_mode = "auto"
 addopts = [
     "--strict-markers",
     "--strict-config",
-    "-ra",  # show short test summary for all but passes
+    "-ra",
+    "--junitxml=test-results.xml",
+    "-p nicegui.testing.user_plugin",
 ]
+# Global per-test timeout (90s to accommodate JIT warmup and teardown on slow CI runners)
+timeout = 90
+timeout_method = "thread"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
+    "rate: Control-rate cadence tests",
+    "module_under_test: NiceGUI main module under test for the user fixture",
+    "browser: Browser tests requiring Selenium",
+]
+# nicegui.testing expects a path to the app's entrypoint for the user fixture
+main_file = "parol_commander/main.py"
+log_cli = false
+log_level = "DEBUG"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
 ]

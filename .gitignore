@@ -1,5 +1,16 @@
 .*/
+!.github/
 *.pyc
 *.log
 *.out
 programs/*
+build/*
+*.egg-info
+screenshots*
+test-results.xml
+*.nbc
+*.nbi
+
+# Local development directories
+PAROL6-Desktop-robot-arm/
+nicegui/
