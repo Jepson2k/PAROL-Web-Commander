@@ -2,9 +2,9 @@
 
 import pytest
 
-from parol_commander.profiles import get_robot
-from parol_commander.state import ui_state
-import parol_commander.components.editor as _editor_mod
+from waldo_commander.profiles import get_robot
+from waldo_commander.state import ui_state
+import waldo_commander.components.editor as _editor_mod
 
 
 @pytest.fixture(autouse=True)

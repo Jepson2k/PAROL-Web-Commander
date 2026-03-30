@@ -1,1 +1,1 @@
-# Test helpers for PAROL Web Commander
+# Test helpers for Waldo Commander

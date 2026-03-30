@@ -2,11 +2,11 @@
 
 import pytest
 
-from parol_commander.services.timeline import (
+from waldo_commander.services.timeline import (
     DEFAULT_SEGMENT_DURATION,
     Timeline,
 )
-from parol_commander.state import PathSegment, ToolAction
+from waldo_commander.state import PathSegment, ToolAction
 
 
 def _seg(
@@ -358,7 +358,7 @@ class TestGradientBlending:
 
     def test_green_red_midpoint(self):
         """Blending green and red at 50% produces a mix, not an unchanged color."""
-        from parol_commander.services.urdf_scene.urdf_scene import _lerp_hex
+        from waldo_commander.services.urdf_scene.urdf_scene import _lerp_hex
 
         green = (0x10, 0xB9, 0x81)  # #10b981
         red = (0xEF, 0x44, 0x44)  # #ef4444
@@ -375,7 +375,7 @@ class TestGradientBlending:
 
     def test_low_factor_stays_greenish(self):
         """At factor=0.1 (far from invalid), green still dominates."""
-        from parol_commander.services.urdf_scene.urdf_scene import _lerp_hex
+        from waldo_commander.services.urdf_scene.urdf_scene import _lerp_hex
 
         green = (0x10, 0xB9, 0x81)
         red = (0xEF, 0x44, 0x44)

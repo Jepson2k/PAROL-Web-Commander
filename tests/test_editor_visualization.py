@@ -29,7 +29,7 @@ def _clean_stale_state():
     enabled or tabs with modified content. These module-level singletons are
     NOT reset by NiceGUI's test infrastructure, so we clear them here.
     """
-    from parol_commander.state import (
+    from waldo_commander.state import (
         editor_tabs_state,
         recording_state,
         simulation_state,

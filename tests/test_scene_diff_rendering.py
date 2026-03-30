@@ -1,7 +1,7 @@
 """Unit tests for scene diff rendering: fingerprinting, diffing, and opacity."""
 
-from parol_commander.state import PathSegment, ProgramTarget, ToolAction
-from parol_commander.services.urdf_scene.urdf_scene import (
+from waldo_commander.state import PathSegment, ProgramTarget, ToolAction
+from waldo_commander.services.urdf_scene.urdf_scene import (
     RenderedSegment,
     RenderedItem,
     _segment_fingerprint,
@@ -278,7 +278,7 @@ class TestCollectFailedTarget:
     def _make_client(self):
         """Create a PathPreviewClient with a mock dry-run client."""
         from unittest.mock import MagicMock
-        from parol_commander.services.path_preview_client import PathPreviewClient
+        from waldo_commander.services.path_preview_client import PathPreviewClient
 
         mock_cls = MagicMock()
         mock_cls.return_value = MagicMock()

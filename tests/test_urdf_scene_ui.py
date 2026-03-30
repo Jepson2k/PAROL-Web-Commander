@@ -19,7 +19,7 @@ async def test_urdf_scene_joint_names(user: User) -> None:
 
     Verifies that the scene reports 6 actuated joints for PAROL6.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_urdf_ready()
@@ -41,8 +41,8 @@ async def test_urdf_scene_envelope_pregenerated_on_startup(
     Verifies that opening the main page triggers envelope data generation,
     so it's available for immediate rendering when envelope mode is 'on'.
     """
-    from parol_commander.state import ui_state
-    from parol_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+    from waldo_commander.state import ui_state
+    from waldo_commander.services.urdf_scene.envelope_mixin import workspace_envelope
 
     # Reset envelope state before test
     workspace_envelope.reset()
@@ -82,8 +82,8 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
     Verifies that when simulation_state.envelope_mode is set to 'on', the
     envelope wireframe sphere is created and made visible in the scene.
     """
-    from parol_commander.state import ui_state, simulation_state
-    from parol_commander.services.urdf_scene.envelope_mixin import workspace_envelope
+    from waldo_commander.state import ui_state, simulation_state
+    from waldo_commander.services.urdf_scene.envelope_mixin import workspace_envelope
 
     await user.open("/")
     await wait_for_urdf_ready()
@@ -92,7 +92,7 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
     assert scene is not None, "Expected ui_state.urdf_scene to be initialized"
 
     # Set envelope mode to 'off' first
-    from parol_commander.state import EnvelopeMode
+    from waldo_commander.state import EnvelopeMode
 
     simulation_state.envelope_mode = EnvelopeMode.OFF
     await asyncio.sleep(0.2)  # Let update timer run

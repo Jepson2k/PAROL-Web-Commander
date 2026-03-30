@@ -6,7 +6,7 @@ import pytest
 from nicegui import app as ng_app
 from nicegui.testing import User
 
-from parol_commander.components.help_menu import HelpMenu
+from waldo_commander.components.help_menu import HelpMenu
 
 
 @pytest.mark.integration

@@ -86,7 +86,7 @@ class TestFileOperations:
 
     async def test_save_to_server_writes_file(self, user: "User") -> None:
         """_save_tab writes file to PROGRAM_DIR."""
-        from parol_commander.state import editor_tabs_state, ui_state
+        from waldo_commander.state import editor_tabs_state, ui_state
 
         await user.open("/")
         user.find(marker="tab-program").click()
@@ -115,7 +115,7 @@ class TestFileOperations:
 
     async def test_new_tab_button(self, user: "User") -> None:
         """Clicking new tab button creates a new tab."""
-        from parol_commander.state import editor_tabs_state
+        from waldo_commander.state import editor_tabs_state
 
         await user.open("/")
         user.find(marker="tab-program").click()

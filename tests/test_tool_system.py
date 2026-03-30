@@ -20,7 +20,7 @@ from waldoctl import (
     ToolType,
 )
 
-from parol_commander.state import ui_state
+from waldo_commander.state import ui_state
 from tests.helpers.wait import wait_for_app_ready
 
 

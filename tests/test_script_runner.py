@@ -12,7 +12,7 @@ async def test_run_script_happy_path(tmp_path: Path) -> None:
 
     Verifies basic process execution and stdout capture.
     """
-    from parol_commander.services.script_runner import run_script
+    from waldo_commander.services.script_runner import run_script
 
     # Write a simple test script that prints to stdout
     script_path = tmp_path / "test_script.py"
@@ -31,7 +31,7 @@ print("Line 3")
         stdout_lines.append(line)
 
     # Run the script with config
-    from parol_commander.services.script_runner import create_default_config
+    from waldo_commander.services.script_runner import create_default_config
 
     config = create_default_config(str(script_path))
     handle = await run_script(
@@ -57,7 +57,7 @@ async def test_run_script_missing_file_raises() -> None:
 
     Verifies error handling for missing files.
     """
-    from parol_commander.services.script_runner import run_script, create_default_config
+    from waldo_commander.services.script_runner import run_script, create_default_config
 
     # Try to run a non-existent file
     config = create_default_config("/path/to/nonexistent/script.py")
@@ -75,7 +75,7 @@ async def test_stop_script_terminates_process(tmp_path: Path) -> None:
 
     Verifies that long-running scripts can be stopped cleanly.
     """
-    from parol_commander.services.script_runner import (
+    from waldo_commander.services.script_runner import (
         run_script,
         stop_script,
         create_default_config,
@@ -118,7 +118,7 @@ def test_create_default_config() -> None:
 
     Verifies that default configuration has all required fields.
     """
-    from parol_commander.services.script_runner import create_default_config
+    from waldo_commander.services.script_runner import create_default_config
 
     config = create_default_config("/tmp/test.py")
 
@@ -137,7 +137,7 @@ async def test_script_can_import_parol6_libraries(tmp_path: Path) -> None:
     parol6 library and its key components. This ensures users can
     write robot control scripts that use the expected API.
     """
-    from parol_commander.services.script_runner import run_script, create_default_config
+    from waldo_commander.services.script_runner import run_script, create_default_config
 
     # Write a script that imports the key parol6 modules
     script_path = tmp_path / "test_imports.py"

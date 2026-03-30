@@ -1,4 +1,4 @@
-"""Pytest configuration and shared fixtures for PAROL Web Commander tests."""
+"""Pytest configuration and shared fixtures for Waldo Commander tests."""
 
 import logging
 import os
@@ -238,7 +238,7 @@ def class_screen(
             # Set storage keys to bypass first-time dialogs before opening app
             from nicegui import app as ng_app
 
-            from parol_commander.components.help_menu import HelpMenu
+            from waldo_commander.components.help_menu import HelpMenu
 
             ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
             ng_app.storage.general[HelpMenu.SAFETY_ACKNOWLEDGED_KEY] = True
@@ -322,15 +322,15 @@ def test_env_config() -> Generator[None, None, None]:
     controller_port, multicast_port = _get_test_ports()
     env_defaults: dict[str, str] = {
         "PAROL6_FAKE_SERIAL": "1",  # Use fake serial for controller
-        "PAROL_WEBAPP_REQUIRE_READY": "1",
-        "PAROL_EXCLUSIVE_START": "0",  # Allow reusing session-scoped controller
-        "PAROL_LOG_LEVEL": "DEBUG",
+        "WALDO_WEBAPP_REQUIRE_READY": "1",
+        "WALDO_EXCLUSIVE_START": "0",  # Allow reusing session-scoped controller
+        "WALDO_LOG_LEVEL": "DEBUG",
         # Connect webapp to the session-randomized controller port
-        "PAROL_CONTROLLER_PORT": str(controller_port),
+        "WALDO_CONTROLLER_PORT": str(controller_port),
         "PAROL6_CONTROLLER_PORT": str(controller_port),
         "PAROL6_STATUS_MULTICAST_PORT": str(multicast_port),
         # Skip slow envelope generation by default (tests that need it enable explicitly)
-        "PAROL_SKIP_ENVELOPE": "1",
+        "WALDO_SKIP_ENVELOPE": "1",
         # Reduce status broadcast rate for tests (50Hz is for human-perceived real-time,
         # 20Hz is sufficient for automated tests and reduces CI load)
         "PAROL6_STATUS_RATE_HZ": "20",
@@ -356,11 +356,11 @@ def test_env_config() -> Generator[None, None, None]:
 def robot_state():
     """Provide access to the shared RobotState instance.
 
-    This exposes `parol_commander.state.robot_state` so tests can
+    This exposes `waldo_commander.state.robot_state` so tests can
     prime or inspect global robot state without importing main.py
     and triggering NiceGUI startup handlers a second time.
     """
-    from parol_commander import state as state_module
+    from waldo_commander import state as state_module
 
     return state_module.robot_state
 
@@ -379,9 +379,9 @@ def reset_state(request: pytest.FixtureRequest):
 
     from nicegui import app as ng_app
 
-    from parol_commander import state as state_module
-    from parol_commander.components.help_menu import HelpMenu
-    from parol_commander.state import reset_all_state
+    from waldo_commander import state as state_module
+    from waldo_commander.components.help_menu import HelpMenu
+    from waldo_commander.state import reset_all_state
 
     # Mark first visit and safety as acknowledged so dialogs don't appear
     ng_app.storage.general[HelpMenu.FIRST_VISIT_KEY] = True
@@ -401,7 +401,7 @@ def reset_state(request: pytest.FixtureRequest):
 
     # Clear NiceGUI log handler targets to prevent deadlocks when logging
     # triggers widget.push() on stale widgets outside a NiceGUI context
-    from parol_commander.common.logging_config import _ui_log_targets, _ui_lock
+    from waldo_commander.common.logging_config import _ui_log_targets, _ui_lock
 
     with _ui_lock:
         _ui_log_targets.clear()
@@ -439,7 +439,7 @@ def kill_stale_controllers() -> Generator[None, None, None]:
         _kill()
         # Best-effort verification (non-fatal)
         try:
-            from parol_commander.constants import config
+            from waldo_commander.constants import config
 
             probe = Robot(host=config.controller_host, port=controller_port)
             if probe.is_available():
@@ -457,7 +457,7 @@ def session_controller(
     """Session-scoped controller shared by all tests.
 
     Starts the controller once per test session and keeps it running.
-    The app's start_controller() will detect it and reuse it (via PAROL_EXCLUSIVE_START=0).
+    The app's start_controller() will detect it and reuse it (via WALDO_EXCLUSIVE_START=0).
     This saves ~4 seconds per test (2s start + 2s stop).
     """
     controller_port, multicast_port = _get_test_ports()
@@ -571,12 +571,12 @@ async def controller_reset(
 def enable_envelope() -> Generator[None, None, None]:
     """Enable envelope generation for tests that specifically need it.
 
-    By default, PAROL_SKIP_ENVELOPE=1 is set to speed up tests.
+    By default, WALDO_SKIP_ENVELOPE=1 is set to speed up tests.
     Use this fixture for tests that verify envelope functionality.
     """
-    original = os.environ.pop("PAROL_SKIP_ENVELOPE", None)
+    original = os.environ.pop("WALDO_SKIP_ENVELOPE", None)
     yield
     if original is not None:
-        os.environ["PAROL_SKIP_ENVELOPE"] = original
+        os.environ["WALDO_SKIP_ENVELOPE"] = original
     else:
-        os.environ["PAROL_SKIP_ENVELOPE"] = "1"
+        os.environ["WALDO_SKIP_ENVELOPE"] = "1"

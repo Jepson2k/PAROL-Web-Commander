@@ -106,7 +106,7 @@ async def enable_sim(user: User, robot_state, timeout_s: float = 5.0) -> None:
     Raises:
         TimeoutError: If simulator doesn't become ready within timeout
     """
-    from parol_commander.state import readiness_state
+    from waldo_commander.state import readiness_state
 
     def _has_valid_angles() -> bool:
         angles = robot_state.angles
@@ -182,7 +182,7 @@ async def wait_for_app_ready(timeout_s: float = 20.0) -> None:
     Raises:
         TimeoutError: If app doesn't become ready within timeout
     """
-    from parol_commander.state import readiness_state
+    from waldo_commander.state import readiness_state
 
     try:
         await asyncio.wait_for(readiness_state.app_ready.wait(), timeout=timeout_s)
@@ -207,7 +207,7 @@ async def wait_for_urdf_ready(timeout_s: float = 5.0) -> None:
     Raises:
         TimeoutError: If URDF scene doesn't initialize within timeout
     """
-    from parol_commander.state import readiness_state
+    from waldo_commander.state import readiness_state
 
     try:
         await asyncio.wait_for(
@@ -335,7 +335,7 @@ async def ensure_robot_ready_for_motion(robot_state, timeout_s: float = 5.0) -> 
         TimeoutError: If app_ready not signaled within timeout
         AssertionError: If robot state is invalid for motion
     """
-    from parol_commander.state import readiness_state
+    from waldo_commander.state import readiness_state
 
     # Wait for app to be ready
     try:

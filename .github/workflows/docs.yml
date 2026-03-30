@@ -23,6 +23,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - run: pip install mkdocs-material
+      - run: pip install mkdocs-material mkdocstrings[python]
+
+      - run: git clone https://github.com/Jepson2k/waldoctl.git waldoctl
 
       - run: mkdocs gh-deploy --force

@@ -20,7 +20,7 @@ async def test_joint_at_limit_disables_direction(user: User, robot_state) -> Non
     When a joint is at or near its maximum limit, the positive direction
     button should be disabled to prevent motion beyond the limit.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     JOINT_LIMITS_DEG = ui_state.active_robot.joints.limits.position.deg
 

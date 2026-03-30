@@ -90,7 +90,7 @@ async def test_mode_switch_stops_running_script(tmp_path) -> None:
     This unit test verifies the behavior without going through the full UI
     mode toggle flow, which would cause serial port errors in test environments.
     """
-    from parol_commander.services.script_runner import (
+    from waldo_commander.services.script_runner import (
         run_script,
         stop_script,
         create_default_config,

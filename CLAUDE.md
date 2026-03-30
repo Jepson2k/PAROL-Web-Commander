@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-PAROL Web Commander is a NiceGUI-based web interface for controlling PAROL6 robotic arms. It provides real-time robot control, script editing, motion recording, and 3D visualization.
+Waldo Commander is a NiceGUI-based web interface for controlling PAROL6 robotic arms. It provides real-time robot control, script editing, motion recording, and 3D visualization.
 
 ## Testing Guidelines
 
@@ -101,7 +101,7 @@ Prefer fewer, comprehensive integration tests that mimic manual testing over a l
 
 ### State Management
 
-Global state is managed through dataclasses in `parol_commander/state.py`:
+Global state is managed through dataclasses in `waldo_commander/state.py`:
 - `robot_state` - Robot joint angles, position, I/O status
 - `simulation_state` - Path visualization, targets, playback
 - `ui_state` - UI component references
@@ -109,14 +109,14 @@ Global state is managed through dataclasses in `parol_commander/state.py`:
 
 ### NiceGUI Components
 
-Custom components are in `parol_commander/components/`:
+Custom components are in `waldo_commander/components/`:
 - `editor.py` - Code editor with tabs, script execution
 - `control.py` - Jogging controls, robot mode switching
 - `readout.py` - Joint/position readouts
 
 ### Services
 
-Background services in `parol_commander/services/`:
+Background services in `waldo_commander/services/`:
 - `script_runner.py` - Python script subprocess management
 - `path_visualizer.py` - Motion path simulation
 - `motion_recorder.py` - Recording robot movements to code
@@ -125,7 +125,7 @@ Background services in `parol_commander/services/`:
 
 ### Adding a New UI Element
 
-1. Add to appropriate component in `parol_commander/components/`
+1. Add to appropriate component in `waldo_commander/components/`
 2. Add marker with `.mark("descriptive-marker-name")` for testing
 3. Add test in `tests/test_*_integration.py`
 

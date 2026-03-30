@@ -1,1 +1,1 @@
-# Test package for PAROL Web Commander
+# Test package for Waldo Commander

@@ -506,7 +506,7 @@ class TestTCPTransformControls:
 
     #     from PIL import ImageDraw
 
-    #     from parol_commander.state import robot_state
+    #     from waldo_commander.state import robot_state
 
     #     screen_wait_for_scene_ready(class_screen, timeout_s=10.0)
     #     tcp_ball = screen_wait_for_tcp_ball(class_screen, timeout_s=10.0)

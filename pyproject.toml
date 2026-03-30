@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parol-commander"
+name = "waldo-commander"
 version = "1.0.0"
-description = "Web interface for PAROL robot control"
+description = "A web interface for controlling robotic arms"
 requires-python = ">=3.12"
 dependencies = [
   "nicegui @ git+https://github.com/Jepson2k/nicegui.git@feature/additional_scene_features",
@@ -52,14 +52,14 @@ v4l2 = ["linuxpy>=0.24"]
 dev = ["parol6>=0.1.0", "ruff", "ty", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
 
 [project.scripts]
-parol-commander = "parol_commander.main:main"
+waldo-commander = "waldo_commander.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["parol_commander*"]
+include = ["waldo_commander*"]
 
 [tool.setuptools.package-data]
-parol_commander = ["static/**/*"]
+waldo_commander = ["static/**/*"]
 
 [tool.ty.environment]
 extra-paths = ["PAROL6-python-API"]
@@ -89,7 +89,7 @@ markers = [
     "browser: Browser tests requiring Selenium",
 ]
 # nicegui.testing expects a path to the app's entrypoint for the user fixture
-main_file = "parol_commander/main.py"
+main_file = "waldo_commander/main.py"
 log_cli = false
 log_level = "DEBUG"
 filterwarnings = [

@@ -1,7 +1,52 @@
-site_name: PAROL Web Commander
+site_name: Waldo Commander
 site_url: https://jepson2k.github.io/PAROL-Web-Commander/
 repo_url: https://github.com/Jepson2k/PAROL-Web-Commander
+
 theme:
   name: material
   palette:
-    scheme: slate
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - content.code.copy
+    - toc.follow
+
+nav:
+  - Home: index.md
+  - Writing Programs: guides/writing-programs.md
+  - API Reference: guides/api-reference.md
+  - Backend Development: guides/backend-development.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [waldoctl/src]
+          options:
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            docstring_style: google
+            merge_init_into_class: true
+            show_signature_annotations: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true

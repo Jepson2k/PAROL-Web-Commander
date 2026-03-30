@@ -36,7 +36,7 @@ async def test_io_tab_high_low_buttons_send_commands(user: User, robot_state) ->
 @pytest.mark.integration
 async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
     """Gripper panel should show chart and status readouts."""
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -56,7 +56,7 @@ async def test_gripper_panel_layout_elements(user: User, robot_state) -> None:
 @pytest.mark.integration
 async def test_control_panel_tool_quick_actions(user: User, robot_state) -> None:
     """Control panel should show tool quick-action box when a tool is active."""
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
