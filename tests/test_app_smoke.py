@@ -1,4 +1,4 @@
-"""Smoke tests for PAROL Web Commander app startup and basic UI presence."""
+"""Smoke tests for Waldo Commander app startup and basic UI presence."""
 
 import pytest
 from nicegui.testing import User
@@ -15,7 +15,7 @@ async def test_status_consumer_starts(user: User) -> None:
     start_controller() to fail silently, leaving the status consumer
     uncreated and the UI frozen with stale position data.
     """
-    from parol_commander.state import readiness_state
+    from waldo_commander.state import readiness_state
 
     await user.open("/")
     await wait_for_app_ready(timeout_s=15.0)

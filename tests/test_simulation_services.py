@@ -9,18 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from parol_commander.profiles import get_robot
-from parol_commander.state import (
+from waldo_commander.profiles import get_robot
+from waldo_commander.state import (
     simulation_state,
     recording_state,
     robot_state,
     ui_state,
 )
 from parol6.client.dry_run_client import DryRunRobotClient
-from parol_commander.services.path_preview_client import PathPreviewClient
-from parol_commander.services.motion_recorder import MotionRecorder
-from parol_commander.services.path_visualizer import PathVisualizer
-from parol_commander.services.urdf_scene.envelope_mixin import WorkspaceEnvelope
+from waldo_commander.services.path_preview_client import PathPreviewClient
+from waldo_commander.services.motion_recorder import MotionRecorder
+from waldo_commander.services.path_visualizer import PathVisualizer
+from waldo_commander.services.urdf_scene.envelope_mixin import WorkspaceEnvelope
 
 
 # ============================================================================
@@ -573,7 +573,7 @@ class TestEditorAutoSimulation:
 
     def test_debounce_defaults(self):
         """EditorPanel should have correct debounce defaults."""
-        from parol_commander.components.editor import EditorPanel
+        from waldo_commander.components.editor import EditorPanel
 
         panel = EditorPanel()
 
@@ -583,10 +583,10 @@ class TestEditorAutoSimulation:
 
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
-        from parol_commander.components.editor import EditorPanel
-        from parol_commander.state import editor_tabs_state
+        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.state import editor_tabs_state
 
-        with patch("parol_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.editor.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
 
@@ -604,10 +604,10 @@ class TestEditorAutoSimulation:
 
     def testschedule_debounced_simulation_cancels_previous_timer(self):
         """Calling schedule_debounced_simulation again should cancel previous timer."""
-        from parol_commander.components.editor import EditorPanel
-        from parol_commander.state import editor_tabs_state
+        from waldo_commander.components.editor import EditorPanel
+        from waldo_commander.state import editor_tabs_state
 
-        with patch("parol_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.editor.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
@@ -629,11 +629,11 @@ class TestEditorAutoSimulation:
     @pytest.mark.asyncio
     async def test_run_simulation_calls_path_visualizer(self):
         """_run_simulation should call path_visualizer.update_path_visualization."""
-        from parol_commander.components.editor import EditorPanel
+        from waldo_commander.components.editor import EditorPanel
 
-        with patch("parol_commander.components.editor.ui"):
+        with patch("waldo_commander.components.editor.ui"):
             with patch(
-                "parol_commander.components.editor.path_visualizer"
+                "waldo_commander.components.editor.path_visualizer"
             ) as mock_visualizer:
                 # Track if update was called
                 update_called = False
@@ -658,11 +658,11 @@ class TestEditorAutoSimulation:
     @pytest.mark.asyncio
     async def test_run_simulation_empty_content_skips_visualization(self):
         """_run_simulation should skip visualization when content is empty."""
-        from parol_commander.components.editor import EditorPanel
+        from waldo_commander.components.editor import EditorPanel
 
-        with patch("parol_commander.components.editor.ui"):
+        with patch("waldo_commander.components.editor.ui"):
             with patch(
-                "parol_commander.components.editor.path_visualizer"
+                "waldo_commander.components.editor.path_visualizer"
             ) as mock_visualizer:
                 update_called = False
 
@@ -701,7 +701,7 @@ class TestSimulationCaching:
 
     def test_default_script_detected(self):
         """_is_default_script returns True for default content, skipping simulation."""
-        from parol_commander.components.editor import EditorPanel
+        from waldo_commander.components.editor import EditorPanel
 
         panel = EditorPanel()
 
@@ -717,8 +717,8 @@ class TestSimulationCaching:
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
         """Simulation results go to tab_id, not active tab (for tab switch during sim)."""
-        from parol_commander.state import editor_tabs_state, simulation_state, EditorTab
-        from parol_commander.services.path_visualizer import PathVisualizer
+        from waldo_commander.state import editor_tabs_state, simulation_state, EditorTab
+        from waldo_commander.services.path_visualizer import PathVisualizer
 
         # Create two tabs
         tab1 = EditorTab(
@@ -732,7 +732,7 @@ class TestSimulationCaching:
 
         # Mock run.cpu_bound to return test data and notify_changed to avoid slot stack error
         with (
-            patch("parol_commander.services.path_visualizer.run") as mock_run,
+            patch("waldo_commander.services.path_visualizer.run") as mock_run,
             patch.object(simulation_state, "notify_changed"),
         ):
             mock_run.setup = MagicMock()
@@ -757,7 +757,7 @@ class TestSimulationCaching:
 
     def test_simulation_returns_final_joints_rad(self):
         """Simulation result includes final_joints_rad for caching."""
-        from parol_commander.services.path_visualizer import _run_simulation_isolated
+        from waldo_commander.services.path_visualizer import _run_simulation_isolated
 
         program = """
 from parol6 import RobotClient
@@ -789,7 +789,7 @@ class TestPathVisualizerIntegration:
         State reset is handled by conftest.reset_state fixture.
         This fixture only sets up the test tab needed for these tests.
         """
-        from parol_commander.state import editor_tabs_state, EditorTab
+        from waldo_commander.state import editor_tabs_state, EditorTab
 
         old_robot = ui_state.robot
         ui_state.robot = get_robot()

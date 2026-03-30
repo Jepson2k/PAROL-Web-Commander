@@ -7,7 +7,7 @@ from nicegui.testing import User
 from nicegui import ui, app as ng_app
 from typing import Any
 
-from parol_commander.state import ui_state
+from waldo_commander.state import ui_state
 from tests.helpers.wait import wait_for_app_ready
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
@@ -62,7 +62,7 @@ async def test_serial_port_select_exists(user: User) -> None:
 @pytest.mark.integration
 async def test_show_route_toggle_changes_state(user: User) -> None:
     """Test that toggling Show Route changes simulation_state.paths_visible."""
-    from parol_commander.state import simulation_state
+    from waldo_commander.state import simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -89,7 +89,7 @@ async def test_show_route_toggle_changes_state(user: User) -> None:
 @pytest.mark.integration
 async def test_workspace_envelope_mode_changes(user: User) -> None:
     """Test that changing workspace envelope mode updates simulation_state."""
-    from parol_commander.state import simulation_state
+    from waldo_commander.state import simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -103,7 +103,7 @@ async def test_workspace_envelope_mode_changes(user: User) -> None:
     envelope_select = user.find(marker="select-envelope-mode")
     assert envelope_select is not None, "Envelope mode select should exist"
 
-    from parol_commander.state import EnvelopeMode
+    from waldo_commander.state import EnvelopeMode
 
     assert isinstance(simulation_state.envelope_mode, EnvelopeMode), (
         f"Expected EnvelopeMode, got {simulation_state.envelope_mode}"

@@ -52,7 +52,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     When paused:
     - Play button icon changes back to play_arrow
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -106,7 +106,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
     - expand_more (down chevron) when collapsed - "show more"
     - expand_less (up chevron) when expanded - "collapse"
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -181,7 +181,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
     - recording_state.is_recording becomes False
     - Button color changes back to negative (red)
     """
-    from parol_commander.state import recording_state, ui_state
+    from waldo_commander.state import recording_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -237,7 +237,7 @@ async def test_recording_notification_appears_and_disappears(
     When recording stops:
     - The notification is dismissed
     """
-    from parol_commander.state import recording_state, ui_state
+    from waldo_commander.state import recording_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -312,7 +312,7 @@ async def test_dirty_icon_appears_after_editing(user: User) -> None:
     When tab content is modified from its saved state, a dirty indicator
     should become visible to show unsaved changes.
     """
-    from parol_commander.state import ui_state, editor_tabs_state
+    from waldo_commander.state import ui_state, editor_tabs_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -355,7 +355,7 @@ async def test_tab_switching_preserves_path_visualizations(user: User) -> None:
     Each tab should store its own path visualization data.
     The _save_simulation_context method correctly saves simulation_state to a tab.
     """
-    from parol_commander.state import ui_state, editor_tabs_state, simulation_state
+    from waldo_commander.state import ui_state, editor_tabs_state, simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -425,7 +425,7 @@ async def test_create_and_remove_tab(user: User) -> None:
     Creating a tab should increase the tab count.
     Closing a tab should decrease the tab count.
     """
-    from parol_commander.state import editor_tabs_state, ui_state
+    from waldo_commander.state import editor_tabs_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -484,7 +484,7 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
     - Step button is not disabled
     - Play button starts simulation playback (not script execution)
     """
-    from parol_commander.state import ui_state, editor_tabs_state, simulation_state
+    from waldo_commander.state import ui_state, editor_tabs_state, simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -549,7 +549,7 @@ async def test_unmarked_targets_get_uuid_annotation(user: User) -> None:
     When simulation runs and finds a move command with literal args but no TARGET marker,
     it should automatically add a # TARGET:uuid marker to enable interactive editing.
     """
-    from parol_commander.state import editor_tabs_state, ui_state
+    from waldo_commander.state import editor_tabs_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()

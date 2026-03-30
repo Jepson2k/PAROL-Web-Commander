@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from parol_commander.services.camera_service import (
+from waldo_commander.services.camera_service import (
     CameraService,
     LinuxpyBackend,
     OpenCVBackend,
@@ -73,9 +73,9 @@ def test_backend_selection_prefers_linuxpy_on_linux():
     cs = CameraService()
 
     with (
-        patch("parol_commander.services.camera_service.LinuxpyBackend", FakeLinuxpy),
-        patch("parol_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
-        patch("parol_commander.services.camera_service.sys") as mock_sys,
+        patch("waldo_commander.services.camera_service.LinuxpyBackend", FakeLinuxpy),
+        patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
+        patch("waldo_commander.services.camera_service.sys") as mock_sys,
     ):
         mock_sys.platform = "linux"
         cs.start(0)
@@ -113,9 +113,9 @@ def test_backend_fallback_to_opencv_when_linuxpy_fails():
     cs = CameraService()
 
     with (
-        patch("parol_commander.services.camera_service.LinuxpyBackend", FailLinuxpy),
-        patch("parol_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
-        patch("parol_commander.services.camera_service.sys") as mock_sys,
+        patch("waldo_commander.services.camera_service.LinuxpyBackend", FailLinuxpy),
+        patch("waldo_commander.services.camera_service.OpenCVBackend", FakeOpenCV),
+        patch("waldo_commander.services.camera_service.sys") as mock_sys,
     ):
         mock_sys.platform = "linux"
         cs.start(0)

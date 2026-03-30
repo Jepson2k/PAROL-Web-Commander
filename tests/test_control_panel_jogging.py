@@ -82,7 +82,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     the joint by approximately the configured step size using moveJ.
     Tests both positive and negative directions.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -124,7 +124,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
     When a cartesian jog button is clicked briefly (not held), it should move
     the TCP by approximately the configured step size using moveL.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -194,7 +194,7 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
     Regression test for step precision with small step sizes.
     Uses TOPPRA motion profile.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -230,7 +230,7 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
     Regression test for cartesian step precision with small step sizes.
     Uses TOPPRA motion profile.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -274,7 +274,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
     When clicking multiple times in quick succession, each click should
     add the full step amount. Tests for race conditions with status updates.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -329,7 +329,7 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
     When clicking multiple times in quick succession, each click should
     add the full step amount.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -384,7 +384,7 @@ async def test_go_to_joint_limit_reaches_actual_limit(user: User, robot_state) -
     Clicking a joint limit button should result in the joint reaching
     or being very close to its defined min/max limit value.
     """
-    from parol_commander.state import ui_state
+    from waldo_commander.state import ui_state
 
     JOINT_LIMITS_DEG = ui_state.active_robot.joints.limits.position.deg
 
@@ -437,7 +437,7 @@ async def test_jog_buttons_disabled_in_editing_mode(user: User, robot_state) -> 
     When editing mode is active (target editor controls robot), jog buttons
     should be visually disabled and not respond to clicks.
     """
-    from parol_commander.state import robot_state as rs
+    from waldo_commander.state import robot_state as rs
 
     await user.open("/")
     await wait_for_app_ready()

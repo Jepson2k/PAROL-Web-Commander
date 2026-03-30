@@ -13,10 +13,10 @@ repos:
   - repo: local
     hooks:
       - id: ty
-        name: ty (parol_commander)
-        entry: ty check parol_commander
+        name: ty (waldo_commander)
+        entry: ty check waldo_commander
         language: system
-        files: ^parol_commander/
+        files: ^waldo_commander/
         pass_filenames: false
 
   # Built-in hooks for file quality
