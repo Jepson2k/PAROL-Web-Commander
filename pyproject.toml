@@ -15,7 +15,7 @@ dependencies = [
   "xxhash>=3.0.0",
   "pyserial>=3.5",
   "numpy-stl>=3.0.0",
-  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git",
+  "waldoctl @ git+https://github.com/Jepson2k/waldoctl.git@v0.1.0",
   "opencv-python-headless>=4.8",
 
   # pinokin: Pinocchio-based FK/IK bindings
