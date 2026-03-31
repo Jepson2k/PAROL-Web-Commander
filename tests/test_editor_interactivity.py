@@ -316,11 +316,11 @@ class TestEditorInteractivity:
         time.sleep(0.5)
 
         # Jog joint 2 (J3) instead of joint 0 (J1) - previous tests jog J1+
-        # to its limit, causing wait_motion_complete to take up to 5s
+        # to its limit, causing wait_command to take up to 5s
         jog_joint_briefly(class_screen, joint_index=2, duration_s=0.8)
 
         # Check if the MutationObserver recorded a tab-flash event
-        # Timeout must exceed wait_motion_complete's 5s timeout + processing
+        # Timeout must exceed wait_command's 5s timeout + processing
         tab_flashed = False
         try:
             WebDriverWait(class_screen.selenium, 8, poll_frequency=0.2).until(

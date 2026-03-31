@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from .path_preview_client import MOTION_METHODS
 
-# Methods that trigger wait_command_complete and stepping behavior.
+# Methods that trigger wait_command and stepping behavior.
 # Includes all motion methods plus non-motion commands that queue on the controller.
 STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
     {"home", "tool_action", "delay"}
@@ -183,7 +183,7 @@ class SteppingClientWrapper:
 
     - Intercepts motion methods
     - Emits start/complete events for GUI visualization
-    - Calls wait_command_complete() after each motion command
+    - Calls wait_command() after each motion command
     - Optionally pauses for stepping based on control file
     - Blended commands (r > 0) are grouped as a single step
     """
@@ -206,7 +206,7 @@ class SteppingClientWrapper:
         if not self._in_blend:
             return
         if self._last_blend_index >= 0:
-            self._wrapped.wait_command_complete(self._last_blend_index)
+            self._wrapped.wait_command(self._last_blend_index)
         self._in_blend = False
         self._last_blend_index = -1
         self._step_io.emit_event("complete", "blend_group")
@@ -230,7 +230,7 @@ class SteppingClientWrapper:
             # Only wait/complete if not exiting due to an exception
             if args[0] is None:
                 if self._last_blend_index >= 0:
-                    self._wrapped.wait_command_complete(self._last_blend_index)
+                    self._wrapped.wait_command(self._last_blend_index)
                 self._step_io.emit_event("complete", "blend_group")
                 self._step_io.increment_step_count()
             self._in_blend = False
@@ -275,7 +275,7 @@ class SteppingClientWrapper:
             # Non-blended command — flush any pending blend group first
             if self._in_blend:
                 if self._last_blend_index >= 0:
-                    self._wrapped.wait_command_complete(self._last_blend_index)
+                    self._wrapped.wait_command(self._last_blend_index)
                 self._in_blend = False
                 self._last_blend_index = -1
                 self._step_io.emit_event("complete", "blend_group")
@@ -288,7 +288,7 @@ class SteppingClientWrapper:
 
             # Wait for command to complete
             if isinstance(result, int) and result >= 0:
-                self._wrapped.wait_command_complete(result)
+                self._wrapped.wait_command(result)
 
             # Emit complete event
             self._step_io.emit_event("complete", name)

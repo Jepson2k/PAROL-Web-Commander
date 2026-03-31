@@ -145,3 +145,45 @@ Robot communication goes through a `waldoctl.RobotClient` ABC. Each backend (e.g
 - **Use `ui.icon`** for Material Icons. Use `ui.icon("img:path")` for custom SVGs. Don't inline SVG content in Python strings.
 - **Keep layouts compact** — avoid unnecessary gaps. Don't add `gap-*` classes unless spacing is actually needed.
 - **Color preference order**: Tailwind or Quasar color classes first, then `oklab()`, then raw hex as last resort.
+
+## Multi-Repo Versioning & Dev Workflow
+
+### Repository structure
+
+Three repos with a clear dependency direction:
+
+```
+waldoctl (ABC/types) ← parol6 (backend) ← waldo-commander (frontend)
+```
+
+- `waldoctl` — shared interface definitions, installed from git tag in pyproject.toml
+- `parol6` — PAROL6 backend, installed from git tag by CI
+- `waldo-commander` — the frontend, depends on both via git URLs
+
+### Versioning
+
+All packages use semver (`MAJOR.MINOR.PATCH`). Pre-1.0 packages bump minor for breaking changes. Version is set in each package's `pyproject.toml` and read at runtime via `importlib.metadata`.
+
+### Release workflow (breaking cross-repo changes)
+
+1. Release waldoctl first — bump version in pyproject.toml, merge to main, tag (e.g. `v0.2.0`)
+2. Update parol6's `pyproject.toml` to reference the new waldoctl tag, merge, tag
+3. Update waldo-commander's `pyproject.toml` + CI to reference new tags, merge, tag
+
+### Dev workflow (coordinated feature branches)
+
+Use the **same branch name** across all repos that have changes. CI automatically detects matching branches:
+
+- If waldoctl has a branch matching the PR branch name, CI installs from that branch
+- If parol6 has a matching branch, CI installs from that branch
+- Otherwise, CI falls back to the tagged version in pyproject.toml
+
+This means devs can work on cross-repo changes without publishing releases first. The branch-matching logic is in `.github/workflows/tests.yml`.
+
+### Local development
+
+Clone dependency repos as sibling directories and use editable installs:
+
+```bash
+pip install -e waldoctl/ -e PAROL6-python-API/ -e ".[dev]"
+```

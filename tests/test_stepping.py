@@ -54,7 +54,7 @@ class TestStepIO:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         step_io = StepIO("test_emit")
-        step_io.emit_event("start", "moveJ", extra_data="test")
+        step_io.emit_event("start", "move_j", extra_data="test")
 
         event_file = tmp_path / ".parol_events_test_emit"
         assert event_file.exists()
@@ -63,7 +63,7 @@ class TestStepIO:
         assert "events" in data
         assert len(data["events"]) == 1
         assert data["events"][0]["event"] == "start"
-        assert data["events"][0]["method"] == "moveJ"
+        assert data["events"][0]["method"] == "move_j"
         assert data["events"][0]["extra_data"] == "test"
 
     def test_check_should_pause_behavior(self, tmp_path, monkeypatch):
@@ -155,8 +155,8 @@ class TestGUIStepController:
             json.dumps(
                 {
                     "events": [
-                        {"event": "start", "method": "moveJ", "step": 0},
-                        {"event": "complete", "method": "moveJ", "step": 0},
+                        {"event": "start", "method": "move_j", "step": 0},
+                        {"event": "complete", "method": "move_j", "step": 0},
                     ]
                 }
             )
@@ -189,7 +189,7 @@ class TestGUIStepController:
 class TestSteppingClientWrapper:
     """Unit tests for SteppingClientWrapper.
 
-    Wraps a robot client to intercept motion commands, adding wait_motion_complete
+    Wraps a robot client to intercept motion commands, adding wait_command
     after each motion so the script pauses until the robot completes the move.
     """
 
@@ -203,8 +203,8 @@ class TestSteppingClientWrapper:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         mock_client = MagicMock()
-        mock_client.moveJ = MagicMock(return_value=42)
-        mock_client.wait_command_complete = MagicMock()
+        mock_client.move_j = MagicMock(return_value=42)
+        mock_client.wait_command = MagicMock()
 
         step_io = StepIO("test_wrapper")
         # Set up control file so we don't pause (paused=False)
@@ -213,10 +213,10 @@ class TestSteppingClientWrapper:
 
         wrapper = SteppingClientWrapper(mock_client, step_io)
 
-        result = wrapper.moveJ([0, 0, 0, 0, 0, 0])
+        result = wrapper.move_j([0, 0, 0, 0, 0, 0])
 
-        mock_client.moveJ.assert_called_once_with([0, 0, 0, 0, 0, 0])
-        mock_client.wait_command_complete.assert_called_once_with(42)
+        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0])
+        mock_client.wait_command.assert_called_once_with(42)
         assert result == 42
 
         # Verify events were emitted
@@ -237,15 +237,15 @@ class TestSteppingClientWrapper:
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
 
         mock_client = MagicMock()
-        mock_client.get_status = MagicMock(return_value="status")
+        mock_client.status = MagicMock(return_value="status")
 
         step_io = StepIO("test_passthrough")
         wrapper = SteppingClientWrapper(mock_client, step_io)
 
-        result = wrapper.get_status()
+        result = wrapper.status()
 
-        mock_client.get_status.assert_called_once()
-        mock_client.wait_command_complete.assert_not_called()
+        mock_client.status.assert_called_once()
+        mock_client.wait_command.assert_not_called()
         assert result == "status"
 
         # No events should be emitted for non-motion methods
@@ -258,10 +258,10 @@ class TestSteppingClientWrapper:
 
         expected = {
             "home",
-            "moveJ",
-            "moveL",
-            "jogJ",
-            "jogL",
+            "move_j",
+            "move_l",
+            "jog_j",
+            "jog_l",
             "tool_action",
             "delay",
         }

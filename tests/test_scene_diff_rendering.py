@@ -297,7 +297,7 @@ class TestCollectFailedTarget:
         linecache.cache["simulation_script.py"] = (
             100,
             None,
-            ["robot.moveL([100, 200, 300, 0, 0, 0])  # TARGET:t1\n"],
+            ["robot.move_l([100, 200, 300, 0, 0, 0])  # TARGET:t1\n"],
             "simulation_script.py",
         )
         try:
@@ -324,7 +324,7 @@ class TestCollectFailedTarget:
         linecache.cache["simulation_script.py"] = (
             100,
             None,
-            ["robot.moveJ(pose=[100, 200, 300, 0, 0, 0])  # TARGET:t2\n"],
+            ["robot.move_j(pose=[100, 200, 300, 0, 0, 0])  # TARGET:t2\n"],
             "simulation_script.py",
         )
         try:
@@ -341,14 +341,14 @@ class TestCollectFailedTarget:
             linecache.cache.pop("simulation_script.py", None)
 
     def test_joint_angles_no_target(self):
-        """moveJ with joint angles (no pose) can't determine TCP position."""
+        """move_j with joint angles (no pose) can't determine TCP position."""
         client, targets = self._make_client()
         import linecache
 
         linecache.cache["simulation_script.py"] = (
             100,
             None,
-            ["robot.moveJ([0, 0, 0, 0, 0, 0])\n"],
+            ["robot.move_j([0, 0, 0, 0, 0, 0])\n"],
             "simulation_script.py",
         )
         try:
@@ -370,7 +370,7 @@ class TestCollectFailedTarget:
         linecache.cache["simulation_script.py"] = (
             100,
             None,
-            ["robot.moveL(some_variable)\n"],
+            ["robot.move_l(some_variable)\n"],
             "simulation_script.py",
         )
         try:

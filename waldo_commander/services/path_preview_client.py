@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Pre-compiled regex patterns for performance
 _TARGET_MARKER_RE = re.compile(r"#\s*TARGET:(\w+)")
 _LITERAL_LIST_RE = re.compile(
-    r"(?:moveJ|moveL|moveC|moveS|moveP)\s*\(\s*(?:\w+\s*=\s*)?\["
+    r"(?:move_j|move_l|move_c|move_s|move_p)\s*\(\s*(?:\w+\s*=\s*)?\["
     r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
     r"(?:\s*,\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)*\s*\]"
 )
@@ -31,15 +31,15 @@ _DURATION_RE = re.compile(r"duration\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)")
 
 # Methods that produce trajectory segments for visualization.
 MOTION_METHODS: dict[str, str] = {
-    "moveJ": "joints",
-    "moveL": "cartesian",
-    "moveC": "smooth_arc",
-    "moveS": "smooth_spline",
-    "moveP": "cartesian",
-    "jogJ": "jog",
-    "jogL": "jog",
-    "servoJ": "jog",
-    "servoL": "jog",
+    "move_j": "joints",
+    "move_l": "cartesian",
+    "move_c": "smooth_arc",
+    "move_s": "smooth_spline",
+    "move_p": "cartesian",
+    "jog_j": "jog",
+    "jog_l": "jog",
+    "servo_j": "jog",
+    "servo_l": "jog",
 }
 
 # Valid method names on the real RobotClient. Anything not in this set
@@ -428,9 +428,9 @@ class PathPreviewClient:
         if pose_kwarg is not None:
             pose = [float(v) for v in pose_kwarg[:6]]
         elif move_type in ("cartesian", "smooth_arc", "smooth_spline") and args:
-            # moveL/moveP/moveC: first arg is [x,y,z,rx,ry,rz] in mm/deg
+            # move_l/move_p/move_c: first arg is [x,y,z,rx,ry,rz] in mm/deg
             pose = [float(v) for v in args[0][:6]]
-        # moveJ with joint angles: skip — we'd need FK to get TCP pose
+        # move_j with joint angles: skip — we'd need FK to get TCP pose
 
         if pose is None or len(pose) < 3:
             return
@@ -597,8 +597,8 @@ class PathPreviewClient:
 
             return motion_method
 
-        # Intercept set_tool to update tool metadata from registry
-        if name == "set_tool":
+        # Intercept select_tool to update tool metadata from registry
+        if name == "select_tool":
             self._flush_blend()
             client_method = getattr(self._client, name)
 

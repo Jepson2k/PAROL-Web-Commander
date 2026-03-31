@@ -188,7 +188,7 @@ async def initialize_urdf_scene() -> None:
 
     # Align TCP and load tool mesh from controller's active tool
     try:
-        result = await client.get_tool()
+        result = await client.tools()
         if result and result.tool:
             vk = ng_app.storage.general.get(f"tool_variant_{result.tool}")
             ui_state.active_robot.set_active_tool(result.tool, variant_key=vk)
@@ -742,7 +742,7 @@ def build_page_content() -> None:
                     logger.info("Hardware detected — switching to robot mode")
                     robot_state.simulator_active = False
                     try:
-                        await client.simulator_off()
+                        await client.simulator(False)
                         await client.resume()
                     except Exception as e:
                         logger.warning("auto robot-mode switch failed: %s", e)
@@ -841,9 +841,9 @@ def _register_handlers() -> None:
         """
         if not port:
             try:
-                await client.simulator_on()
+                await client.simulator(True)
             except Exception as e:
-                logger.error("startup: simulator_on failed: %s", e)
+                logger.error("startup: simulator(True) failed: %s", e)
             robot_state.simulator_active = True
         try:
             await client.resume()
@@ -854,18 +854,18 @@ def _register_handlers() -> None:
         """Restore persisted motion profile and tool selection."""
         try:
             saved_profile = ng_app.storage.general.get("motion_profile", "TOPPRA")
-            await client.set_profile(saved_profile)
+            await client.select_profile(saved_profile)
             logger.debug("startup: set motion profile to %s", saved_profile)
         except Exception as e:
-            logger.warning("startup: set_profile failed: %s", e)
+            logger.warning("startup: select_profile failed: %s", e)
 
         try:
             saved_tool = ng_app.storage.general.get("selected_tool", "")
             if saved_tool:
-                await client.set_tool(saved_tool)
+                await client.select_tool(saved_tool)
                 logger.debug("startup: set tool to %s", saved_tool)
         except Exception as e:
-            logger.warning("startup: set_tool failed: %s", e)
+            logger.warning("startup: select_tool failed: %s", e)
 
     @ng_app.on_startup
     async def _on_startup() -> None:
@@ -1111,7 +1111,7 @@ async def _status_consumer() -> None:
     try:
         # Wait for server to be responsive before subscribing to multicast
         await client.wait_ready(timeout=15.0)
-        async for status in client.status_stream_shared():
+        async for status in client.stream_status_shared():
             try:
                 # Track loop timing via LoopMetrics
                 now = time.perf_counter()
@@ -1251,6 +1251,11 @@ def main():
         "-q", "--quiet", action="store_true", help="Enable WARNING logging"
     )
     parser.add_argument(
+        "--robot",
+        default=None,
+        help="Robot backend name (default: auto-detect or WALDO_ROBOT env var)",
+    )
+    parser.add_argument(
         "--reload",
         action="store_true",
         help="Enable auto-reload on file changes (dev mode)",
@@ -1290,7 +1295,7 @@ def main():
     # else: use env var default (no override needed)
 
     # Initialize robot, client, and component instances
-    robot = get_robot()
+    robot = get_robot(name=args.robot)
     ui_state.robot = robot
     # Initialize cart_en buffers from robot's cartesian frames
     robot_state.init_cart_en(robot.cartesian_frames)

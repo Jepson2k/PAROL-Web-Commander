@@ -116,7 +116,7 @@ def _run_simulation_isolated(
     global state.
 
     The simulation starts with no tool attached. The script must call
-    set_tool() explicitly to configure the correct tool and variant.
+    select_tool() explicitly to configure the correct tool and variant.
 
     Args:
         program_text: The Python program to simulate
@@ -421,7 +421,7 @@ class PathVisualizer:
                 return None
 
             # Build serializable tool metadata registry for all tools.
-            # Scripts can call set_tool() to switch tools mid-program, so we
+            # Scripts can call select_tool() to switch tools mid-program, so we
             # need metadata for every tool — not just the currently active one.
             # Each entry includes base motions + per-variant motions.
             tool_meta_registry: dict[str, dict] = {}

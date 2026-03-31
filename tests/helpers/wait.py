@@ -153,7 +153,7 @@ async def wait_for_tool_key(
 ) -> None:
     """Wait for robot_state.tool_key to match expected value.
 
-    After calling client.set_tool(), the backend must broadcast a status
+    After calling client.select_tool(), the backend must broadcast a status
     update before robot_state.tool_key reflects the change.
 
     Raises:

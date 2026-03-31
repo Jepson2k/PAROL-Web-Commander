@@ -205,7 +205,7 @@ import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([85, -85, 175, 5, 5, 175], duration=0.01)
+        await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
 """
 
 # Program with two moves for cursor-line highlighting (each on a distinct line)
@@ -214,8 +214,8 @@ import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([85, -85, 175, 5, 5, 175], duration=2.0)
-        await rbt.moveJ([95, -95, 185, -5, -5, 185], duration=2.0)
+        await rbt.move_j([85, -85, 175, 5, 5, 175], duration=2.0)
+        await rbt.move_j([95, -95, 185, -5, -5, 185], duration=2.0)
 """
 
 
@@ -309,7 +309,7 @@ class TestEditorVisualization:
         # Snapshot the stable (unhighlighted) colors for comparison
         pre_highlight_colors = list(stable_colors)
 
-        # Move cursor to line 5 (first moveJ) — should glow-highlight that segment
+        # Move cursor to line 5 (first move_j) — should glow-highlight that segment
         move_cursor_to_line(class_screen, 5)
 
         # Wait for some path objects to change color (glow highlight applied via

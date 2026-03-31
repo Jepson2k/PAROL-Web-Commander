@@ -503,12 +503,12 @@ class EditingMixin:
         self._end_editing_session()
 
     def _confirm_unified_as_joint(self) -> None:
-        """Confirm as joint target (converts moveL→moveJ if editing existing)."""
+        """Confirm as joint target (converts move_l→move_j if editing existing)."""
         if not self._editing_unified_target:
             return
 
         if self._editing_target_id:
-            # Editing existing target — convert to moveJ in place
+            # Editing existing target — convert to move_j in place
             target = self._find_target_by_id(self._editing_target_id)
             n = len(self.joint_names)
             angles_deg = list(robot_state.angles.deg[:n])

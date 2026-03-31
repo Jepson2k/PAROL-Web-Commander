@@ -507,8 +507,8 @@ async def test_step_button_enabled_after_simulation(user: User, robot_state) -> 
     assert tab is not None
     test_script = """from parol6 import RobotClient
 rbt = RobotClient()
-rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
-rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 """
     editor.program_textarea.value = test_script
     tab.content = test_script
@@ -564,10 +564,10 @@ async def test_unmarked_targets_get_uuid_annotation(user: User) -> None:
     tab = editor_tabs_state.get_active_tab()
     assert tab is not None, "Active tab should exist"
 
-    # Script with moveJ that has literal args but no TARGET marker
+    # Script with move_j that has literal args but no TARGET marker
     test_script = """from parol6 import RobotClient
 rbt = RobotClient()
-rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
+rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 """
     # Set content directly on textarea
     assert editor.program_textarea is not None
@@ -589,8 +589,8 @@ rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
         "Move command should have TARGET marker after simulation"
     )
 
-    # Verify the marker is on the moveJ line
+    # Verify the marker is on the move_j line
     lines = updated_content.splitlines()
-    move_line = next((line for line in lines if "moveJ" in line), None)
-    assert move_line is not None, "moveJ line should exist"
-    assert "# TARGET:" in move_line, "TARGET marker should be on the moveJ line"
+    move_line = next((line for line in lines if "move_j" in line), None)
+    assert move_line is not None, "move_j line should exist"
+    assert "# TARGET:" in move_line, "TARGET marker should be on the move_j line"

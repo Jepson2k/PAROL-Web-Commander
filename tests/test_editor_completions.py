@@ -39,7 +39,7 @@ def test_completions_include_async_robot_client_methods() -> None:
     completions = _editor_mod.generate_completions_from_commands()
     completion_labels = {c["label"] for c in completions}
 
-    expected_methods = ["home", "resume", "halt", "get_status"]
+    expected_methods = ["home", "resume", "halt", "status"]
 
     for method in expected_methods:
         expected_label = f"rbt.{method}"
@@ -93,9 +93,9 @@ def test_excluded_methods_not_in_commands() -> None:
     excluded = [
         "close",
         "wait_ready",
-        "status_stream",
-        "status_stream_shared",
-        "wait_for_status",
+        "stream_status",
+        "stream_status_shared",
+        "wait_status",
     ]
     for name in excluded:
         assert name not in commands, f"{name} should be excluded from command palette"
@@ -107,9 +107,9 @@ def test_categories_from_docstrings() -> None:
     commands = _editor_mod.discover_robot_commands()
     assert commands["home"]["category"] == "Motion"
     assert commands["resume"]["category"] == "Control"
-    assert commands["jogJ"]["category"] == "Jog"
-    assert commands["get_status"]["category"] == "Query"
-    assert commands["moveJ"]["category"] == "Motion"
+    assert commands["jog_j"]["category"] == "Jog"
+    assert commands["status"]["category"] == "Query"
+    assert commands["move_j"]["category"] == "Motion"
 
 
 @pytest.mark.unit
@@ -131,8 +131,8 @@ def test_parse_docstring_example() -> None:
     doc_none = "Foo.\nNo example section."
     assert _editor_mod._parse_docstring_example(doc_none) is None
 
-    doc_examples = "Foo.\n\nExamples:\n    rbt.moveJ([1,2,3], speed=0.5)\n"
+    doc_examples = "Foo.\n\nExamples:\n    rbt.move_j([1,2,3], speed=0.5)\n"
     assert (
         _editor_mod._parse_docstring_example(doc_examples)
-        == "rbt.moveJ([1,2,3], speed=0.5)"
+        == "rbt.move_j([1,2,3], speed=0.5)"
     )

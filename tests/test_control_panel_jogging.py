@@ -23,7 +23,7 @@ from tests.helpers.wait import (
 
 
 @pytest.mark.integration
-async def test_joint_jog_button_sends_jogJ(user: User, robot_state) -> None:
+async def test_joint_jog_button_sends_jog_j(user: User, robot_state) -> None:
     """Clicking a joint jog button should result in joint motion.
 
     Ensures that when simulator mode is active, clicking the J1 + jog
@@ -79,7 +79,7 @@ async def test_joint_jog_moves_both_directions(user: User, robot_state) -> None:
     """Verify joint jog buttons move by step amount in both directions.
 
     When a joint jog button is clicked briefly (not held), it should move
-    the joint by approximately the configured step size using moveJ.
+    the joint by approximately the configured step size using move_j.
     Tests both positive and negative directions.
     """
     from waldo_commander.state import ui_state
@@ -122,7 +122,7 @@ async def test_cartesian_jog_all_axes(user: User, robot_state) -> None:
 
     Tests Z+, Z-, and RZ+ to cover translation and rotation.
     When a cartesian jog button is clicked briefly (not held), it should move
-    the TCP by approximately the configured step size using moveL.
+    the TCP by approximately the configured step size using move_l.
     """
     from waldo_commander.state import ui_state
 
@@ -202,7 +202,7 @@ async def test_joint_jog_one_degree_step(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
-    await ui_state.control_panel.client.set_profile("TOPPRA")
+    await ui_state.control_panel.client.select_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
     ui_state.joint_step_deg = 1.0
@@ -238,7 +238,7 @@ async def test_cartesian_jog_one_mm_step(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
-    await ui_state.control_panel.client.set_profile("TOPPRA")
+    await ui_state.control_panel.client.select_profile("TOPPRA")
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()
@@ -282,7 +282,7 @@ async def test_joint_jog_rapid_clicks(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
-    await ui_state.control_panel.client.set_profile("TOPPRA")
+    await ui_state.control_panel.client.select_profile("TOPPRA")
 
     # Set step size to 1.0 degrees
     ui_state.joint_step_deg = 1.0
@@ -337,7 +337,7 @@ async def test_cartesian_jog_rapid_clicks(user: User, robot_state) -> None:
     await ensure_robot_ready_for_motion(robot_state)
 
     # Set motion profile to TOPPRA (use the app's own client, not session_client)
-    await ui_state.control_panel.client.set_profile("TOPPRA")
+    await ui_state.control_panel.client.select_profile("TOPPRA")
 
     # Switch to Cartesian Jog tab
     user.find("Cartesian Jog").click()

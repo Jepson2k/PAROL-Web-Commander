@@ -229,7 +229,7 @@ rbt = RobotClient(host={config.controller_host!r}, port={config.controller_port}
 print("Moving to home position...")
 rbt.home()
 
-status = rbt.get_status()
+status = rbt.status()
 print(f"Robot status: {{status}}")
 """
 
@@ -273,13 +273,13 @@ print(f"Robot status: {{status}}")
 
         # Motion commands that can use current position
         if use_current_position:
-            if method_name == "moveJ":
+            if method_name == "move_j":
                 angles = list(robot_state.angles.deg)
-                return f"rbt.moveJ({angles}, speed={speed}, accel={accel})"
-            elif method_name == "moveL":
+                return f"rbt.move_j({angles}, speed={speed}, accel={accel})"
+            elif method_name == "move_l":
                 x, y, z = robot_state.x, robot_state.y, robot_state.z
                 rx, ry, rz = robot_state.rx, robot_state.ry, robot_state.rz
-                return f"rbt.moveL([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
+                return f"rbt.move_l([{x:.3f}, {y:.3f}, {z:.3f}, {rx:.3f}, {ry:.3f}, {rz:.3f}], speed={speed}, accel={accel})"
 
         # Generic snippets - delegate to existing method
         return self._insert_python_snippet(method_name)
@@ -310,8 +310,8 @@ print(f"Robot status: {{status}}")
         Code uses user units (mm for position, degrees for rotation).
 
         If move_type is provided (e.g. "joints"), the move command is also
-        converted (moveL→moveJ or vice versa). joint_angles_deg must be
-        provided when converting to moveJ.
+        converted (move_l→move_j or vice versa). joint_angles_deg must be
+        provided when converting to move_j.
         """
         if not self.program_textarea:
             return
@@ -349,14 +349,14 @@ print(f"Robot status: {{status}}")
         match = re.search(r"(\[[\d\.\,\-\s]+\])", line)
 
         if match:
-            # Convert move type if requested (e.g. moveL → moveJ)
+            # Convert move type if requested (e.g. move_l → move_j)
             if move_type == "joints" and joint_angles_deg is not None:
                 new_values_str = (
                     "[" + ", ".join(f"{v:.3f}" for v in joint_angles_deg) + "]"
                 )
                 new_line = line[: match.start()] + new_values_str + line[match.end() :]
-                new_line = new_line.replace("rbt.moveL(", "rbt.moveJ(")
-                new_line = new_line.replace("rbt.moveC(", "rbt.moveJ(")
+                new_line = new_line.replace("rbt.move_l(", "rbt.move_j(")
+                new_line = new_line.replace("rbt.move_c(", "rbt.move_j(")
             else:
                 # Convert from scene units (meters) to user units (mm) for position
                 pose_mm = [
@@ -423,9 +423,9 @@ print(f"Robot status: {{status}}")
         pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
 
         if move_type == "joints":
-            code_line = f"rbt.moveJ({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
+            code_line = f"rbt.move_j({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
         else:
-            code_line = f"rbt.moveL({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
+            code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
 
         content = self.program_textarea.value or ""
 

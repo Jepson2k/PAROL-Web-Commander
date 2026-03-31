@@ -245,9 +245,9 @@ class SettingsContent:
         async def _apply_port():
             port_val = port_select_ref.value or ""
             try:
-                await self.client.set_serial_port(port_val)
+                await self.client.connect_hardware(port_val)
             except Exception as exc:
-                logger.warning("set_serial_port(%s) failed: %s", port_val, exc)
+                logger.warning("connect_hardware(%s) failed: %s", port_val, exc)
                 ui.notify(f"Port change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["com_port"] = port_val
@@ -292,9 +292,9 @@ class SettingsContent:
             tool = e.value
             vk = self._get_variant_key(tool)
             try:
-                await self.client.set_tool(tool, variant_key=vk or "")
+                await self.client.select_tool(tool, variant_key=vk or "")
             except Exception as exc:
-                logger.warning("set_tool(%s) failed: %s", tool, exc)
+                logger.warning("select_tool(%s) failed: %s", tool, exc)
                 ui.notify(f"Tool change failed: {exc}", color="negative")
                 return
 
@@ -397,9 +397,9 @@ class SettingsContent:
         async def _on_motion_profile_change(e):
             profile = e.value
             try:
-                await self.client.set_profile(profile)
+                await self.client.select_profile(profile)
             except Exception as exc:
-                logger.warning("set_profile(%s) failed: %s", profile, exc)
+                logger.warning("select_profile(%s) failed: %s", profile, exc)
                 ui.notify(f"Profile change failed: {exc}", color="negative")
                 return
             ng_app.storage.general["motion_profile"] = profile

@@ -1009,7 +1009,7 @@ class ControlPanel:
                         target_angles[j] = min(hi, target_angles[j] + step)
                     else:
                         target_angles[j] = max(lo, target_angles[j] - step)
-                    await self.client.moveJ(target_angles, speed=speed, accel=accel)
+                    await self.client.move_j(target_angles, speed=speed, accel=accel)
             except Exception as e:
                 logger.error("Incremental joint move failed: %s", e)
 
@@ -1042,7 +1042,7 @@ class ControlPanel:
             if intent is not None:
                 j, d = intent
                 signed_speed = speed if d == "pos" else -speed
-                await self.client.jogJ(
+                await self.client.jog_j(
                     j,
                     speed=signed_speed,
                     duration=self.STREAM_TIMEOUT_S,
@@ -1102,12 +1102,12 @@ class ControlPanel:
                 direction = 1.0 if axis.endswith("+") else -1.0
                 is_rotation = axis_letter.startswith("R")
                 # Use relative move: translation in WRF, rotation in TRF
-                # (matches jogL hold behavior)
+                # (matches jog_l hold behavior)
                 rel_pose = [0.0] * 6
                 if axis_letter in _AXIS_MAP:
                     rel_pose[_AXIS_MAP[axis_letter]] = direction * step
                     frame = "TRF" if is_rotation else "WRF"
-                    await self.client.moveL(
+                    await self.client.move_l(
                         rel_pose,
                         frame=frame,
                         speed=speed,
@@ -1176,7 +1176,7 @@ class ControlPanel:
                     # Use speed for stream blending. The server enforces a
                     # minimum 200ms duration to keep commands alive long enough for
                     # subsequent updates to blend in, creating a "mouse trail" effect.
-                    await self.client.servoL(
+                    await self.client.servo_l(
                         list(self._tcp_latest_pose[:6]),
                         speed=float(speed),
                         accel=_norm_accel(),
@@ -1198,7 +1198,7 @@ class ControlPanel:
             axis = self._get_first_pressed_axis()
             if axis is not None:
                 axis_name, direction, frame = self._get_cart_axis_lookup()[axis]
-                await self.client.jogL(
+                await self.client.jog_l(
                     frame,
                     axis_name,
                     speed * direction,
@@ -1290,16 +1290,14 @@ class ControlPanel:
     async def _wait_and_record_jog_end(self) -> None:
         """Wait for robot motion to stop, then record the jog end position."""
         try:
-            settled = await self.client.wait_motion_complete(
-                timeout=30.0, settle_window=0.5
-            )
+            settled = await self.client.wait_motion(timeout=30.0, settle_window=0.5)
             if not settled:
                 logger.warning("Jog: wait timed out, recording current position")
         except asyncio.CancelledError:
             logger.debug("Jog: wait task cancelled (superseded by new jog)")
             return
         except Exception as e:
-            logger.warning("Jog: wait_motion_complete failed: %s", e)
+            logger.warning("Jog: wait_motion failed: %s", e)
         finally:
             self._jog_end_wait_task = None
         motion_recorder.on_jog_end()
@@ -1317,7 +1315,7 @@ class ControlPanel:
             pose[joint_index] = tgt
             spd = _norm_speed()
 
-            await self.client.moveJ(pose, speed=spd)
+            await self.client.move_j(pose, speed=spd)
         except Exception as e:
             logger.error("Go to joint angle failed: %s", e)
 
@@ -1338,7 +1336,7 @@ class ControlPanel:
             target[joint_index] = float(lo if which == "min" else hi)
             spd = _norm_speed()
 
-            await self.client.moveJ(target, speed=spd)
+            await self.client.move_j(target, speed=spd)
         except Exception as e:
             logger.error("Go to joint limit failed: %s", e)
             ui.notify(f"Failed joint move: {e}", color="negative")
@@ -1460,7 +1458,7 @@ class ControlPanel:
 
             # Toggle simulator mode and enable
             if not robot_state.simulator_active:
-                await self.client.simulator_on()
+                await self.client.simulator(True)
                 robot_state.simulator_active = True
                 # Apply simulator visual appearance to URDF scene (amber ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:
@@ -1472,7 +1470,7 @@ class ControlPanel:
                 except Exception as e:
                     logger.warning("Resume after simulator on failed: %s", e)
             else:
-                await self.client.simulator_off()
+                await self.client.simulator(False)
                 robot_state.simulator_active = False
                 # Restore default URDF appearance (remove simulator ghosting)
                 if self._is_urdf_scene_valid() and ui_state.urdf_scene:

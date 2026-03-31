@@ -1,28 +1,66 @@
-"""Robot registry — maps robot names to concrete Robot instances.
+"""Robot registry — discovers backends via waldoctl entry points.
 
-Each backend provides a concrete ``Robot`` subclass (inheriting from the
-``waldoctl.Robot`` ABC).  This module is the only place that imports
-backend-specific packages.
+Each backend registers itself in the ``waldoctl.robots`` entry-point group
+via its ``pyproject.toml``.  This module provides the waldo-commander-specific
+:func:`get_robot` wrapper with application defaults.
 """
 
+from __future__ import annotations
+
+import os
+from typing import Any
+
 from waldoctl import Robot
+from waldoctl.discovery import available_backends, load_robot_class
 
 DEFAULT_ROBOT = "parol6"
 
+_COMMANDER_DEFAULTS: dict[str, Any] = {
+    "normalize_logs": True,
+}
 
-def get_robot(name: str = DEFAULT_ROBOT) -> Robot:
-    """Create a Robot instance by name.
 
-    Raises ``ValueError`` for unknown robot names.
+def _resolve_robot_name(name: str | None = None) -> str:
+    """Determine which backend to use.
+
+    Priority: explicit *name* > ``WALDO_ROBOT`` env var > single-backend
+    auto-detect > :data:`DEFAULT_ROBOT`.
     """
-    if name == "parol6":
-        try:
-            from parol6 import Robot as Parol6Robot
-        except ImportError:
-            raise ImportError(
-                "parol6 backend not installed. Install with: "
-                "pip install waldo-commander[parol6]"
-            ) from None
-        return Parol6Robot(normalize_logs=True)
+    if name is not None:
+        return name
+    env_name = os.environ.get("WALDO_ROBOT")
+    if env_name:
+        return env_name
+    backends = available_backends()
+    if len(backends) == 1:
+        return backends[0]
+    return DEFAULT_ROBOT
 
-    raise ValueError(f"Unknown robot {name!r}. Available: parol6")
+
+def get_robot(name: str | None = None, **kwargs: Any) -> Robot:
+    """Create a Robot instance by name (or auto-detected default).
+
+    Waldo-commander defaults (like ``normalize_logs=True``) are applied
+    unless explicitly overridden by the caller.
+    """
+    backends = available_backends()
+    if not backends:
+        raise RuntimeError(
+            "No robot backends installed. Install one, e.g.: "
+            "pip install waldo-commander[parol6]"
+        )
+
+    resolved = _resolve_robot_name(name)
+    merged = {**_COMMANDER_DEFAULTS, **kwargs}
+
+    try:
+        cls = load_robot_class(resolved)
+    except LookupError:
+        available = ", ".join(backends)
+        raise LookupError(
+            f"Robot backend {resolved!r} not found. "
+            f"Available: {available}. "
+            f"Install with: pip install waldo-commander[{resolved}]"
+        ) from None
+
+    return cls(**merged)
