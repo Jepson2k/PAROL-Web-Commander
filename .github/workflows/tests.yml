@@ -57,6 +57,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install cross-repo dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
