@@ -726,11 +726,11 @@ class EditingMixin:
             pose[5] if len(pose) > 5 else 0.0,
         ]
 
-        marker_id = ui_state.editor_panel.add_target_code(pose_mm, move_type)
-        if marker_id:
+        line_number = ui_state.editor_panel.add_target_code(pose_mm, move_type)
+        if line_number:
             new_target = ProgramTarget(
-                id=marker_id,
-                line_number=0,
+                id=f"pending_{line_number}",
+                line_number=line_number,
                 pose=pose,
                 move_type=move_type,
                 scene_object_id="",

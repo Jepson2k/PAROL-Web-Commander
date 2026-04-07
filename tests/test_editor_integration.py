@@ -543,16 +543,20 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 
 
 @pytest.mark.integration
-async def test_unmarked_targets_get_uuid_annotation(user: User) -> None:
-    """Test that move commands without TARGET markers get UUID annotations after simulation.
+async def test_simulation_creates_targets_for_literal_moves(
+    user: User, robot_state
+) -> None:
+    """Test that simulation creates targets for move commands with literal args.
 
-    When simulation runs and finds a move command with literal args but no TARGET marker,
-    it should automatically add a # TARGET:uuid marker to enable interactive editing.
+    After simulation, moves with literal coordinates get auto-generated targets
+    tracked by the CM6 StateField for interactive 3D editing. No markers are
+    added to the user's source code.
     """
-    from waldo_commander.state import editor_tabs_state, ui_state
+    from waldo_commander.state import editor_tabs_state, simulation_state, ui_state
 
     await user.open("/")
     await wait_for_app_ready()
+    await enable_sim(user, robot_state)
 
     user.find(marker="tab-program").click()
     await asyncio.sleep(0)
@@ -560,37 +564,32 @@ async def test_unmarked_targets_get_uuid_annotation(user: User) -> None:
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
 
-    # Get active tab and set content with unmarked move command
     tab = editor_tabs_state.get_active_tab()
     assert tab is not None, "Active tab should exist"
 
-    # Script with move_j that has literal args but no TARGET marker
     test_script = """from parol6 import RobotClient
 rbt = RobotClient()
 rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 """
-    # Set content directly on textarea
     assert editor.program_textarea is not None
     editor.program_textarea.value = test_script
     tab.content = test_script
 
-    # Verify no TARGET marker initially
-    assert "# TARGET:" not in test_script
-
-    # Run simulation (this should trigger annotation)
     await editor._run_simulation()
-
-    # Wait for annotation to complete
     await asyncio.sleep(0.1)
 
-    # Check that the content now has a TARGET marker
-    updated_content = editor.program_textarea.value
-    assert "# TARGET:" in updated_content, (
-        "Move command should have TARGET marker after simulation"
+    # Targets should be created from literal move args
+    assert len(simulation_state.targets) >= 1, (
+        f"Expected at least 1 target, got {len(simulation_state.targets)}"
     )
 
-    # Verify the marker is on the move_j line
-    lines = updated_content.splitlines()
-    move_line = next((line for line in lines if "move_j" in line), None)
-    assert move_line is not None, "move_j line should exist"
-    assert "# TARGET:" in move_line, "TARGET marker should be on the move_j line"
+    # Target ID should be auto-generated (no UUID markers)
+    target = simulation_state.targets[0]
+    assert target.id.startswith("auto_"), f"Expected auto-generated ID, got {target.id}"
+    assert target.line_number > 0, "Target should have a valid line number"
+
+    # Source code should NOT contain any TARGET markers
+    updated_content = editor.program_textarea.value
+    assert "# TARGET:" not in updated_content, (
+        "Source code should not contain TARGET markers"
+    )

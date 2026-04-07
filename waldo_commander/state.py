@@ -157,7 +157,7 @@ class ToolTimeSeries:
 
 @dataclass(slots=True)
 class ProgramTarget:
-    id: str  # Unique identifier (UUID)
+    id: str  # Unique identifier
     line_number: int  # Line number in the editor (1-based)
     pose: list[float]  # [x, y, z, rx, ry, rz]
     move_type: str  # "cartesian", "pose", "joints"
@@ -219,11 +219,22 @@ class ToolAction:
     tcp_path: list[list[float]] | None = None  # TCP poses sampled over action duration
 
 
+@dataclass(slots=True)
+class ToolSelection:
+    """Records a select_tool() call during simulation for timeline playback."""
+
+    tool_key: str
+    variant_key: str = ""
+    segment_index: int = -1  # -1 means before any motion
+    line_number: int = 0
+
+
 @bindable_dataclass
 class SimulationState(ChangeNotifierMixin):
     targets: list[ProgramTarget] = field(default_factory=list)
     path_segments: list[PathSegment] = field(default_factory=list)
     tool_actions: list[ToolAction] = field(default_factory=list)
+    tool_selections: list[ToolSelection] = field(default_factory=list)
     current_step_index: int = 0
     total_steps: int = 0
     is_playing: bool = False
@@ -247,6 +258,7 @@ class SimulationState(ChangeNotifierMixin):
         self.targets.clear()
         self.path_segments.clear()
         self.tool_actions.clear()
+        self.tool_selections.clear()
         self.current_step_index = 0
         self.total_steps = 0
         self.is_playing = False
@@ -495,6 +507,9 @@ class EditorTab:
     )  # Per-tab simulation paths
     targets: list[ProgramTarget] = field(default_factory=list)  # Per-tab targets
     tool_actions: list[ToolAction] = field(default_factory=list)  # Per-tab tool actions
+    tool_selections: list[ToolSelection] = field(
+        default_factory=list
+    )  # Per-tab tool selections
     final_joints_rad: list[float] | None = None  # Final joint position from simulation
     last_sim_joints_deg: np.ndarray | None = None  # Robot position when last simulated
     created_at: float = 0.0  # Timestamp

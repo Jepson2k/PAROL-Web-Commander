@@ -319,6 +319,7 @@ class UrdfScene(
                         "contextmenu",
                     ],
                 )
+                .props("raycaster-threshold=0.005")
                 .classes("w-full h-[66vh]")
                 .on_transform_end(self._handle_transform_event) as self.scene
             ):

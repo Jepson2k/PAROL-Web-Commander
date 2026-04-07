@@ -963,20 +963,12 @@ html, body {
 .cm-line.cm-line-flash {
   animation: cm-line-flash 1.5s ease-out forwards;
 }
-.cm-timing-warning-mark {
-  background-color: color-mix(in srgb, var(--sem-warning) 25%, transparent);
-  border-radius: 2px;
-}
-.cm-line.cm-timing-warning::after {
-  content: attr(data-timing);
-  float: right;
-  color: #ffab40;
-  opacity: 0.8;
-  font-size: 0.85em;
-  font-style: italic;
-  padding-left: 2em;
-  pointer-events: none;
-}
+
+/* Remove CodeMirror's default line padding (overrides .ͼN .cm-line).
+   Keep the 6px left gutter for breathing room. */
+# .cm-editor .cm-content .cm-line {
+#   padding: 0 2px 0 0px !important;
+# }
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */
 .editor-tab-panel {

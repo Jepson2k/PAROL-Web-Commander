@@ -23,9 +23,6 @@ class FileOperationsMixin:
     _switch_to_tab: Any
     _do_close_tab: Any
 
-    _save_dialog: ui.dialog | None = None
-    _open_dialog: ui.dialog | None = None
-
     def _update_dirty_dot(self, tab: EditorTab) -> None:
         widgets = self._tab_widgets.get(tab.id, {})
         dirty_dot = widgets.get("dirty_dot")
@@ -171,9 +168,7 @@ class FileOperationsMixin:
         if not tab:
             return
 
-        if self._save_dialog:
-            self._save_dialog.delete()
-        dlg = self._save_dialog = ui.dialog()
+        dlg = ui.dialog()
         with dlg, ui.card().classes("overlay-card gap-0").style("width: 400px;"):
             with ui.row().classes("w-full items-center"):
                 ui.label("Save").classes("text-lg font-medium")
@@ -228,9 +223,7 @@ class FileOperationsMixin:
         """Show open dialog with file tree and inline upload."""
         selected_file: list[str | None] = [None]
 
-        if self._open_dialog:
-            self._open_dialog.delete()
-        dlg = self._open_dialog = ui.dialog()
+        dlg = ui.dialog()
         with dlg, ui.card().classes("overlay-card gap-0").style("width: 400px;"):
             with ui.row().classes("w-full items-center"):
                 ui.label("Open").classes("text-lg font-medium")

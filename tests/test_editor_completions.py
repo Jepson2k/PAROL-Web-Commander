@@ -123,6 +123,47 @@ def test_parse_docstring_category() -> None:
 
 
 @pytest.mark.unit
+def test_completions_include_tool_methods() -> None:
+    """Test that tool methods (rbt.tool.open, etc.) are discovered."""
+    commands = _editor_mod.discover_robot_commands()
+    tool_commands = {k: v for k, v in commands.items() if k.startswith("tool.")}
+
+    assert len(tool_commands) > 0, "Expected at least one tool command"
+    assert "tool.open" in tool_commands
+    assert "tool.close" in tool_commands
+    assert "tool.set_position" in tool_commands
+
+    for name, cmd in tool_commands.items():
+        assert cmd["category"] == "Tool", f"{name} should have category 'Tool'"
+        assert "rbt.tool." in cmd["snippet"], (
+            f"{name} snippet should contain 'rbt.tool.'"
+        )
+
+
+@pytest.mark.unit
+def test_tool_completions_have_correct_labels() -> None:
+    """Test that tool completions use 'rbt.tool.X' labels in the completion list."""
+    completions = _editor_mod.generate_completions_from_commands()
+    tool_completions = [c for c in completions if c["label"].startswith("rbt.tool.")]
+
+    assert len(tool_completions) >= 3, "Expected at least open, close, set_position"
+    labels = {c["label"] for c in tool_completions}
+    assert "rbt.tool.open" in labels
+    assert "rbt.tool.close" in labels
+    assert "rbt.tool.set_position" in labels
+
+
+@pytest.mark.unit
+def test_scan_class_commands_with_prefix() -> None:
+    """Test that _scan_class_commands applies the prefix correctly."""
+    from waldoctl.tools import GripperTool
+
+    commands = _editor_mod._scan_class_commands(GripperTool, prefix="tool.")
+    assert all(k.startswith("tool.") for k in commands), "All keys should be prefixed"
+    assert all("rbt.tool." in v["title"] for v in commands.values())
+
+
+@pytest.mark.unit
 def test_parse_docstring_example() -> None:
     """_parse_docstring_example extracts the first indented line after Example:."""
     doc = "Foo.\n\nExample:\n    rbt.home()\n"

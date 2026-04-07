@@ -297,7 +297,7 @@ class TestCollectFailedTarget:
         linecache.cache["simulation_script.py"] = (
             100,
             None,
-            ["robot.move_l([100, 200, 300, 0, 0, 0])  # TARGET:t1\n"],
+            ["robot.move_l([100, 200, 300, 0, 0, 0])\n"],
             "simulation_script.py",
         )
         try:
@@ -309,7 +309,7 @@ class TestCollectFailedTarget:
             )
             assert len(targets) == 1
             t = targets[0]
-            assert t["id"] == "t1"
+            assert t["id"] == "auto_1"
             assert t["is_valid"] is False
             assert abs(t["pose"][0] - 0.1) < 1e-6  # 100mm -> 0.1m
             assert abs(t["pose"][1] - 0.2) < 1e-6
@@ -324,7 +324,7 @@ class TestCollectFailedTarget:
         linecache.cache["simulation_script.py"] = (
             100,
             None,
-            ["robot.move_j(pose=[100, 200, 300, 0, 0, 0])  # TARGET:t2\n"],
+            ["robot.move_j(pose=[100, 200, 300, 0, 0, 0])\n"],
             "simulation_script.py",
         )
         try:
@@ -335,7 +335,7 @@ class TestCollectFailedTarget:
                 kwargs={"pose": [100.0, 200.0, 300.0, 0.0, 0.0, 0.0]},
             )
             assert len(targets) == 1
-            assert targets[0]["id"] == "t2"
+            assert targets[0]["id"] == "auto_1"
             assert targets[0]["is_valid"] is False
         finally:
             linecache.cache.pop("simulation_script.py", None)

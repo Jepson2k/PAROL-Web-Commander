@@ -231,7 +231,7 @@ class PathRendererMixin:
         has_rotation = len(action.tcp_pose) >= 6
         if has_rotation:
             rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
-            tcp_rot = ScipyRotation.from_euler("xyz", [rx, ry, rz])
+            tcp_rot = ScipyRotation.from_euler("XYZ", [rx, ry, rz])
 
         for idx, motion in enumerate(action.motions):
             target = (
@@ -326,7 +326,7 @@ class PathRendererMixin:
         has_rotation = len(action.tcp_pose) >= 6
         if has_rotation:
             rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
-            tcp_rot = ScipyRotation.from_euler("xyz", [rx, ry, rz])
+            tcp_rot = ScipyRotation.from_euler("XYZ", [rx, ry, rz])
 
         for idx, motion in enumerate(action.motions):
             if motion.get("type") != "linear":

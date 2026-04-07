@@ -3,11 +3,9 @@
 import logging
 import re
 import time
-import uuid
 from dataclasses import dataclass
 
 import numpy as np
-from pinokin import se3_rpy
 
 from waldo_commander.state import (
     editor_tabs_state,
@@ -18,11 +16,6 @@ from waldo_commander.state import (
 from waldo_commander.common.logging_config import TRACE_ENABLED
 
 logger = logging.getLogger(__name__)
-
-# Methods whose recorded code gets TARGET:uuid markers for interactive 3D editing.
-# Only methods with literal list arguments (positions/angles) benefit from markers,
-# since those can be interactively edited by dragging targets in the 3D scene.
-EDITABLE_TARGET_METHODS = frozenset({"move_j", "move_l"})
 
 
 @dataclass
@@ -53,19 +46,15 @@ class MotionRecorder:
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
 
-        Returns [x, y, z, rx, ry, rz] in mm/deg with RPY order='xyz'.
+        Returns [x, y, z, rx, ry, rz] in mm/deg.
         """
-        T = robot_state.pose.reshape(4, 4)
-        rpy_rad = np.zeros(3, dtype=np.float64)
-        se3_rpy(T, rpy_rad)
-        rpy_deg = np.degrees(rpy_rad)
         return [
-            float(T[0, 3]),
-            float(T[1, 3]),
-            float(T[2, 3]),
-            float(rpy_deg[0]),
-            float(rpy_deg[1]),
-            float(rpy_deg[2]),
+            robot_state.x,
+            robot_state.y,
+            robot_state.z,
+            robot_state.rx,
+            robot_state.ry,
+            robot_state.rz,
         ]
 
     def _get_current_angles(self) -> list[float]:
@@ -234,13 +223,7 @@ class MotionRecorder:
 
     def _record_action_impl(self, action_type: str, **params) -> None:
         """Core recording logic (no is_recording guard)."""
-        is_motion_action = action_type in EDITABLE_TARGET_METHODS
-
-        # Generate marker for motion commands (for interactive targets)
-        marker_id = uuid.uuid4().hex[:8] if is_motion_action else None
-
-        # Generate and insert code
-        snippet = self._generate_code(action_type, params, marker_id)
+        snippet = self._generate_code(action_type, params)
         self._insert_snippet(snippet)
         self._last_action_wall_time = time.time()
 
@@ -250,28 +233,23 @@ class MotionRecorder:
             )  # TRACE level
         logger.debug("Recorded action: %s", action_type)
 
-    def _generate_code(
-        self, action_type: str, params: dict, marker_id: str | None
-    ) -> str:
+    def _generate_code(self, action_type: str, params: dict) -> str:
         """Generate Python code snippet for an action.
 
         Args:
             action_type: Type of action
             params: Action parameters
-            marker_id: UUID marker for interactive targets (motion commands only)
 
         Returns:
             Python code snippet string
         """
-        marker = f"  # TARGET:{marker_id}" if marker_id else ""
-
         if action_type == "move_j":
             angles = params["angles"]
             spd = ui_state.jog_speed / 100.0
             acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{a:.2f}" for a in angles)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.move_j([{args}], speed={spd}, accel={acc}{wait_str}){marker}"
+            return f"rbt.move_j([{args}], speed={spd}, accel={acc}{wait_str})"
 
         elif action_type == "move_l":
             pose = params["pose"]
@@ -279,7 +257,7 @@ class MotionRecorder:
             acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{p:.3f}" for p in pose)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.move_l([{args}], speed={spd}, accel={acc}{wait_str}){marker}"
+            return f"rbt.move_l([{args}], speed={spd}, accel={acc}{wait_str})"
 
         elif action_type == "home":
             return "rbt.home()"

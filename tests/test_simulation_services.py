@@ -81,15 +81,13 @@ class TestDryRunClient:
         assert segment["move_type"] == "cartesian"
 
     @pytest.mark.asyncio
-    async def test_move_creates_segment_but_not_target_without_marker(self):
-        """Moves without TARGET marker should create segment but not target.
+    async def test_move_creates_segment_but_not_target_without_literal_args(self):
+        """Moves without literal list arguments should create segment but not target.
 
-        The dry-run client only creates ProgramTarget objects when:
-        1. The source line has a TARGET:uuid marker
-        2. The source line has literal list arguments (not variables)
-
-        When move_j is called directly (not via code parsing), there's
-        no source line with a marker, so no target is created.
+        ProgramTarget objects are only created when the source line has
+        literal list arguments (not variables). When move_j is called
+        directly (not via code parsing), there's no source line to
+        inspect, so no target is created.
         """
         segments: list[dict] = []
         targets: list[dict] = []
@@ -901,52 +899,10 @@ async def main():
         )
 
     @pytest.mark.asyncio
-    async def test_target_markers_create_targets(self):
-        """Programs with TARGET markers should create ProgramTarget objects."""
+    async def test_literal_moves_create_targets(self):
+        """Moves with literal coordinates create auto-generated targets for 3D editing."""
         visualizer = PathVisualizer()
 
-        # Use joint moves with valid targets (within PAROL6 limits) and TARGET markers
-        program = """
-import parol6
-
-async def main():
-    async with parol6.AsyncRobotClient() as rbt:
-        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)  # TARGET:abc12345
-        await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)  # TARGET:def67890
-"""
-
-        await visualizer.update_path_visualization(program)
-
-        # Should have created 2 path segments
-        assert len(simulation_state.path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
-        )
-
-        # Should have created 2 targets (one for each TARGET marker)
-        assert len(simulation_state.targets) == 2, (
-            f"Expected 2 targets (one per TARGET marker), got {len(simulation_state.targets)}. "
-            f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
-        )
-
-        # Verify target IDs match the markers in the code
-        target_ids = [t.id for t in simulation_state.targets]
-        assert "abc12345" in target_ids, (
-            f"Expected target 'abc12345' not found in {target_ids}"
-        )
-        assert "def67890" in target_ids, (
-            f"Expected target 'def67890' not found in {target_ids}"
-        )
-
-    @pytest.mark.asyncio
-    async def test_move_with_literals_auto_generates_targets(self):
-        """Moves with literal values auto-generate targets for 3D editing.
-
-        Even without explicit TARGET:uuid markers, moves with literal coordinates
-        get auto-generated targets so users can edit positions in the 3D scene.
-        """
-        visualizer = PathVisualizer()
-
-        # Valid joint targets with literal coordinates
         program = """
 import parol6
 
@@ -958,19 +914,17 @@ async def main():
 
         await visualizer.update_path_visualization(program)
 
-        # Should have created path segments (for visualization)
         assert len(simulation_state.path_segments) >= 2, (
             f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
         )
 
-        # Should have auto-generated targets for moves with literal values
-        assert len(simulation_state.targets) >= 2, (
-            f"Expected at least 2 auto-generated targets, got {len(simulation_state.targets)}"
+        assert len(simulation_state.targets) == 2, (
+            f"Expected 2 targets (one per literal move), got {len(simulation_state.targets)}. "
+            f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
         )
 
-        # Auto-generated target IDs should be based on line numbers
         target_ids = [t.id for t in simulation_state.targets]
-        assert any(tid.startswith("auto_") for tid in target_ids), (
+        assert all(tid.startswith("auto_") for tid in target_ids), (
             f"Expected auto-generated target IDs, got {target_ids}"
         )
 

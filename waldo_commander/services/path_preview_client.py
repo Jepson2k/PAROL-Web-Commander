@@ -2,7 +2,7 @@
 Path preview client for offline simulation and visualization.
 
 Wraps a backend's DryRunRobotClient with visualization
-metadata collection (path segments, TARGET markers, colors).
+metadata collection (path segments, targets, colors).
 """
 
 import inspect
@@ -16,12 +16,11 @@ import numpy as np
 from waldoctl import DryRunResult
 
 from waldo_commander.common.theme import get_color_for_move_type
-from waldo_commander.state import ToolAction
+from waldo_commander.state import ToolAction, ToolSelection
 
 logger = logging.getLogger(__name__)
 
 # Pre-compiled regex patterns for performance
-_TARGET_MARKER_RE = re.compile(r"#\s*TARGET:(\w+)")
 _LITERAL_LIST_RE = re.compile(
     r"(?:move_j|move_l|move_c|move_s|move_p)\s*\(\s*(?:\w+\s*=\s*)?\["
     r"\s*[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
@@ -89,6 +88,7 @@ class PathPreviewClient:
         segment_collector: list[dict] | None = None,
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
+        tool_selection_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
@@ -100,6 +100,9 @@ class PathPreviewClient:
         )
         self.tool_action_collector: list[ToolAction] = (
             [] if tool_action_collector is None else tool_action_collector
+        )
+        self.tool_selection_collector: list = (
+            [] if tool_selection_collector is None else tool_selection_collector
         )
         self._tool_meta_registry: dict[str, dict] = tool_meta_registry or {}
         self._tool_metadata: dict | None = None
@@ -296,10 +299,6 @@ class PathPreviewClient:
             pass
         return ""
 
-    def _extract_target_marker(self, line: str) -> str | None:
-        match = _TARGET_MARKER_RE.search(line)
-        return match.group(1) if match else None
-
     def _has_literal_list_args(self, line: str) -> bool:
         return bool(_LITERAL_LIST_RE.search(line))
 
@@ -379,13 +378,12 @@ class PathPreviewClient:
             }
             self.segment_collector.append(segment)
 
-        marker_id = self._extract_target_marker(source_line)
         has_literal_args = self._has_literal_list_args(source_line)
 
         if has_literal_args:
             end_pose_m = result.tcp_poses[-1].copy()
 
-            target_id = marker_id or f"auto_{line_no}"
+            target_id = f"auto_{line_no}"
             target = {
                 "id": target_id,
                 "line_number": line_no,
@@ -394,14 +392,7 @@ class PathPreviewClient:
                 "scene_object_id": "",
             }
             self.target_collector.append(target)
-            if marker_id:
-                logger.debug("Created target %s at line %d", target_id, line_no)
-            else:
-                logger.debug("Auto-generated target %s at line %d", target_id, line_no)
-        elif marker_id:
-            logger.debug(
-                "Skipped target %s - line has variable args (not editable)", marker_id
-            )
+            logger.debug("Created target %s at line %d", target_id, line_no)
 
     def _collect_failed_target(
         self,
@@ -418,7 +409,6 @@ class PathPreviewClient:
         source_line = self._get_source_line(line_no)
         if not source_line:
             return
-        marker_id = self._extract_target_marker(source_line)
         if not self._has_literal_list_args(source_line):
             return  # Variable args — not editable
 
@@ -443,7 +433,7 @@ class PathPreviewClient:
             *pose[3:],
         ]
 
-        target_id = marker_id or f"auto_{line_no}"
+        target_id = f"auto_{line_no}"
         self.target_collector.append(
             {
                 "id": target_id,
@@ -625,9 +615,22 @@ class PathPreviewClient:
                             self._tool_metadata = None
                     else:
                         self._tool_metadata = None
+                    self.tool_selection_collector.append(
+                        ToolSelection(
+                            tool_key=key,
+                            variant_key=str(variant_key),
+                            segment_index=len(self.segment_collector) - 1,
+                            line_number=self._get_caller_line_number(),
+                        )
+                    )
                 return result
 
             return set_tool_wrapper
+
+        # Intercept set_tcp_offset — flush blend since it changes kinematics
+        if name == "set_tcp_offset":
+            self._flush_blend()
+            return getattr(self._client, name)
 
         # All other methods: flush blend first, then delegate to backend.
         # It raises AttributeError for unknown names, catching typos.
@@ -644,6 +647,7 @@ class AsyncPathPreviewClient:
         segment_collector: list[dict] | None = None,
         target_collector: list[dict] | None = None,
         tool_action_collector: list[ToolAction] | None = None,
+        tool_selection_collector: list | None = None,
         initial_joints: list[float] | np.ndarray | None = None,
         tool_meta_registry: dict[str, dict] | None = None,
     ):
@@ -652,6 +656,7 @@ class AsyncPathPreviewClient:
             segment_collector=segment_collector,
             target_collector=target_collector,
             tool_action_collector=tool_action_collector,
+            tool_selection_collector=tool_selection_collector,
             initial_joints=initial_joints,
             tool_meta_registry=tool_meta_registry,
         )
@@ -676,6 +681,10 @@ class AsyncPathPreviewClient:
     @property
     def tool_action_collector(self) -> list[ToolAction]:
         return self._sync_client.tool_action_collector
+
+    @property
+    def tool_selection_collector(self) -> list:
+        return self._sync_client.tool_selection_collector
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._sync_client, name)

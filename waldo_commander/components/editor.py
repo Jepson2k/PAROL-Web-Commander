@@ -35,9 +35,6 @@ from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
 
-# Marker prefix for editable target lines (e.g. "# TARGET:a1b2c3d4")
-TARGET_MARKER = "# TARGET:"
-
 
 def _get_home_joints_rad() -> list[float]:
     """Get home position in radians from the active robot."""
@@ -75,8 +72,44 @@ def _parse_docstring_example(doc: str) -> str | None:
     return None
 
 
+def _scan_class_commands(cls: type, prefix: str = "") -> dict:
+    """Scan a class for methods with ``Category:`` and ``Example:`` docstring sections.
+
+    Returns a dict of ``{method_name: command_info}`` where method_name
+    includes the optional prefix (e.g. ``"tool.open"``).
+    Uses ``inspect.getdoc()`` to walk the MRO for inherited docstrings.
+    """
+    commands = {}
+    for name in dir(cls):
+        if name.startswith("_"):
+            continue
+        attr = getattr(cls, name, None)
+        if not callable(attr):
+            continue
+
+        doc = (inspect.getdoc(attr) or "").strip()
+        category = _parse_docstring_category(doc)
+        snippet = _parse_docstring_example(doc)
+        if category is None or snippet is None:
+            continue
+
+        key = f"{prefix}{name}" if prefix else name
+        sig = inspect.signature(attr)
+        first_line = doc.splitlines()[0] if doc else ""
+
+        commands[key] = {
+            "title": f"rbt.{key}(...)",
+            "category": category,
+            "snippet": snippet,
+            "signature": str(sig),
+            "docstring": first_line or "No description available",
+        }
+
+    return commands
+
+
 def discover_robot_commands() -> dict:
-    """Introspect the active backend's AsyncRobotClient to find all available commands (cached).
+    """Introspect the active backend's client and tool classes for available commands (cached).
 
     Only methods whose docstrings contain both ``Category:`` and ``Example:``
     sections are included.  Methods without these sections are silently excluded.
@@ -85,39 +118,26 @@ def discover_robot_commands() -> dict:
     if _robot_commands_cache is not None:
         return _robot_commands_cache
 
-    try:
-        client_cls = ui_state.active_robot.async_client_class
-    except (AttributeError, RuntimeError, AssertionError):
-        logger.warning("Could not get async_client_class for command discovery")
-        _robot_commands_cache = {}
-        return _robot_commands_cache
-
     commands = {}
 
-    for name in dir(client_cls):
-        if name.startswith("_"):
-            continue
-        attr = getattr(client_cls, name)
-        if not callable(attr):
-            continue
+    # Client methods (rbt.move_j, rbt.home, etc.)
+    try:
+        client_cls = ui_state.active_robot.async_client_class
+        commands.update(_scan_class_commands(client_cls))
+    except (AttributeError, RuntimeError, AssertionError):
+        logger.warning("Could not get async_client_class for command discovery")
 
-        doc = (attr.__doc__ or "").strip()
-        category = _parse_docstring_category(doc)
-        snippet = _parse_docstring_example(doc)
-
-        if category is None or snippet is None:
-            continue
-
-        sig = inspect.signature(attr)
-        first_line = doc.splitlines()[0] if doc else ""
-
-        commands[name] = {
-            "title": f"rbt.{name}(...)",
-            "category": category,
-            "snippet": snippet,
-            "signature": str(sig),
-            "docstring": first_line or "No description available",
-        }
+    # Tool methods (rbt.tool.open, rbt.tool.close, etc.)
+    # Scan all tool specs — different implementations may expose different
+    # methods or override docstrings differently.  First discovery wins.
+    try:
+        for spec in ui_state.active_robot.tools.available:
+            if spec.key == "NONE":
+                continue
+            for k, v in _scan_class_commands(type(spec), prefix="tool.").items():
+                commands.setdefault(k, v)
+    except (AttributeError, RuntimeError):
+        pass
 
     _robot_commands_cache = commands
     return commands
@@ -210,6 +230,11 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
+
+        # Python-side mirror of CM6 StateField target positions.
+        # Updated via target-positions events emitted by JS on document changes.
+        # Maps target index → current 1-indexed line number.
+        self._target_positions: dict[str, int] = {}
 
         # Recording notification
         self._recording_notification: ui.notification | None = None
@@ -304,7 +329,9 @@ print(f"Robot status: {{status}}")
     ) -> None:
         """Update the program code with the new pose for a specific target.
 
-        Uses marker-based lookup (# TARGET:uuid) instead of line numbers for stability.
+        Uses CM6 StateField position tracking to find the target line.
+        Positions are tracked through edits, so this works even after
+        the user inserts/deletes lines.
 
         Note: pose is in scene units (meters for position, degrees for rotation).
         Code uses user units (mm for position, degrees for rotation).
@@ -326,20 +353,17 @@ print(f"Robot status: {{status}}")
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
+        line_number = self._target_positions.get(target_id)
+        if line_number is None:
+            logger.warning("Sync failed: Target %s not found", target_id)
+            return
+
         content = current_value
         lines = content.splitlines()
+        found_line_idx = line_number - 1  # Convert to 0-indexed
 
-        # Find line with TARGET:target_id marker (marker-based lookup)
-        target_marker = f"{TARGET_MARKER}{target_id}"
-        found_line_idx = None
-
-        for i, line in enumerate(lines):
-            if target_marker in line:
-                found_line_idx = i
-                break
-
-        if found_line_idx is None:
-            logger.warning("Sync failed: Target marker %s not found in code", target_id)
+        if found_line_idx < 0 or found_line_idx >= len(lines):
+            logger.warning("Sync failed: Line %d out of range", line_number)
             return
 
         line = lines[found_line_idx]
@@ -372,7 +396,12 @@ print(f"Robot status: {{status}}")
 
             lines[found_line_idx] = new_line
             self.program_textarea.value = "\n".join(lines)
-            logger.info("Synced code for target %s: %s", target_id, new_values_str)
+            logger.info(
+                "Synced code for target %s at line %d: %s",
+                target_id,
+                line_number,
+                new_values_str,
+            )
         else:
             logger.warning(
                 "Sync failed: Could not find coordinate list in line: %s", line
@@ -381,41 +410,44 @@ print(f"Robot status: {{status}}")
     def delete_target_code(self, target_id: str) -> None:
         """Delete the code line corresponding to the target and re-simulate.
 
-        Uses marker-based lookup (# TARGET:uuid) to find and remove the line.
+        Uses CM6 StateField position tracking to find the line.
         """
         if not self.program_textarea:
             return
 
+        line_number = self._target_positions.get(target_id)
+        if line_number is None:
+            logger.warning("Target %s not found for deletion", target_id)
+            return
+
         content = self.program_textarea.value or ""
         lines = content.splitlines()
+        line_idx = line_number - 1
 
-        # Find and remove line with TARGET:target_id marker
-        target_marker = f"{TARGET_MARKER}{target_id}"
-        new_lines = [line for line in lines if target_marker not in line]
-
-        if len(new_lines) < len(lines):
-            # Line was removed - update editor
-            self.program_textarea.value = "\n".join(new_lines)
-            logger.info("Deleted target %s from code", target_id)
+        if 0 <= line_idx < len(lines):
+            del lines[line_idx]
+            self.program_textarea.value = "\n".join(lines)
+            logger.info("Deleted target %s from code (line %d)", target_id, line_number)
             # Re-simulation will trigger automatically via debounced on_change
         else:
-            logger.warning("Target %s marker not found for deletion", target_id)
+            logger.warning("Target %s line %d out of range", target_id, line_number)
 
-    def add_target_code(self, pose: list[float], move_type: str) -> str | None:
-        """Add target code to the editor and return the marker ID.
+    def add_target_code(self, pose: list[float], move_type: str) -> int | None:
+        """Add a move command to the editor.
+
+        Generates clean code without any internal markers.
+        The CM6 StateField will track the line position after the
+        next simulation run produces targets.
 
         Args:
             pose: [x, y, z, rx, ry, rz] position and orientation
             move_type: Type of movement ("pose", "cartesian", "joints")
 
         Returns:
-            Marker ID (uuid string) for the created target, or None on failure
+            1-indexed line number of the new line, or None on failure.
         """
         if not self.program_textarea:
             return None
-
-        # Generate unique marker ID
-        marker_id = uuid.uuid4().hex[:8]
 
         speed = max(0.01, min(1.0, ui_state.jog_speed / 100.0))
         accel = max(0.01, min(1.0, ui_state.jog_accel / 100.0))
@@ -423,9 +455,9 @@ print(f"Robot status: {{status}}")
         pose_str = "[" + ", ".join(f"{v:.3f}" for v in pose) + "]"
 
         if move_type == "joints":
-            code_line = f"rbt.move_j({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
+            code_line = f"rbt.move_j({pose_str}, speed={speed}, accel={accel})"
         else:
-            code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})  {TARGET_MARKER}{marker_id}"
+            code_line = f"rbt.move_l({pose_str}, speed={speed}, accel={accel})"
 
         content = self.program_textarea.value or ""
 
@@ -444,17 +476,17 @@ print(f"Robot status: {{status}}")
         new_line_number = lines_before + 1
         self.flash_editor_lines([new_line_number])
 
-        logger.info("Added target code with marker %s: %s", marker_id, code_line)
-        return marker_id
+        logger.info("Added target code at line %d: %s", new_line_number, code_line)
+        return new_line_number
 
-    def add_joint_target_code(self, joint_angles: list[float]) -> str | None:
-        """Add joint target code to the editor and return the marker ID.
+    def add_joint_target_code(self, joint_angles: list[float]) -> int | None:
+        """Add joint target code to the editor.
 
         Args:
             joint_angles: [j1, j2, j3, j4, j5, j6] joint angles in degrees
 
         Returns:
-            Marker ID (uuid string) for the created target, or None on failure
+            1-indexed line number of the new line, or None on failure.
         """
         return self.add_target_code(joint_angles, move_type="joints")
 
@@ -806,89 +838,65 @@ print(f"Robot status: {{status}}")
             if loading:
                 loading.visible = False
 
+        # Snapshot robot position so _check_position_changed doesn't re-trigger.
+        # Also snapshot on _UNCHANGED to prevent an infinite re-trigger cycle.
+        from waldo_commander.services.path_visualizer import _UNCHANGED
+
+        tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
+        if tab and (error is None or error == _UNCHANGED):
+            n = ui_state.active_robot.joints.count
+            tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
+
+        # Skip post-processing if simulation results were unchanged
+        if error == _UNCHANGED:
+            return None
+
         # Invalidate timeline so it gets rebuilt from new segments
         self.playback.invalidate_timeline()
         simulation_state.sim_playback_time = 0.0
 
-        # Snapshot robot position used for this simulation (per-tab)
-        tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
-        if tab and error is None:
-            n = ui_state.active_robot.joints.count
-            tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
-
         # Update scrub bar segments to match the new paths
         self.playback.update_scrub_segments()
 
-        # Apply timing warning decorations for infeasible durations
-        self._apply_timing_decorations()
+        # Apply initial tool selection from script to scene and controller
+        if simulation_state.tool_selections and ui_state.urdf_scene:
+            first_sel = simulation_state.tool_selections[0]
+            if first_sel.segment_index < 0:
+                tool_key = first_sel.tool_key
+                variant_key = first_sel.variant_key or None
+                ui_state.active_robot.set_active_tool(
+                    tool_key,
+                    variant_key=variant_key,
+                )
+                ui_state.urdf_scene.apply_tool(
+                    tool_key,
+                    variant_key=variant_key,
+                )
+                ui_state.urdf_scene._update_tcp_ball_position()
+                # Sync to controller so readout reflects tool TCP
+                if ui_state.control_panel and ui_state.control_panel.client:
+                    try:
+                        await ui_state.control_panel.client.select_tool(
+                            tool_key,
+                            variant_key=variant_key or "",
+                        )
+                    except Exception as e:
+                        logger.debug("select_tool sync failed: %s", e)
 
-        # Show error in program log if any
+        # Show error in program log
         if error and self.program_log:
             self.program_log.push(f"[SIM ERROR] {error}")
 
-        # Annotate any lines that generated targets but don't have UUID markers
-        self._annotate_unmarked_targets()
+        # Apply diagnostics (errors + timing warnings) via CM6 lint system
+        self._apply_diagnostics(error)
+
+        # Push hover tooltip metadata for move command lines
+        self._push_line_metadata()
+
+        # Register target positions in CM6 StateField for edit tracking
+        self._push_target_positions()
 
         return error
-
-    def _annotate_unmarked_targets(self) -> None:
-        """Add UUID markers to lines that generated targets but don't have them.
-
-        After simulation, targets may have auto-generated IDs (auto_{line_no})
-        for lines with literal move commands but no # TARGET:uuid marker.
-        This method adds proper UUID markers to enable interactive editing.
-        """
-        if not self.program_textarea:
-            return
-
-        content = self.program_textarea.value
-        if not content:
-            return
-
-        # Find targets with auto-generated IDs
-        auto_targets = [t for t in simulation_state.targets if t.id.startswith("auto_")]
-
-        if not auto_targets:
-            return
-
-        lines = content.splitlines()
-        modified = False
-
-        for target in auto_targets:
-            line_idx = target.line_number - 1  # Convert to 0-indexed
-            if 0 <= line_idx < len(lines):
-                line = lines[line_idx]
-
-                # Skip if line already has a TARGET marker
-                if TARGET_MARKER in line:
-                    continue
-
-                # Generate new UUID
-                new_id = uuid.uuid4().hex[:8]
-
-                # Add marker to end of line
-                lines[line_idx] = f"{line}  {TARGET_MARKER}{new_id}"
-
-                # Update target ID in simulation_state
-                target.id = new_id
-
-                # Update target ID in tab state too
-                tab = editor_tabs_state.get_active_tab()
-                if tab:
-                    for tab_target in tab.targets:
-                        if tab_target.line_number == target.line_number:
-                            tab_target.id = new_id
-                            break
-
-                modified = True
-                logger.info(
-                    "Added TARGET marker %s to line %d", new_id, target.line_number
-                )
-
-        if modified:
-            # Update editor content (will trigger debounced simulation,
-            # but next simulation will find the markers and not generate auto_ IDs)
-            self.program_textarea.value = "\n".join(lines)
 
     def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
         """Schedule a debounced simulation run when code changes.
@@ -1257,6 +1265,7 @@ print(f"Robot status: {{status}}")
         tab.path_segments = list(simulation_state.path_segments)
         tab.targets = list(simulation_state.targets)
         tab.tool_actions = list(simulation_state.tool_actions)
+        tab.tool_selections = list(simulation_state.tool_selections)
 
     def _load_simulation_context(self, tab: EditorTab) -> None:
         """Load tab's simulation state into global simulation_state.
@@ -1273,6 +1282,7 @@ print(f"Robot status: {{status}}")
         simulation_state.path_segments = list(tab.path_segments)
         simulation_state.targets = list(tab.targets)
         simulation_state.tool_actions = list(tab.tool_actions)
+        simulation_state.tool_selections = list(tab.tool_selections)
         simulation_state.current_step_index = 0
         simulation_state.total_steps = len(tab.path_segments)
 
@@ -1377,6 +1387,7 @@ print(f"Robot status: {{status}}")
                     .classes("w-full h-full")
                     .style("min-height: 100%;")
                 )
+                textarea.on("anchor-positions", self._on_anchor_positions)
 
                 # Initialize theme
                 try:
@@ -1399,6 +1410,64 @@ print(f"Robot status: {{status}}")
         simulation_state.active_cursor_line = e.args.get("line", 0)
         if ui_state.urdf_scene and simulation_state.paths_visible:
             ui_state.urdf_scene.update_cursor_line_highlight()
+
+    def _on_anchor_positions(self, e) -> None:
+        """Handle anchor position updates from CM6.
+
+        Called when document edits remap tracked line anchors.
+        Updates the Python-side mirror so sync_code_from_target can
+        find the correct line without an async JS round-trip.
+        """
+        args = e.args if isinstance(e.args, dict) else {}
+        anchors = args.get("anchors", {})
+        # anchors is {id: line_number} — store as {id: line}
+        self._target_positions = {k: v for k, v in anchors.items()}
+
+    def _push_line_metadata(self) -> None:
+        """Push per-line metadata to CM6 for hover tooltips.
+
+        Aggregates segment data (end position, duration, warnings) per line
+        so hovering a move command shows useful info.
+        """
+        if not self.program_textarea:
+            return
+        metadata: dict[int, dict] = {}
+        for seg in simulation_state.path_segments:
+            if seg.line_number <= 0 or not seg.points:
+                continue
+            end = seg.points[-1]
+            # Position in mm for display (segments store meters)
+            pos_str = f"x: {end[0] * 1000:.1f}, y: {end[1] * 1000:.1f}, z: {end[2] * 1000:.1f} mm"
+            dur_str = f"{seg.estimated_duration:.2f}s" if seg.estimated_duration else ""
+            warnings = []
+            if not seg.is_valid:
+                warnings.append("Unreachable position")
+            if not seg.timing_feasible and seg.estimated_duration is not None:
+                warnings.append(
+                    f"Duration too short (min: {seg.estimated_duration:.2f}s)"
+                )
+
+            entry: dict = {"position": pos_str}
+            if dur_str:
+                entry["duration"] = dur_str
+            if warnings:
+                entry["warnings"] = warnings
+            metadata[seg.line_number] = entry
+
+        self.program_textarea.set_line_tooltips(metadata, set_name="simulation")
+
+    def _push_target_positions(self) -> None:
+        """Push current target positions to CM6 line anchors for edit tracking."""
+        if not self.program_textarea:
+            return
+        anchors = [
+            {"id": t.id, "line": t.line_number}
+            for t in simulation_state.targets
+            if t.line_number > 0
+        ]
+        self.program_textarea.set_line_anchors(anchors, set_name="targets")
+        # Also update Python-side mirror
+        self._target_positions = {str(a["id"]): int(a["line"]) for a in anchors}
 
     def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1431,74 +1500,78 @@ print(f"Robot status: {{status}}")
             segment = simulation_state.path_segments[step_index]
             line_number = segment.line_number
             if line_number > 0:
-                # Use set_decorations for persistent highlight
-                self.program_textarea.set_decorations(
-                    [{"kind": "line", "line": line_number, "class": "cm-highlighted"}],
-                    set_name="executing",
+                self.program_textarea.run_method(
+                    "setDecorations",
+                    {
+                        "executing": [
+                            {
+                                "kind": "line",
+                                "line": line_number,
+                                "class": "cm-highlighted",
+                            }
+                        ]
+                    },
                 )
+                self.program_textarea.run_method("revealLine", line_number)
                 return
 
         # Clear highlight if no valid line found
-        self.program_textarea.clear_decorations("executing")
+        self.program_textarea.run_method("setDecorations", {"executing": []})
 
     def clear_executing_line_highlight(self) -> None:
         """Clear the executing line highlight decoration."""
         if self.program_textarea:
-            self.program_textarea.clear_decorations("executing")
+            self.program_textarea.run_method("setDecorations", {"executing": []})
 
-    _DURATION_PARAM_RE = re.compile(r"duration\s*=\s*[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+    _ERROR_LINE_RE = re.compile(
+        r'(?:File "simulation_script\.py", line (\d+))|(?:^Line (\d+):)',
+        re.MULTILINE,
+    )
 
-    def _apply_timing_decorations(self) -> None:
-        """Highlight the duration=XXX span and show min time for infeasible timing."""
+    def _apply_diagnostics(self, error: str | None = None) -> None:
+        """Apply CM6 lint diagnostics for simulation errors and timing warnings."""
         if not self.program_textarea:
             return
-        source = self.program_textarea.value or ""
-        lines = source.split("\n")
-        # Pre-compute line start offsets (0-indexed char positions)
-        line_starts: list[int] = []
-        offset = 0
-        for ln in lines:
-            line_starts.append(offset)
-            offset += len(ln) + 1  # +1 for '\n'
 
-        decorations: list[dict] = []
-        marked_lines: set[int] = set()
+        diagnostics: list[dict] = []
+
+        # Error diagnostics from simulation
+        if error:
+            error_lines: set[int] = set()
+            for m in self._ERROR_LINE_RE.finditer(error):
+                line_no = int(m.group(1) or m.group(2))
+                error_lines.add(line_no)
+            # Extract the core error message (last line of traceback)
+            error_msg = error.strip().split("\n")[-1] if error.strip() else error
+            for ln in sorted(error_lines):
+                diagnostics.append(
+                    {
+                        "line": ln,
+                        "severity": "error",
+                        "message": error_msg,
+                        "source": "simulation",
+                    }
+                )
+
+        # Timing warning diagnostics for infeasible durations
+        warned_lines: set[int] = set()
         for seg in simulation_state.path_segments:
             if seg.timing_feasible or seg.line_number <= 0:
                 continue
-            line_idx = seg.line_number - 1  # 0-indexed
-            if line_idx >= len(lines):
+            if seg.line_number in warned_lines:
                 continue
-
-            # Mark decoration on the "duration=XXX" span (once per line)
-            if seg.line_number not in marked_lines:
-                marked_lines.add(seg.line_number)
-                line_text = lines[line_idx]
-                line_start = line_starts[line_idx]
-                m = self._DURATION_PARAM_RE.search(line_text)
-                if m:
-                    decorations.append(
-                        {
-                            "kind": "mark",
-                            "from": line_start + m.start(),
-                            "to": line_start + m.end(),
-                            "class": "cm-timing-warning-mark",
-                        }
-                    )
-
-            # Line decoration for the ::after annotation text
+            warned_lines.add(seg.line_number)
             if seg.estimated_duration is not None:
-                decorations.append(
+                diagnostics.append(
                     {
-                        "kind": "line",
                         "line": seg.line_number,
-                        "class": "cm-timing-warning",
-                        "attributes": {
-                            "data-timing": f"min: {seg.estimated_duration:.2f}s",
-                        },
+                        "severity": "warning",
+                        "message": f"Duration too short — minimum: {seg.estimated_duration:.2f}s",
+                        "source": "timing",
                     }
                 )
-        self.program_textarea.set_decorations(decorations, set_name="timing")
+
+        self.program_textarea.set_diagnostics(diagnostics)
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
