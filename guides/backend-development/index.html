@@ -1,0 +1,1790 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://jepson2k.github.io/PAROL-Web-Commander/guides/backend-development/">
+      
+      
+        <link rel="prev" href="../api-reference/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Backend Development - Waldo Commander</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#backend-development-guide" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Waldo Commander" class="md-header__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Waldo Commander
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Backend Development
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Jepson2k/PAROL-Web-Commander" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Waldo Commander" class="md-nav__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Waldo Commander
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Jepson2k/PAROL-Web-Commander" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../writing-programs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing Programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backend Development
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backend Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-waldoctl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is waldoctl?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#interactive-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#script-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Script execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-implement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What you implement
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What you implement">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#robot-subclass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Robot subclass
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Robot subclass">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#identity-and-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity and units
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#joint-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joint configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kinematics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Kinematics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#client-factories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Client factories
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#robotclient-async-and-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RobotClient (async and sync)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#simulator-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dryrunclient-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DryRunClient (optional)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tool configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tool-types-and-ui-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool types and UI generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gripper-subtypes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gripper subtypes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-geometry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool geometry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-actions-and-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool actions and status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Visualization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frontend-integration-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontend integration details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frontend integration details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#feature-activation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature activation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#status-update-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status update rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#command-palette" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command palette
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dryrunresult-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DryRunResult fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Minimal skeleton
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-to-method-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-to-method mapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-waldoctl" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What is waldoctl?
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture overview
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#interactive-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#script-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Script execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-you-implement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What you implement
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What you implement">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#robot-subclass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Robot subclass
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Robot subclass">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#identity-and-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity and units
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#joint-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joint configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#kinematics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Kinematics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#client-factories" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Client factories
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#robotclient-async-and-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RobotClient (async and sync)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#simulator-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dryrunclient-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DryRunClient (optional)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Tool configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tool-types-and-ui-generation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool types and UI generation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gripper-subtypes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gripper subtypes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-geometry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool geometry
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tool-actions-and-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tool actions and status
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Visualization
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frontend-integration-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontend integration details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Frontend integration details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#feature-activation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature activation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#status-update-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status update rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#command-palette" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command palette
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dryrunresult-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DryRunResult fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#minimal-skeleton" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Minimal skeleton
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-to-method-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-to-method mapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="backend-development-guide">Backend Development Guide<a class="headerlink" href="#backend-development-guide" title="Permanent link">&para;</a></h1>
+<p>This guide walks through integrating a new robot backend with Waldo Commander. By the end, your robot will appear in the 3D viewer, respond to jog commands, run user scripts, and preview motion paths.</p>
+<h2 id="what-is-waldoctl">What is waldoctl?<a class="headerlink" href="#what-is-waldoctl" title="Permanent link">&para;</a></h2>
+<p><a href="https://github.com/Jepson2k/waldoctl">waldoctl</a> is a small Python package that defines the abstract interfaces your backend implements. It contains no robot-specific logic -- just ABCs, Protocols, and type definitions. Install it as a dependency of your backend package:</p>
+<div class="highlight"><pre><span></span><code>pip install waldoctl
+</code></pre></div>
+<p>This guide explains the concepts and patterns. For exact method signatures, default values, and parameter semantics, refer to waldoctl's source docstrings.</p>
+<h2 id="architecture-overview">Architecture overview<a class="headerlink" href="#architecture-overview" title="Permanent link">&para;</a></h2>
+<p>Waldo Commander interacts with your backend through three client interfaces. The diagrams below split this into two flows: <strong>live control</strong> (direct, real-time user interaction) and <strong>script execution</strong> (recorded path preview, script run, and timeline scrubbing). Both can target either the real robot or the simulator -- the difference is whether commands originate from a live user action or a script being executed.</p>
+<h3 id="interactive-control">Interactive control<a class="headerlink" href="#interactive-control" title="Permanent link">&para;</a></h3>
+<pre class="mermaid"><code>graph TD
+    subgraph input["Frontend Input"]
+        Jog([Presses Jog Button])
+        Gizmo([TCP Gizmo])
+        Cmd([Home · Halt · Resume])
+        Grip([Tool Actions])
+    end
+
+    subgraph output["Frontend Output"]
+        UI[3D Viewer · Readouts]
+    end
+
+    Jog --&gt; JC{click/hold?}
+    JC --&gt;|click| ac_move
+    JC --&gt;|hold| JH{held?}
+    JH --&gt;|yes| JH_delay@{ shape: delay, label: "50ms" } --&gt; ac_jog
+    JH_delay --&gt; JH
+
+    Gizmo --&gt; GD{dragging?}
+    GD --&gt;|yes| GD_delay@{ shape: delay, label: "50ms" } --&gt; ac_servo
+    GD_delay --&gt; GD
+
+    Cmd --&gt; ac_cmd
+    ac_cmd -.-&gt;|result| Cmd
+
+    Grip --&gt; ActiveTool[get active tool] --&gt; ac_tool
+
+    subgraph AC["AsyncClient"]
+        ac_jog["jog_j / jog_l"]
+        ac_move["move_j / move_l"]
+        ac_servo[servo_l]
+        ac_cmd["home · halt · resume"]
+        ac_tool[tool_action]
+    end
+
+    AC -.-&gt;|StatusBuffer| UI</code></pre>
+<p>The UI creates an <code>AsyncRobotClient</code> at startup. This client serves two purposes: streaming status telemetry back to the UI, and sending control commands.</p>
+<p><strong>Status streaming</strong> -- <code>stream_status_shared()</code> is an async iterator that yields <code>StatusBuffer</code> snapshots. It drives the entire UI: joint angle readouts, 3D viewer pose, TCP speed, I/O state, gripper position, action state, and simulator status. The buffer is a Protocol with numpy array fields for zero-copy access. You fill these arrays in your backend's status loop and yield the same buffer object each iteration.</p>
+<p><strong>Jogging</strong> -- When the user holds a jog button, the UI sends <code>jog_j</code> or <code>jog_l</code> commands at 20 Hz, each with a 0.1-second duration. Your backend should blend consecutive commands into smooth motion -- don't queue stale ones. When the user clicks (rather than holds) a jog button, the UI sends a single <code>move_j</code> or <code>move_l</code> step instead.</p>
+<p><strong>Gizmo drag</strong> -- When the user drags the TCP gizmo in the 3D viewer, the UI sends <code>servo_l</code> position targets at 20 Hz. Your backend should replace stale targets rather than enqueuing them.</p>
+<p><strong>Single commands</strong> -- <code>home</code>, <code>halt</code>, <code>resume</code>, <code>move_j</code>, <code>move_l</code> are one-off commands triggered by UI buttons. <code>halt</code> must stop motion immediately.</p>
+<h3 id="script-execution">Script execution<a class="headerlink" href="#script-execution" title="Permanent link">&para;</a></h3>
+<p><pre class="mermaid"><code>graph TD
+    subgraph input["Frontend Input"]
+        Edit([Edit code])
+        Run([▶ Run])
+        StepCtrl([⏸ Pause · ▶ Step])
+        Scrub([Scrub timeline])
+        SimToggle([Toggle Simulator])
+    end
+
+    subgraph output["Frontend Output"]
+        UI[3D Viewer · Readouts · Path Viz]
+    end
+
+    TL@{ shape: cyl, label: "Timeline" }
+
+    Edit --&gt; Deb@{ shape: delay, label: "1s" } --&gt; EditSub
+    subgraph EditSub["Subprocess"]
+        EditImport[hook backend library import]
+        EditScript([execute user script])
+        EditDec{motion call?}
+        DRC[DryRunClient]
+        Drop@{ shape: dbl-circ, label: "ignore" }
+        EditImport --&gt; EditScript --&gt; EditDec
+        EditDec --&gt;|yes| DRC
+        EditDec --&gt;|no| Drop
+    end
+
+    Run --&gt; PlaybackMode
+    StepCtrl --&gt; PlaybackMode
+    PlaybackMode@{ shape: hex, label: "playback mode" }
+    PlaybackMode --&gt; RunSim{sim?}
+    RunSim --&gt;|no| RunSub
+    subgraph RunSub["Subprocess"]
+        RunImport[hook backend library import]
+        RunScript([execute user script])
+        RunDec{step ready?}
+        QueryMode[query playback mode]
+        SC[SyncClient]
+        RunImport --&gt; RunScript --&gt; RunDec
+        RunDec --&gt;|no| QueryMode
+        QueryMode --&gt; RunDec
+        RunDec --&gt;|yes| SC
+    end
+    PlaybackMode -.-&gt; QueryMode
+    RunSim --&gt;|yes| GetState
+
+    ac_sim["simulator()"]
+    ac_tp["teleport()"]
+    RobotState@{ shape: hex, label: "robot / sim state" }
+    SC --&gt; RobotState
+    ac_tp --&gt; RobotState
+    RobotState -.-&gt;|StatusBuffer| UI
+
+    DRC -.-&gt;|DryRunResult| UI
+    DRC -.-&gt;|DryRunResult| TL
+
+    SimToggle --&gt; ac_sim
+    ac_sim --&gt;|sets| SimState@{ shape: hex, label: "sim state" }
+    SimState -.-&gt; RunSim
+    SimState -.-&gt; ScrubSim
+
+    Scrub --&gt; ScrubSim{sim?}
+    ScrubSim --&gt;|yes| GetState
+    GetState[play through timeline]
+    TL -.-&gt; GetState
+    GetState --&gt; Fork@{ shape: fork }
+    Fork -.-&gt; UI
+    Fork --&gt;|"keep sim position in sync"| ac_tp</code></pre>
+User programs are plain Python files that import your backend's client directly:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">mybackend</span><span class="w"> </span><span class="kn">import</span> <span class="n">RobotClient</span>
+
+<span class="n">rbt</span> <span class="o">=</span> <span class="n">RobotClient</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s1">&#39;127.0.0.1&#39;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="mi">5001</span><span class="p">)</span>
+<span class="n">rbt</span><span class="o">.</span><span class="n">home</span><span class="p">()</span>
+<span class="n">rbt</span><span class="o">.</span><span class="n">move_j</span><span class="p">(</span><span class="n">pose</span><span class="o">=</span><span class="p">[</span><span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">,</span> <span class="mi">300</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+</code></pre></div>
+<p>The same script works in three contexts without modification:</p>
+<ul>
+<li><strong>Standalone</strong> -- the script connects to the real backend and executes on hardware or simulator.</li>
+<li><strong>In Waldo Commander (run)</strong> -- Commander hooks the import to wrap your client with stepping support (pause/step/play for debugging). Commands still flow to the real backend.</li>
+<li><strong>In Waldo Commander (path preview)</strong> -- When the user edits code in the editor, Commander debounces for 1 second of idle time, then runs the script in an isolated subprocess with your <code>DryRunClient</code> substituted for the real client. The script runs identically -- loops, conditionals, math all work -- but each motion call returns trajectory data instead of executing normally. Results feed the path visualizer and populate the timeline. In <strong>simulator mode</strong>, the timeline slider is interactive -- the user can scrub freely and play at variable speeds. Commander sends <code>teleport</code> commands in parallel to keep the backend's simulator state in sync. After playback stops, the simulator knows where the robot "is" and subsequent operations start from the correct position. During teleport playback, Commander suppresses real-time status updates to the 3D viewer to prevent jitter.</li>
+</ul>
+<p>The backend author doesn't need to do anything special for this. Commander handles the hooking; your client just needs to work as a normal Python class.</p>
+<h2 id="what-you-implement">What you implement<a class="headerlink" href="#what-you-implement" title="Permanent link">&para;</a></h2>
+<p>Your backend is a Python package that provides:</p>
+<ol>
+<li>A <code>Robot</code> subclass -- configuration and kinematics</li>
+<li>A <code>RobotClient</code> subclass -- control interface (async and sync)</li>
+<li>A <code>DryRunClient</code> (optional) -- trajectory preview</li>
+<li>Tool definitions -- end-effector configuration</li>
+</ol>
+<h3 id="robot-subclass">Robot subclass<a class="headerlink" href="#robot-subclass" title="Permanent link">&para;</a></h3>
+<p>The <code>Robot</code> ABC is the central configuration object. It tells Waldo Commander everything about your robot's geometry, capabilities, and how to create clients.</p>
+<h4 id="identity-and-units">Identity and units<a class="headerlink" href="#identity-and-units" title="Permanent link">&para;</a></h4>
+<p>The <code>name</code> property is a display string. <code>position_unit</code> (<code>"mm"</code> or <code>"m"</code>) tells the UI how your users think about distance -- it affects readout formatting but not internal math (which is always meters + radians). This enables users of small robots to use millimeters and users of large robots to use meters.</p>
+<h4 id="joint-configuration">Joint configuration<a class="headerlink" href="#joint-configuration" title="Permanent link">&para;</a></h4>
+<p>The <code>joints</code> property returns a <code>JointsSpec</code> containing:</p>
+<ul>
+<li><code>count</code> -- number of actuated joints</li>
+<li><code>names</code> -- display names for each joint</li>
+<li><code>limits</code> -- position limits (degrees and radians), plus kinodynamic limits (velocity, acceleration, jerk) for both hardware maximums and reduced jog-mode limits</li>
+<li><code>home</code> -- the home/standby position in degrees and radians</li>
+</ul>
+<p>You construct <code>JointsSpec</code> once in <code>__init__</code> -- see the <a href="#minimal-skeleton">minimal skeleton</a> for an example.</p>
+<h4 id="kinematics">Kinematics<a class="headerlink" href="#kinematics" title="Permanent link">&para;</a></h4>
+<p>You implement <code>fk</code> and <code>ik</code> for forward and inverse kinematics:</p>
+<ul>
+<li><code>fk(q_rad, out)</code> -- takes joint angles in radians and a pre-allocated output buffer, returns <code>[x, y, z, rx, ry, rz]</code> in meters + radians. The buffer is reused to avoid allocations in the hot path.</li>
+<li><code>ik(pose, q_seed_rad)</code> -- takes a pose and seed angles, returns an <code>IKResult</code> with the solution in radians, a success flag, and optional violation descriptions.</li>
+<li><code>fk_batch</code> and <code>ik_batch</code> -- used for path preview, same semantics on arrays of poses.</li>
+</ul>
+<p>If you already have an IK library (KDL, ikfast, Pinocchio, or your SDK's built-in solver), you just wrap it here.</p>
+<h4 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h4>
+<p><code>start</code> initializes the backend (spawn a subprocess, connect to a server, launch a ROS node -- whatever applies). <code>stop</code> tears it down. <code>is_available</code> is a quick health check.</p>
+<h4 id="client-factories">Client factories<a class="headerlink" href="#client-factories" title="Permanent link">&para;</a></h4>
+<p><code>create_async_client</code> and <code>create_sync_client</code> construct connected clients. <code>create_dry_run_client</code> returns a <code>DryRunClient</code> or <code>None</code> if you don't support trajectory preview.</p>
+<h3 id="robotclient-async-and-sync">RobotClient (async and sync)<a class="headerlink" href="#robotclient-async-and-sync" title="Permanent link">&para;</a></h3>
+<p>The <code>RobotClient</code> ABC defines the control interface. Your backend provides two variants -- async and sync -- that expose the same methods with the same behavior. The only difference is Python calling convention: <code>async</code>/<code>await</code> vs blocking calls.</p>
+<p>How you implement them is up to you. You can write the async client first and wrap it to get the sync version (the approach PAROL6 takes), or vice versa, or implement both independently. waldoctl doesn't prescribe the relationship.</p>
+<p>Your <code>Robot</code> must expose <code>sync_client_class</code> and <code>async_client_class</code> properties so the editor can discover available commands for autocomplete.</p>
+<p>The client's methods fall into several patterns:</p>
+<p><strong>Trajectory-planned motion</strong> -- <code>move_j</code>, <code>move_l</code>, and <code>home</code> are the core commands. The backend plans the full trajectory and executes it. Each returns a command index that can be passed to <code>wait_command</code>. Optional extensions (<code>move_c</code>, <code>move_s</code>, <code>move_p</code>) have ABC defaults that raise <code>NotImplementedError</code>. Waldo Commander itself doesn't expose UI controls for these moves today, but user scripts can call them and will get the standard exception if your backend hasn't implemented them.</p>
+<p><strong>Streaming position</strong> -- <code>servo_j</code> and <code>servo_l</code> are fire-and-forget position targets. The UI uses these for gizmo drag at 20 Hz. Consume each target immediately and blend or interpolate to the next one. Don't queue them.</p>
+<p><strong>Streaming velocity</strong> -- <code>jog_j</code> and <code>jog_l</code> are velocity-mode jog commands with a duration parameter. Each says "move at this speed for this long." The UI sends a new one every 50 ms; if it stops sending, the robot stops after the duration expires.</p>
+<p><strong>Status streaming</strong> -- <code>stream_status_shared</code> yields <code>StatusBuffer</code> snapshots driving the entire UI. See <a href="#interactive-control">Interactive control</a> above.</p>
+<p><strong>Optional methods</strong> -- Many <code>RobotClient</code> methods have ABC defaults that raise <code>NotImplementedError</code>. Waldo Commander does <strong>not</strong> introspect your client to disable controls automatically -- if a user script calls an unimplemented method, it will raise at runtime. Document which optional features your backend supports so users know what to expect.</p>
+<h3 id="simulator-mode">Simulator mode<a class="headerlink" href="#simulator-mode" title="Permanent link">&para;</a></h3>
+<p>Your client implements <code>simulator(enabled)</code> and <code>is_simulator()</code> to toggle and query simulator mode. When simulator mode is on, the backend simulates robot behavior without hardware -- how you do this is entirely up to you. The PAROL6 backend swaps its serial transport for a very basic simulation; another backend might do something completely different.</p>
+<p>The important contract is:</p>
+<ul>
+<li>Status streaming, motion planning, and command execution all work normally in simulator mode</li>
+<li><code>StatusBuffer.simulator_active</code> reflects the current mode in every status update</li>
+<li><code>teleport(angles, tool_positions)</code> is available for instant position jumps without trajectory planning (simulator only)</li>
+</ul>
+<p>Commander uses teleport during simulation playback to keep the backend's state synchronized with the timeline animation.</p>
+<h3 id="dryrunclient-optional">DryRunClient (optional)<a class="headerlink" href="#dryrunclient-optional" title="Permanent link">&para;</a></h3>
+<p>The <code>DryRunClient</code> Protocol enables trajectory preview. It mirrors a subset of the real client's motion commands (<code>move_j</code>, <code>move_l</code>, <code>home</code>) -- each call returns a <code>DryRunResult</code> describing the trajectory the motion would produce:</p>
+<ul>
+<li><code>tcp_poses</code> -- the TCP trajectory as an array of <code>[x, y, z, rx, ry, rz]</code> poses</li>
+<li><code>joint_trajectory_rad</code> -- the full joint trajectory (enables simulation playback with timeline scrubbing)</li>
+<li><code>duration</code> -- estimated trajectory duration</li>
+<li><code>valid</code> -- per-pose IK validity (enables reachability coloring in the 3D viewer)</li>
+<li><code>error</code> -- diagnostic when a motion fails in simulation</li>
+</ul>
+<p><code>flush()</code> returns a list of all accumulated <code>DryRunResult</code> objects since the last flush, which handles motions still in a blend buffer.</p>
+<h3 id="tool-configuration">Tool configuration<a class="headerlink" href="#tool-configuration" title="Permanent link">&para;</a></h3>
+<p>Tools are end-effectors: grippers, spindles, vacuum cups, bare flanges. The <code>tools</code> property on your <code>Robot</code> returns a <code>ToolsSpec</code> -- a collection of <code>ToolSpec</code> objects describing your available tools.</p>
+<h4 id="tool-types-and-ui-generation">Tool types and UI generation<a class="headerlink" href="#tool-types-and-ui-generation" title="Permanent link">&para;</a></h4>
+<p><code>ToolType</code> determines what UI panel appears:</p>
+<ul>
+<li><code>ToolType.NONE</code> -- passive tool. TCP offset and 3D visual only, no control panel. Every robot needs at least one.</li>
+<li><code>ToolType.GRIPPER</code> -- gets a dedicated control panel with position slider, status indicators, and real-time data charts.</li>
+</ul>
+<p>Beyond the panel, any tool can have automatic action buttons in the UI. Setting <code>action_l_labels</code>, <code>action_l_icons</code>, and <code>action_l_mode</code> on your <code>ToolSpec</code> generates a toggle or trigger button on the left side. Same for <code>action_r_*</code> on the right. <code>adjust_step</code>, <code>adjust_labels</code>, and <code>adjust_icons</code> add +/- adjust buttons. The UI generates these controls from your ToolSpec properties -- you don't need a gripper to get tool controls.</p>
+<h4 id="gripper-subtypes">Gripper subtypes<a class="headerlink" href="#gripper-subtypes" title="Permanent link">&para;</a></h4>
+<p>Currently, grippers get the most extensive UI support. Two subtypes:</p>
+<ul>
+<li><code>PneumaticGripperTool</code> -- binary open/close via a digital I/O port. <code>ActivationType.BINARY</code> means no position feedback from hardware; motion descriptors need <code>estimated_speed</code> fields so the viewer can animate transitions.</li>
+<li><code>ElectricGripperTool</code> -- continuous position control with speed and current parameters. <code>ActivationType.PROGRESSIVE</code> means real-time position feedback. Real-time charts plot position and current channels over time. <code>channel_descriptors</code> define the data channels (e.g., "Current" in mA).</li>
+</ul>
+<p>Both support <code>open()</code>, <code>close()</code>, and <code>set_position()</code> (normalized 0.0 = fully open, 1.0 = fully closed).</p>
+<h4 id="tool-geometry">Tool geometry<a class="headerlink" href="#tool-geometry" title="Permanent link">&para;</a></h4>
+<p>Each tool declares:</p>
+<ul>
+<li><code>tcp_origin</code> / <code>tcp_rpy</code> -- TCP offset from the flange, applied to FK/IK</li>
+<li><code>meshes</code> -- tuple of <code>MeshSpec</code> entries, each with a filename, origin offset, orientation, and role (<code>BODY</code>, <code>JAW</code>, or <code>SPINDLE</code>)</li>
+<li><code>motions</code> -- <code>LinearMotion</code> or <code>RotaryMotion</code> descriptors that tell the viewer how to animate moving parts based on the tool status positions</li>
+<li><code>variants</code> -- named configurations (e.g., different jaw sets) that swap meshes and motions wholesale. A variant selector appears in the UI when variants are defined.</li>
+</ul>
+<h4 id="tool-actions-and-status">Tool actions and status<a class="headerlink" href="#tool-actions-and-status" title="Permanent link">&para;</a></h4>
+<p>Tools dispatch actions through callbacks bound at client creation time. When user code calls <code>rbt.tool.close()</code>, it routes through <code>client.tool_action()</code> to your backend. Your backend executes the action and reports results via <code>ToolStatus</code> in the status stream:</p>
+<ul>
+<li><code>state</code> -- OFF, IDLE, ACTIVE, ERROR</li>
+<li><code>engaged</code> -- actively doing work</li>
+<li><code>part_detected</code> -- object presence confirmed</li>
+<li><code>positions</code> -- DOF positions (one per motion descriptor), normalized 0..1</li>
+<li><code>channels</code> -- process data (e.g., current in mA), described by <code>channel_descriptors</code></li>
+<li><code>fault_code</code> -- 0 = no fault</li>
+</ul>
+<h2 id="registration">Registration<a class="headerlink" href="#registration" title="Permanent link">&para;</a></h2>
+<p>Backends register themselves via a Python entry point in the <code>waldoctl.robots</code> group -- no edits to Waldo Commander are required. Add the entry point to your backend's <code>pyproject.toml</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">[project.entry-points.</span><span class="s2">&quot;waldoctl.robots&quot;</span><span class="k">]</span>
+<span class="n">my_robot</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;my_robot.robot:Robot&quot;</span>
+</code></pre></div>
+<p>The entry-point value must point to a <code>waldoctl.Robot</code> subclass. Once the package is installed in the same environment as Waldo Commander, the backend is automatically discovered by <code>waldoctl.discovery.available_backends()</code> and selectable from the UI.</p>
+<p><strong>Selecting a backend</strong> -- if multiple backends are installed, choose one by setting the <code>WALDO_ROBOT</code> environment variable to the entry-point name. With a single backend installed, it is auto-selected. Otherwise Waldo Commander falls back to its built-in default (<code>parol6</code>).</p>
+<h2 id="visualization">Visualization<a class="headerlink" href="#visualization" title="Permanent link">&para;</a></h2>
+<p>The 3D viewer renders your robot from a URDF file. Your <code>Robot</code> must provide:</p>
+<ul>
+<li><code>urdf_path</code> -- absolute path to the URDF file</li>
+<li><code>mesh_dir</code> -- absolute path to the directory containing STL meshes referenced by the URDF</li>
+<li><code>joint_index_mapping</code> -- a tuple that maps URDF joint indices to your control joint order</li>
+</ul>
+<p>The joint index mapping matters when the URDF's link/joint ordering differs from your control joint numbering. For example, if URDF joint 0 corresponds to your control joint 2, the mapping handles the translation so the 3D model moves correctly.</p>
+<p>Tool meshes are defined in your <code>ToolSpec</code> via <code>MeshSpec</code> entries. Each mesh has a filename, origin offset, orientation, and a role (body, jaw, spindle). Motion descriptors (<code>LinearMotion</code>, <code>RotaryMotion</code>) tell the viewer how to animate moving parts based on the tool status positions reported in <code>StatusBuffer.tool_status</code>.</p>
+<h2 id="frontend-integration-details">Frontend integration details<a class="headerlink" href="#frontend-integration-details" title="Permanent link">&para;</a></h2>
+<p>These aren't enforced by waldoctl, but they matter for a good user experience.</p>
+<h3 id="feature-activation">Feature activation<a class="headerlink" href="#feature-activation" title="Permanent link">&para;</a></h3>
+<p>The UI conditionally renders some panels based on what your <code>Robot</code> reports:</p>
+<ul>
+<li><code>digital_inputs</code> / <code>digital_outputs</code> counts -- the I/O panel renders exactly that many input/output rows.</li>
+<li><code>ToolsSpec.available</code> -- when the active tool is a <code>GripperTool</code>, the gripper tab is enabled and its panel is built.</li>
+<li><code>create_dry_run_client()</code> returning <code>None</code> -- path preview silently produces no segments. The editor still accepts code edits; the preview just doesn't render.</li>
+</ul>
+<p>The following <code>Robot</code> properties exist in the <code>waldoctl</code> ABC but are <strong>not currently consumed by the UI</strong>: <code>has_freedrive</code>, <code>has_force_torque</code>. Setting them has no effect today.</p>
+<h3 id="status-update-rate">Status update rate<a class="headerlink" href="#status-update-rate" title="Permanent link">&para;</a></h3>
+<p>The 3D viewer interpolates joint angles at the browser's frame rate, but the source data comes from <code>stream_status_shared</code>. At 10 Hz the robot looks jerky; 50-100 Hz gives smooth real-time rendering. Consider the tradeoff with network bandwidth and CPU load on your controller.</p>
+<h3 id="command-palette">Command palette<a class="headerlink" href="#command-palette" title="Permanent link">&para;</a></h3>
+<p><code>RobotClient</code> methods that include <code>Category:</code> and <code>Example:</code> sections in their docstrings appear in the editor's auto-complete palette. Follow this format in your client's docstrings to get easy editor integration:</p>
+<div class="highlight"><pre><span></span><code><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">move_j</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Joint-space move.</span>
+
+<span class="sd">    Category: Motion</span>
+
+<span class="sd">    Example:</span>
+<span class="sd">        rbt.move_j([0, -90, 0, 0, 0, 0], speed=0.5)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+</code></pre></div>
+<h3 id="dryrunresult-fields">DryRunResult fields<a class="headerlink" href="#dryrunresult-fields" title="Permanent link">&para;</a></h3>
+<p>The <code>DryRunResult</code> Protocol splits its fields into required and optional:</p>
+<p><strong>Required</strong> (must always be set):</p>
+<ul>
+<li><code>tcp_poses</code> -- the TCP trajectory rendered as the 3D path</li>
+<li><code>end_joints_rad</code> -- final joint angles after the motion</li>
+<li><code>duration</code> -- estimated trajectory duration; <code>0.0</code> is valid for instant motions like teleport or home</li>
+</ul>
+<p><strong>Optional</strong> (set to <code>None</code> to skip the corresponding feature):</p>
+<ul>
+<li><code>joint_trajectory_rad</code> -- full joint trajectory; required to enable timeline scrubbing playback</li>
+<li><code>valid</code> -- per-pose IK validity flags; enables green/red reachability coloring in the 3D viewer</li>
+<li><code>error</code> -- diagnostic shown when a motion fails in simulation</li>
+</ul>
+<h2 id="minimal-skeleton">Minimal skeleton<a class="headerlink" href="#minimal-skeleton" title="Permanent link">&para;</a></h2>
+<p>This is a starting structure with all required abstract methods stubbed. It compiles and gives you a scaffold to fill in:</p>
+<div class="highlight"><pre><span></span><code><span class="sd">&quot;&quot;&quot;Minimal robot backend skeleton.&quot;&quot;&quot;</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">ABC</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections.abc</span><span class="w"> </span><span class="kn">import</span> <span class="n">AsyncIterator</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Literal</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">numpy.typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">NDArray</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">waldoctl</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">waldoctl</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">CartesianKinodynamicLimits</span><span class="p">,</span>
+    <span class="n">HomePosition</span><span class="p">,</span>
+    <span class="n">IKResult</span><span class="p">,</span>
+    <span class="n">IKResultData</span><span class="p">,</span>
+    <span class="n">JointLimits</span><span class="p">,</span>
+    <span class="n">JointsSpec</span><span class="p">,</span>
+    <span class="n">KinodynamicLimits</span><span class="p">,</span>
+    <span class="n">LinearAngularLimits</span><span class="p">,</span>
+    <span class="n">MeshSpec</span><span class="p">,</span>
+    <span class="n">PingResult</span><span class="p">,</span>
+    <span class="n">PositionLimits</span><span class="p">,</span>
+    <span class="n">StatusBuffer</span><span class="p">,</span>
+    <span class="n">ToolSpec</span><span class="p">,</span>
+    <span class="n">ToolsSpec</span><span class="p">,</span>
+    <span class="n">ToolType</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">waldoctl.types</span><span class="w"> </span><span class="kn">import</span> <span class="n">Axis</span><span class="p">,</span> <span class="n">Frame</span>
+
+<span class="n">NUM_JOINTS</span> <span class="o">=</span> <span class="mi">6</span>
+
+
+<span class="c1"># -- Tool configuration ----------------------------------------------------</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">MyTools</span><span class="p">(</span><span class="n">ToolsSpec</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Bare-flange-only tool set.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_none</span> <span class="o">=</span> <span class="n">ToolSpec</span><span class="p">(</span>  <span class="c1"># type: ignore[abstract]</span>
+            <span class="n">key</span><span class="o">=</span><span class="s2">&quot;NONE&quot;</span><span class="p">,</span> <span class="n">display_name</span><span class="o">=</span><span class="s2">&quot;None&quot;</span><span class="p">,</span> <span class="n">tool_type</span><span class="o">=</span><span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span><span class="p">,</span>
+            <span class="n">tcp_origin</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">tcp_rpy</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span>
+        <span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">available</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_none</span><span class="p">,)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">default</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ToolSpec</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_none</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ToolSpec</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s2">&quot;NONE&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_none</span>
+        <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__contains__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">:</span> <span class="nb">object</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">ToolType</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">item</span> <span class="o">==</span> <span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span>
+        <span class="k">return</span> <span class="n">item</span> <span class="o">==</span> <span class="s2">&quot;NONE&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">by_type</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tool_type</span><span class="p">:</span> <span class="n">ToolType</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ToolSpec</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_none</span><span class="p">,)</span> <span class="k">if</span> <span class="n">tool_type</span> <span class="o">==</span> <span class="n">ToolType</span><span class="o">.</span><span class="n">NONE</span> <span class="k">else</span> <span class="p">()</span>
+
+
+<span class="c1"># -- Robot ------------------------------------------------------------------</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Robot</span><span class="p">(</span><span class="n">waldoctl</span><span class="o">.</span><span class="n">Robot</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Minimal Robot implementation.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">limits</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="o">-</span><span class="mi">170</span><span class="p">,</span> <span class="mi">170</span><span class="p">]]</span> <span class="o">*</span> <span class="n">NUM_JOINTS</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_joints</span> <span class="o">=</span> <span class="n">JointsSpec</span><span class="p">(</span>
+            <span class="n">count</span><span class="o">=</span><span class="n">NUM_JOINTS</span><span class="p">,</span>
+            <span class="n">names</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;J</span><span class="si">{</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="si">}</span><span class="s2">&quot;</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">)),</span>
+            <span class="n">limits</span><span class="o">=</span><span class="n">JointLimits</span><span class="p">(</span>
+                <span class="n">position</span><span class="o">=</span><span class="n">PositionLimits</span><span class="p">(</span><span class="n">deg</span><span class="o">=</span><span class="n">limits</span><span class="p">,</span> <span class="n">rad</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">limits</span><span class="p">)),</span>
+                <span class="n">hard</span><span class="o">=</span><span class="n">KinodynamicLimits</span><span class="p">(</span>
+                    <span class="n">velocity</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">,</span> <span class="mf">3.14</span><span class="p">),</span>
+                    <span class="n">acceleration</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">,</span> <span class="mf">6.28</span><span class="p">),</span>
+                <span class="p">),</span>
+                <span class="n">jog</span><span class="o">=</span><span class="n">KinodynamicLimits</span><span class="p">(</span>
+                    <span class="n">velocity</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
+                    <span class="n">acceleration</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+                <span class="p">),</span>
+            <span class="p">),</span>
+            <span class="n">home</span><span class="o">=</span><span class="n">HomePosition</span><span class="p">(</span>
+                <span class="n">deg</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">),</span>
+                <span class="n">rad</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">),</span>
+            <span class="p">),</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_tools</span> <span class="o">=</span> <span class="n">MyTools</span><span class="p">()</span>
+
+    <span class="c1"># -- Identity</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">name</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">&quot;MyRobot&quot;</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">position_unit</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;mm&quot;</span><span class="p">,</span> <span class="s2">&quot;m&quot;</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="s2">&quot;mm&quot;</span>
+
+    <span class="c1"># -- Joint / tool / limit configuration</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">joints</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">JointsSpec</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_joints</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">tools</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ToolsSpec</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tools</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">cartesian_limits</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">CartesianKinodynamicLimits</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">CartesianKinodynamicLimits</span><span class="p">(</span>
+            <span class="n">velocity</span><span class="o">=</span><span class="n">LinearAngularLimits</span><span class="p">(</span><span class="n">linear</span><span class="o">=</span><span class="mf">0.25</span><span class="p">,</span> <span class="n">angular</span><span class="o">=</span><span class="mf">1.0</span><span class="p">),</span>
+            <span class="n">acceleration</span><span class="o">=</span><span class="n">LinearAngularLimits</span><span class="p">(</span><span class="n">linear</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">angular</span><span class="o">=</span><span class="mf">4.0</span><span class="p">),</span>
+        <span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">digital_outputs</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+        <span class="k">return</span> <span class="mi">0</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">digital_inputs</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+        <span class="k">return</span> <span class="mi">0</span>
+
+    <span class="c1"># -- Visualization</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">urdf_path</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">parent</span> <span class="o">/</span> <span class="s2">&quot;urdf&quot;</span> <span class="o">/</span> <span class="s2">&quot;my_robot.urdf&quot;</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">mesh_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="vm">__file__</span><span class="p">)</span><span class="o">.</span><span class="n">parent</span> <span class="o">/</span> <span class="s2">&quot;urdf&quot;</span> <span class="o">/</span> <span class="s2">&quot;meshes&quot;</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">joint_index_mapping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="n">NUM_JOINTS</span><span class="p">))</span>
+
+    <span class="c1"># -- Backend injection</span>
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">backend_package</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">&quot;my_robot&quot;</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">sync_client_class</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">type</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">SyncClient</span>  <span class="c1"># defined in your package</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">async_client_class</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">type</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">AsyncClient</span>
+
+    <span class="c1"># -- Kinematics (replace with your actual solver)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">fk</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">q_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">,</span> <span class="n">out</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NDArray</span><span class="p">:</span>
+        <span class="n">out</span><span class="p">[:]</span> <span class="o">=</span> <span class="mf">0.0</span>  <span class="c1"># placeholder</span>
+        <span class="k">return</span> <span class="n">out</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">ik</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pose</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">,</span> <span class="n">q_seed_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">IKResult</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">IKResultData</span><span class="p">(</span><span class="n">q</span><span class="o">=</span><span class="n">q_seed_rad</span><span class="o">.</span><span class="n">copy</span><span class="p">(),</span> <span class="n">success</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">violations</span><span class="o">=</span><span class="s2">&quot;not implemented&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">fk_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">joint_path_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">NDArray</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="nb">len</span><span class="p">(</span><span class="n">joint_path_rad</span><span class="p">),</span> <span class="mi">6</span><span class="p">))</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">ik_batch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">poses</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">,</span> <span class="n">q_start_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">IKResult</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">ik</span><span class="p">(</span><span class="n">p</span><span class="p">,</span> <span class="n">q_start_rad</span><span class="p">)</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">poses</span><span class="p">]</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">set_active_tool</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tool_key</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">tcp_offset_m</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">variant_key</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>  <span class="c1"># apply tool transform to FK/IK model</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">check_limits</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">q_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="n">lim</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_joints</span><span class="o">.</span><span class="n">limits</span><span class="o">.</span><span class="n">position</span><span class="o">.</span><span class="n">rad</span>
+        <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">((</span><span class="n">q_rad</span> <span class="o">&gt;=</span> <span class="n">lim</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">])</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">q_rad</span> <span class="o">&lt;=</span> <span class="n">lim</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">])))</span>
+
+    <span class="c1"># -- Lifecycle</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>  <span class="c1"># connect to hardware / start subprocess</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_available</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="c1"># -- Factories</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">create_async_client</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncClient</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">AsyncClient</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">create_sync_client</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">object</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">SyncClient</span><span class="p">()</span>
+
+
+<span class="c1"># -- AsyncRobotClient -------------------------------------------------------</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">AsyncClient</span><span class="p">(</span><span class="n">waldoctl</span><span class="o">.</span><span class="n">RobotClient</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Minimal async client -- fill in with your SDK calls.&quot;&quot;&quot;</span>
+
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span> <span class="o">...</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">ping</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">PingResult</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="n">PingResult</span><span class="p">(</span><span class="n">hardware_connected</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">wait_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span> <span class="n">interval</span><span class="o">=</span><span class="mf">0.05</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span> <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="c1"># Status streaming</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">status_stream</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncIterator</span><span class="p">[</span><span class="n">StatusBuffer</span><span class="p">]:</span> <span class="o">...</span>  <span class="c1"># type: ignore[override]</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">status_stream_shared</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncIterator</span><span class="p">[</span><span class="n">StatusBuffer</span><span class="p">]:</span> <span class="o">...</span>  <span class="c1"># type: ignore[override]</span>
+
+    <span class="c1"># Trajectory-planned motion</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">move_j</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">move_l</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pose</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">home</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+
+    <span class="c1"># Streaming position</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">servo_j</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">servo_l</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pose</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+
+    <span class="c1"># Streaming velocity</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">jog_j</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">joint</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">duration</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">jog_l</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="o">=</span><span class="s2">&quot;WRF&quot;</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">speed</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">duration</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="o">-</span><span class="mi">1</span>
+
+    <span class="c1"># Synchronization</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">wait_motion</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span> <span class="o">**</span><span class="n">kw</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span> <span class="k">return</span> <span class="kc">True</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">wait_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">command_index</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">10.0</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span> <span class="k">return</span> <span class="kc">True</span>
+
+    <span class="c1"># Safety</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">resume</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="mi">0</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">halt</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="mi">0</span>
+
+    <span class="c1"># Simulator</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">simulator</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="mi">0</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">is_simulator</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span> <span class="k">return</span> <span class="kc">True</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">teleport</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">angles_deg</span><span class="p">,</span> <span class="n">tool_positions</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="k">return</span> <span class="mi">0</span>
+
+    <span class="c1"># Queries</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">angles</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">]</span> <span class="o">*</span> <span class="n">NUM_JOINTS</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">pose</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">frame</span><span class="o">=</span><span class="s2">&quot;WRF&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span> <span class="k">return</span> <span class="p">[</span><span class="mf">0.0</span><span class="p">]</span> <span class="o">*</span> <span class="mi">6</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">SyncClient</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Synchronous variant -- same method names, blocking calls.&quot;&quot;&quot;</span>
+    <span class="o">...</span>
+</code></pre></div>
+<h2 id="feature-to-method-mapping">Feature-to-method mapping<a class="headerlink" href="#feature-to-method-mapping" title="Permanent link">&para;</a></h2>
+<p>This table shows which Waldo Commander features depend on which backend methods and properties. Use it to prioritize your implementation -- start with the top rows for a functional robot, then work down for richer integration.</p>
+<table>
+<thead>
+<tr>
+<th>Feature</th>
+<th>Required methods / properties</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3D viewer</td>
+<td><code>urdf_path</code>, <code>mesh_dir</code>, <code>joint_index_mapping</code>, <code>fk</code></td>
+</tr>
+<tr>
+<td>Live telemetry</td>
+<td><code>stream_status_shared</code></td>
+</tr>
+<tr>
+<td>Connection status</td>
+<td><code>ping</code></td>
+</tr>
+<tr>
+<td>E-stop / resume</td>
+<td><code>halt</code>, <code>resume</code></td>
+</tr>
+<tr>
+<td>Home</td>
+<td><code>home</code></td>
+</tr>
+<tr>
+<td>Joint jogging</td>
+<td><code>jog_j</code>, <code>servo_j</code></td>
+</tr>
+<tr>
+<td>Cartesian jogging</td>
+<td><code>jog_l</code>, <code>servo_l</code></td>
+</tr>
+<tr>
+<td>Script execution</td>
+<td><code>move_j</code>, <code>move_l</code>, <code>wait_motion</code></td>
+</tr>
+<tr>
+<td>Simulator mode</td>
+<td><code>simulator</code>, <code>is_simulator</code>, <code>teleport</code></td>
+</tr>
+<tr>
+<td>Path preview</td>
+<td><code>DryRunClient</code> (<code>move_j</code>, <code>move_l</code>, <code>home</code>, <code>flush</code>)</td>
+</tr>
+<tr>
+<td>Simulation playback</td>
+<td><code>DryRunClient</code> + <code>joint_trajectory_rad</code> in <code>DryRunResult</code> + simulator mode</td>
+</tr>
+<tr>
+<td>I/O panel</td>
+<td><code>digital_inputs</code>, <code>digital_outputs</code>, <code>io</code>, <code>write_io</code></td>
+</tr>
+<tr>
+<td>Tool action buttons</td>
+<td><code>ToolSpec</code> with <code>action_l_labels</code> / <code>action_r_labels</code> + <code>tool_action</code></td>
+</tr>
+<tr>
+<td>Gripper panel</td>
+<td><code>ToolsSpec</code> with <code>GripperTool</code> + <code>tool_action</code></td>
+</tr>
+<tr>
+<td>Gripper data charts</td>
+<td><code>ElectricGripperTool</code> + <code>channel_descriptors</code> + <code>ToolStatus.channels</code></td>
+</tr>
+<tr>
+<td>Command palette</td>
+<td><code>Category:</code> / <code>Example:</code> in method docstrings</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

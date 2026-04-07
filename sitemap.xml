@@ -2,6 +2,18 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://jepson2k.github.io/PAROL-Web-Commander/</loc>
-         <lastmod>2026-03-29</lastmod>
+         <lastmod>2026-04-07</lastmod>
+    </url>
+    <url>
+         <loc>https://jepson2k.github.io/PAROL-Web-Commander/guides/api-reference/</loc>
+         <lastmod>2026-04-07</lastmod>
+    </url>
+    <url>
+         <loc>https://jepson2k.github.io/PAROL-Web-Commander/guides/backend-development/</loc>
+         <lastmod>2026-04-07</lastmod>
+    </url>
+    <url>
+         <loc>https://jepson2k.github.io/PAROL-Web-Commander/guides/writing-programs/</loc>
+         <lastmod>2026-04-07</lastmod>
     </url>
 </urlset>

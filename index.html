@@ -12,6 +12,8 @@
       
       
       
+        <link rel="next" href="guides/writing-programs/">
+      
       
         
       
@@ -21,7 +23,7 @@
     
     
       
-        <title>PAROL Web Commander</title>
+        <title>Waldo Commander</title>
       
     
     
@@ -47,6 +49,8 @@
       
     
     
+      <link rel="stylesheet" href="assets/_mkdocstrings.css">
+    
     <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
@@ -57,6 +61,8 @@
   
   
     
+    
+      
     
     
     
@@ -70,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#quick-start-tutorials" class="md-skip">
+        <a href="#waldo-commander" class="md-skip">
           Skip to content
         </a>
       
@@ -86,7 +92,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="PAROL Web Commander" class="md-header__button md-logo" aria-label="PAROL Web Commander" data-md-component="logo">
+    <a href="." title="Waldo Commander" class="md-header__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -100,13 +106,13 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            PAROL Web Commander
+            Waldo Commander
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Quick Start Tutorials
+              Home
             
           </span>
         </div>
@@ -114,7 +120,33 @@
     </div>
     
       
+        <form class="md-header__option" data-md-component="palette">
+  
     
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
     
     
     
@@ -196,13 +228,13 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="PAROL Web Commander" class="md-nav__button md-logo" aria-label="PAROL Web Commander" data-md-component="logo">
+    <a href="." title="Waldo Commander" class="md-nav__button md-logo" aria-label="Waldo Commander" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    PAROL Web Commander
+    Waldo Commander
   </label>
   
     <div class="md-nav__source">
@@ -242,7 +274,7 @@
   <span class="md-ellipsis">
     
   
-    Quick Start Tutorials
+    Home
   
 
     
@@ -260,7 +292,7 @@
   <span class="md-ellipsis">
     
   
-    Quick Start Tutorials
+    Home
   
 
     
@@ -286,6 +318,18 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#getting-started" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting Started
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Getting Started">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#basic-controls" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -295,12 +339,122 @@
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#connecting-to-your-robot" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#connecting-your-robot" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Connecting to Your Robot
+        Connecting Your Robot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#programming-recording-and-path-visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Programming, Recording, and Path Visualization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#io-and-tool-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        I/O and Tool Control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#camera-feed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Camera Feed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cli-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#settings-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Settings Panel
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-on-a-remote-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running on a Remote Machine
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#contributing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contributing
       
     </span>
   </a>
@@ -308,24 +462,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#attaching-a-tool" class="md-nav__link">
+  <a href="#about" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Attaching a Tool
+        About
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="About">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#license" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        License
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#recording-playback" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Recording &amp; Playback
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -333,6 +493,87 @@
   
 </nav>
       
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="guides/writing-programs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Writing Programs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="guides/api-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="guides/backend-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backend Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -364,6 +605,18 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#getting-started" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Getting Started
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Getting Started">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
   <a href="#basic-controls" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -373,12 +626,122 @@
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#connecting-to-your-robot" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#connecting-your-robot" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Connecting to Your Robot
+        Connecting Your Robot
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#programming-recording-and-path-visualization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Programming, Recording, and Path Visualization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#io-and-tool-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        I/O and Tool Control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#camera-feed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Camera Feed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cli-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI Options
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Environment Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#settings-panel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Settings Panel
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-on-a-remote-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running on a Remote Machine
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#contributing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contributing
       
     </span>
   </a>
@@ -386,24 +749,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#attaching-a-tool" class="md-nav__link">
+  <a href="#about" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Attaching a Tool
+        About
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="About">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#license" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        License
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#recording-playback" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Recording &amp; Playback
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -427,27 +796,225 @@
   
 
 
-<h1 id="quick-start-tutorials">Quick Start Tutorials</h1>
-<p>Short overviews to get you up and running with PAROL Web Commander.</p>
-<h2 id="basic-controls">Basic Controls</h2>
+<h1 id="waldo-commander">Waldo Commander<a class="headerlink" href="#waldo-commander" title="Permanent link">&para;</a></h1>
+<p>A web interface for controlling robotic arms, currently tested with the <a href="https://github.com/PCrnjak/PAROL6-Desktop-robot-arm">PAROL6</a> robot.</p>
+<p><img alt="Waldo Commander" src="assets/img/readme_screenshot.png" /></p>
+<ul>
+<li><strong>Browser-based.</strong> Control from any device on the network without being tethered to the arm.</li>
+<li><strong>Python programs.</strong> Write robot programs in Python with loops, math, and libraries. Built-in editor with auto-complete, live output, and step-through debugging.</li>
+<li><strong>3D simulation.</strong> Preview motion paths, check reachability, and scrub through the timeline — no physical robot needed.</li>
+<li><strong>Teach by demonstration.</strong> Control the robot live and record the motions as Python code.</li>
+<li><strong>Backend-agnostic.</strong> Robot-specific logic lives behind the <a href="https://github.com/Jepson2k/waldoctl">waldoctl</a> abstraction layer. Other robots can be integrated by implementing the same interfaces — see the <a href="guides/backend-development/">Backend Development Guide</a>.</li>
+</ul>
+<hr />
+<h2 id="getting-started">Getting Started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h2>
+<p>Requires Python 3.12+. Runs on Linux, macOS, and Windows.</p>
+<div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Jepson2k/PAROL-Web-Commander.git
+<span class="nb">cd</span><span class="w"> </span>PAROL-Web-Commander
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[parol6]&quot;</span>
+waldo-commander
+</code></pre></div>
+<p>Open the printed URL. No robot connected? The app auto-starts in simulator mode.</p>
+<h3 id="basic-controls">Basic Controls<a class="headerlink" href="#basic-controls" title="Permanent link">&para;</a></h3>
+<p>Jog in joint space (one joint at a time) or Cartesian space (translate in XYZ, rotate around RX/RY/RZ). Cartesian translation currently operates in the World reference frame while cartesian rotation operates in Tool reference frame. Future support is planned for additional reference frames.</p>
+<p>Keyboard shortcuts: <strong>WASD</strong> + <strong>Q/E</strong> for Cartesian movement, <strong>[/]</strong> to adjust speed. Clicking a jog button or key sends a single step; holding it jogs continuously until you release.</p>
 <video controls width="100%">
   <source src="videos/basic_control.mp4" type="video/mp4">
 </video>
 
-<h2 id="connecting-to-your-robot">Connecting to Your Robot</h2>
+<h3 id="connecting-your-robot">Connecting Your Robot<a class="headerlink" href="#connecting-your-robot" title="Permanent link">&para;</a></h3>
+<p>In the control panel, switch to the <strong>Settings</strong> tab and select your hardware connection — the port is applied automatically. On Linux you'll need access to the serial device — add yourself to the <code>dialout</code> group or set up a udev rule. Connection status is shown in the top right corner.</p>
+<ul>
+<li><span style="color: #4caf50">&#9632;</span> Connected to robot hardware</li>
+<li><span style="color: #f44336">&#9632;</span> Robot mode but disconnected</li>
+<li><span style="color: #9e9e9e">&#9632;</span> Simulator mode</li>
+</ul>
 <video controls width="100%">
   <source src="videos/connecting_to_robot.mp4" type="video/mp4">
 </video>
 
-<h2 id="attaching-a-tool">Attaching a Tool</h2>
+<h3 id="programming-recording-and-path-visualization">Programming, Recording, and Path Visualization<a class="headerlink" href="#programming-recording-and-path-visualization" title="Permanent link">&para;</a></h3>
+<p>Write robot programs in Python using the built-in editor with auto-complete for all robot commands. Or jog the robot into position and let the recorder generate <code>move_j</code> / <code>move_l</code> calls for you — I/O and tool actions are captured too. Right-click in the 3D view to place targets, press <strong>T</strong> to add one at the current pose, or drag existing targets with the gizmo to reposition them.</p>
+<p>Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.</p>
+<video controls width="100%">
+  <source src="videos/recording_and_previewing_actions.mp4" type="video/mp4">
+</video>
+
+<h3 id="io-and-tool-control">I/O and Tool Control<a class="headerlink" href="#io-and-tool-control" title="Permanent link">&para;</a></h3>
+<p>Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens in the Settings tab; the 3D model updates to show the attached tool.</p>
 <video controls width="100%">
   <source src="videos/attaching_a_tool.mp4" type="video/mp4">
 </video>
 
-<h2 id="recording-playback">Recording &amp; Playback</h2>
-<video controls width="100%">
-  <source src="videos/recording_and_previewing_actions.mp4" type="video/mp4">
-</video>
+<h3 id="camera-feed">Camera Feed<a class="headerlink" href="#camera-feed" title="Permanent link">&para;</a></h3>
+<p>An MJPEG camera stream can be displayed in the gripper panel — useful for monitoring pick-and-place or running ML inference on the end-effector view. On Linux, frames pass straight from the kernel to the browser via v4l2 with zero re-encoding. Virtual camera devices work too — pipe a CV pipeline through <code>pyvirtualcam</code> and display the annotated feed.</p>
+<hr />
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<h3 id="cli-options">CLI Options<a class="headerlink" href="#cli-options" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>waldo-commander<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--host HOST</code></td>
+<td>Webserver bind host</td>
+<td><code>0.0.0.0</code></td>
+</tr>
+<tr>
+<td><code>--port PORT</code></td>
+<td>Webserver bind port</td>
+<td><code>8080</code></td>
+</tr>
+<tr>
+<td><code>--controller-host HOST</code></td>
+<td>Controller host to connect to</td>
+<td><code>127.0.0.1</code></td>
+</tr>
+<tr>
+<td><code>--controller-port PORT</code></td>
+<td>Controller port</td>
+<td><code>5001</code></td>
+</tr>
+<tr>
+<td><code>--log-level LEVEL</code></td>
+<td>Set log level (TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL)</td>
+<td><code>WARNING</code></td>
+</tr>
+<tr>
+<td><code>-v</code>, <code>-vv</code></td>
+<td>Increase verbosity (INFO / DEBUG)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>-q</code></td>
+<td>Enable WARNING logging</td>
+<td></td>
+</tr>
+<tr>
+<td><code>--reload</code></td>
+<td>Auto-reload on file changes (dev mode)</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="environment-variables">Environment Variables<a class="headerlink" href="#environment-variables" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>WALDO_CONTROLLER_IP</code></td>
+<td>Controller host</td>
+<td><code>127.0.0.1</code></td>
+</tr>
+<tr>
+<td><code>WALDO_CONTROLLER_PORT</code></td>
+<td>Controller port</td>
+<td><code>5001</code></td>
+</tr>
+<tr>
+<td><code>WALDO_SERVER_IP</code></td>
+<td>NiceGUI bind host</td>
+<td><code>0.0.0.0</code></td>
+</tr>
+<tr>
+<td><code>WALDO_SERVER_PORT</code></td>
+<td>NiceGUI HTTP port</td>
+<td><code>8080</code></td>
+</tr>
+<tr>
+<td><code>WALDO_AUTO_START</code></td>
+<td>Auto-start the backend controller on app launch</td>
+<td><code>1</code></td>
+</tr>
+<tr>
+<td><code>WALDO_LOG_LEVEL</code></td>
+<td>Logging level (<code>DEBUG</code>, <code>INFO</code>, <code>WARNING</code>, <code>ERROR</code>, <code>CRITICAL</code>)</td>
+<td><code>WARNING</code></td>
+</tr>
+<tr>
+<td><code>WALDO_WEBAPP_CONTROL_RATE_HZ</code></td>
+<td>Jog command emission rate from the UI</td>
+<td><code>20</code></td>
+</tr>
+<tr>
+<td><code>WALDO_WEBAPP_AUTO_SIMULATOR</code></td>
+<td>Auto-enable simulator when no hardware connection is configured</td>
+<td><code>1</code></td>
+</tr>
+<tr>
+<td><code>WALDO_WEBAPP_REQUIRE_READY</code></td>
+<td>Wait for backend ready and enable status streaming on startup</td>
+<td><code>1</code></td>
+</tr>
+<tr>
+<td><code>WALDO_TRACE</code></td>
+<td>Enable TRACE-level logging in console and UI logs</td>
+<td>off</td>
+</tr>
+<tr>
+<td><code>WALDO_EXCLUSIVE_START</code></td>
+<td>Require exclusive controller ownership on start</td>
+<td><code>1</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="settings-panel">Settings Panel<a class="headerlink" href="#settings-panel" title="Permanent link">&para;</a></h3>
+<p>The <strong>Settings</strong> tab in the control panel provides:</p>
+<ul>
+<li><strong>Hardware connection</strong> — auto-detects available ports, or enter a path manually. Refreshes every 10 seconds. Persisted in browser local storage.</li>
+<li><strong>Theme</strong> — currently dark only. Light mode is planned for a future update.</li>
+<li><strong>Motion profile</strong> — selects the trajectory planner used for planned motions. Available profiles depend on the backend. See the <a href="https://github.com/Jepson2k/PAROL6-python-API#motion-profiles">PAROL6 motion profiles</a> documentation for the profiles available with the default backend.</li>
+<li><strong>Workspace envelope</strong> — an approximate visualization of the robot's reachable space. Computed by running FK on a grid of ~500k joint configurations and taking the convex hull of the resulting TCP positions. This gives an outer boundary — not every point inside the hull is necessarily reachable.<ul>
+<li><strong>Auto</strong> — shows a clipped section of the envelope only when the TCP approaches the boundary (within 100mm). Gives you a heads-up without cluttering the view.</li>
+<li><strong>On</strong> — always visible as a full translucent shell.</li>
+<li><strong>Off</strong> — hidden.</li>
+</ul>
+</li>
+<li><strong>Camera</strong> — select a video device for the gripper panel feed, often used for monitoring pick-and-place or running ML inference on the end-effector view. If you'd like to add annotations to the camera feed, you can do so by processing the raw webcam in your own script and outputting to a virtual camera via pyvirtualcam + v4l2loopback — then just select that virtual device here. On Linux: <code>sudo apt install v4l2loopback-dkms</code>.</li>
+<li><strong>Tool</strong> — select the active end-effector from the tools the backend provides. See the <a href="https://github.com/Jepson2k/PAROL6-python-API#tools">PAROL6 tools</a> documentation for the tools available with the default backend. Changing the tool updates the TCP offset for Cartesian calculations, swaps the tool mesh in the 3D view, and re-runs any active simulation. If a tool has variants (e.g. different jaw sets), a variant selector appears. A per-tool TCP offset field lets you fine-tune the tool tip position in mm.</li>
+</ul>
+<h3 id="running-on-a-remote-machine">Running on a Remote Machine<a class="headerlink" href="#running-on-a-remote-machine" title="Permanent link">&para;</a></h3>
+<p>If your backend controller runs on a different machine than the web UI:</p>
+<ol>
+<li>Start the controller on the machine connected to the robot.</li>
+<li>Ensure the controller's port is accessible from the UI machine.</li>
+<li>Set <code>WALDO_CONTROLLER_IP</code> and <code>WALDO_CONTROLLER_PORT</code> on the UI machine.</li>
+</ol>
+<p>For lowest latency, run the web UI and controller on the same machine.</p>
+<hr />
+<h2 id="contributing">Contributing<a class="headerlink" href="#contributing" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[dev]&quot;</span>
+pre-commit<span class="w"> </span>install
+</code></pre></div>
+<p>Pre-commit hooks run ruff (linter + formatter) and ty (type checker) on every commit. Tests use pytest:</p>
+<div class="highlight"><pre><span></span><code>pytest
+</code></pre></div>
+<hr />
+<h2 id="about">About<a class="headerlink" href="#about" title="Permanent link">&para;</a></h2>
+<p>Waldo Commander builds on the open-source PAROL6 robotics ecosystem:</p>
+<ul>
+<li><a href="https://github.com/PCrnjak/PAROL6-Desktop-robot-arm">PAROL6 Desktop Robot Arm</a> — hardware designs and BOM by Source Robotics</li>
+<li><a href="https://github.com/Jepson2k/PAROL6-python-API">PAROL6 Python API</a> — headless controller and UDP client</li>
+<li><a href="https://github.com/Jepson2k/waldoctl">waldoctl</a> — robot backend abstraction layer</li>
+<li><a href="https://github.com/Jepson2k/pinokin">pinokin</a> — Pinocchio-based FK/IK bindings</li>
+</ul>
+<p>The web interface is built with <a href="https://nicegui.io/">NiceGUI</a>.</p>
+<p>The name "Waldo" comes from Robert Heinlein's 1942 story <em>Waldo</em>, about remote manipulator devices — the concept that inspired the real-world term "waldo" for teleoperated arms.</p>
+<h3 id="license">License<a class="headerlink" href="#license" title="Permanent link">&para;</a></h3>
+<p>See the <a href="https://github.com/Jepson2k/PAROL-Web-Commander/blob/main/LICENSE">LICENSE</a> file.</p>
 
 
 
@@ -497,7 +1064,7 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": [], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.sections", "content.code.copy", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
       <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
