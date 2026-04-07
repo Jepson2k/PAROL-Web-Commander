@@ -1,8 +1,10 @@
 """Browser tests for editor ↔ 3D visualization features.
 
-Tests verify:
-- Infeasible timing decorations appear in the editor (amber mark + min time annotation)
-- Moving the cursor in the editor highlights the corresponding path segment in the 3D scene
+Tests verify that moving the cursor in the editor highlights the
+corresponding path segment in the 3D scene.
+
+(Infeasible-timing diagnostics are covered as a non-browser unit test in
+``tests/test_simulation_services.py`` against the new lint diagnostic API.)
 
 All tests share a single browser session via class_screen fixture.
 """
@@ -10,12 +12,11 @@ All tests share a single browser session via class_screen fixture.
 from typing import TYPE_CHECKING
 
 import pytest
-from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 
 from tests.helpers.browser_helpers import click_tab, wait_for_codemirror_ready
-from tests.helpers.wait import screen_wait_for_condition, screen_wait_for_scene_ready
+from tests.helpers.wait import screen_wait_for_scene_ready
 
 if TYPE_CHECKING:
     from nicegui.testing.screen import Screen
@@ -46,20 +47,6 @@ def _clean_stale_state():
 # ============================================================================
 # Local helpers
 # ============================================================================
-
-
-def _wait_for_websocket(screen: "Screen", timeout_s: float = 15.0) -> None:
-    """Wait for NiceGUI websocket handshake to complete.
-
-    Until ``window.did_handshake`` is true, component events emitted from the
-    browser (like CodeMirror ``on_change``) are silently queued/lost.
-    """
-    screen_wait_for_condition(
-        screen,
-        "window.did_handshake === true",
-        timeout_s,
-        label="websocket handshake",
-    )
 
 
 def set_editor_content(screen: "Screen", content: str) -> None:
@@ -199,15 +186,6 @@ class PathColorsStableAfterChange:
 # Tests
 # ============================================================================
 
-# Program with an infeasible duration (0.01s is way too fast for any real move)
-_PROGRAM_INFEASIBLE_TIMING = """\
-import parol6
-
-async def main():
-    async with parol6.AsyncRobotClient() as rbt:
-        await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
-"""
-
 # Program with two moves for cursor-line highlighting (each on a distinct line)
 _PROGRAM_TWO_MOVES = """\
 import parol6
@@ -222,56 +200,6 @@ async def main():
 @pytest.mark.browser
 class TestEditorVisualization:
     """Browser tests for editor ↔ 3D scene visualization."""
-
-    def test_timing_decorations_for_infeasible_duration(
-        self, class_screen: "Screen"
-    ) -> None:
-        """Infeasible duration=0.01 should produce amber timing warning decorations."""
-        # Wait for 3D scene + websocket handshake (events are lost until handshake)
-        screen_wait_for_scene_ready(class_screen)
-        _wait_for_websocket(class_screen)
-
-        # Open program tab and wait for CodeMirror
-        click_tab(class_screen, "program")
-        wait_for_codemirror_ready(class_screen)
-
-        # Replace editor content with the infeasible-timing program
-        set_editor_content(class_screen, _PROGRAM_INFEASIBLE_TIMING)
-
-        # Wait for timing warning mark to appear
-        # (debounce 1s + simulation + possible second cycle from TARGET annotation)
-        try:
-            warning_marks = WebDriverWait(class_screen.selenium, 30).until(
-                lambda d: d.find_elements(By.CSS_SELECTOR, ".cm-timing-warning-mark")
-                or False
-            )
-        except TimeoutException:
-            # Capture diagnostic info on failure
-            cm_content = class_screen.selenium.execute_script(
-                "const c = document.querySelector('.cm-content');"
-                "return c && c.cmView ? c.cmView.view.state.doc.toString() : '<no cm>';"
-            )
-            cm_classes = class_screen.selenium.execute_script(
-                "return Array.from(document.querySelectorAll('[class*=cm-timing]')).map(e => e.className);"
-            )
-            raise AssertionError(
-                f"Timing decorations not found after 30s. "
-                f"CM content starts with: {(cm_content or '')[:120]!r}, "
-                f"timing-related classes: {cm_classes}"
-            )
-        assert len(warning_marks) > 0, "Expected .cm-timing-warning-mark span"
-
-        # Verify the line decoration with data-timing attribute
-        timing_lines = class_screen.selenium.find_elements(
-            By.CSS_SELECTOR, ".cm-line.cm-timing-warning"
-        )
-        assert len(timing_lines) > 0, "Expected .cm-line.cm-timing-warning element"
-
-        data_timing = timing_lines[0].get_attribute("data-timing")
-        assert data_timing is not None, "Expected data-timing attribute on line"
-        assert data_timing.startswith("min:"), (
-            f"Expected data-timing to start with 'min:', got '{data_timing}'"
-        )
 
     def test_cursor_line_highlights_path_in_scene(self, class_screen: "Screen") -> None:
         """Moving cursor to a move-command line applies a glow highlight to its path segment."""

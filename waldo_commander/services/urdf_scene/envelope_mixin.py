@@ -83,9 +83,9 @@ def _save_hull_as_stl(vertices: np.ndarray, faces: np.ndarray, path: Path) -> bo
 
         # Create mesh from hull data using vectorized indexing
         hull_mesh = stl_mesh.Mesh(np.zeros(len(faces), dtype=stl_mesh.Mesh.dtype))
-        hull_mesh.vectors = vertices[faces]  # Advanced indexing: (F, 3, 3)
+        hull_mesh.vectors = vertices[faces]  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
 
-        hull_mesh.save(str(path))
+        hull_mesh.save(str(path))  # type: ignore[union-attr]  # ty: ignore[unresolved-attribute]
         logger.info("Saved workspace hull STL to %s", path)
         return True
     except Exception as e:

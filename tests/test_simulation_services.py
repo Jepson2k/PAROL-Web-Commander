@@ -929,6 +929,39 @@ async def main():
         )
 
     @pytest.mark.asyncio
+    async def test_infeasible_duration_marks_segment_not_timing_feasible(self):
+        """A move with an unrealistically short duration produces a path segment
+        with timing_feasible=False so the editor can surface a warning diagnostic.
+        """
+        visualizer = PathVisualizer()
+
+        program = """
+import parol6
+
+async def main():
+    async with parol6.AsyncRobotClient() as rbt:
+        await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
+"""
+
+        await visualizer.update_path_visualization(program)
+
+        assert len(simulation_state.path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
+        )
+
+        infeasible = [
+            s for s in simulation_state.path_segments if not s.timing_feasible
+        ]
+        assert len(infeasible) >= 1, (
+            "Expected at least one segment with timing_feasible=False; "
+            f"got {[s.timing_feasible for s in simulation_state.path_segments]}"
+        )
+        seg = infeasible[0]
+        assert seg.estimated_duration is not None and seg.estimated_duration > 0.01, (
+            f"Expected estimated_duration > requested 0.01s, got {seg.estimated_duration}"
+        )
+
+    @pytest.mark.asyncio
     async def test_move_with_variables_no_target_created(self):
         """Moves with variable arguments should visualize but NOT create targets.
 
