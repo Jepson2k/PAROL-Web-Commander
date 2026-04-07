@@ -11,6 +11,14 @@ test-results.xml
 *.nbc
 *.nbi
 
+# MkDocs build output
+site/
+
 # Local development directories
 PAROL6-Desktop-robot-arm/
+PAROL6-python-API/
+Spectral-Micro-BLDC-controller/
 nicegui/
+pinokin/
+tools/
+waldoctl/

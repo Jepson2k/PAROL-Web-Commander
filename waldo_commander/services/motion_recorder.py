@@ -3,11 +3,9 @@
 import logging
 import re
 import time
-import uuid
 from dataclasses import dataclass
 
 import numpy as np
-from pinokin import se3_rpy
 
 from waldo_commander.state import (
     editor_tabs_state,
@@ -18,11 +16,6 @@ from waldo_commander.state import (
 from waldo_commander.common.logging_config import TRACE_ENABLED
 
 logger = logging.getLogger(__name__)
-
-# Methods whose recorded code gets TARGET:uuid markers for interactive 3D editing.
-# Only methods with literal list arguments (positions/angles) benefit from markers,
-# since those can be interactively edited by dragging targets in the 3D scene.
-EDITABLE_TARGET_METHODS = frozenset({"moveJ", "moveL"})
 
 
 @dataclass
@@ -53,19 +46,15 @@ class MotionRecorder:
     def _get_wrf_pose(self) -> list[float]:
         """Get current TCP pose in World Reference Frame (always WRF).
 
-        Returns [x, y, z, rx, ry, rz] in mm/deg with RPY order='xyz'.
+        Returns [x, y, z, rx, ry, rz] in mm/deg.
         """
-        T = robot_state.pose.reshape(4, 4)
-        rpy_rad = np.zeros(3, dtype=np.float64)
-        se3_rpy(T, rpy_rad)
-        rpy_deg = np.degrees(rpy_rad)
         return [
-            float(T[0, 3]),
-            float(T[1, 3]),
-            float(T[2, 3]),
-            float(rpy_deg[0]),
-            float(rpy_deg[1]),
-            float(rpy_deg[2]),
+            robot_state.x,
+            robot_state.y,
+            robot_state.z,
+            robot_state.rx,
+            robot_state.ry,
+            robot_state.rz,
         ]
 
     def _get_current_angles(self) -> list[float]:
@@ -98,11 +87,11 @@ class MotionRecorder:
             if info["category"] in ("Motion", "Jog", "Streaming")
         )
 
-    def _ensure_set_tool(self, tool_key: str, variant_key: str = "") -> None:
-        """Ensure rbt.set_tool() is in the script before the first move command.
+    def _ensure_select_tool(self, tool_key: str, variant_key: str = "") -> None:
+        """Ensure rbt.select_tool() is in the script before the first move command.
 
-        If an existing set_tool line is found, update it. Otherwise insert one
-        before the first motion command (home, moveJ, moveL, etc.).
+        If an existing select_tool line is found, update it. Otherwise insert one
+        before the first motion command (home, move_j, move_l, etc.).
         """
         textarea = ui_state.editor_panel.program_textarea
         if not textarea:
@@ -111,21 +100,23 @@ class MotionRecorder:
         lines = list(val.split("\n"))
 
         if variant_key:
-            set_tool_line = f'rbt.set_tool("{tool_key}", variant_key="{variant_key}")'
+            set_tool_line = (
+                f'rbt.select_tool("{tool_key}", variant_key="{variant_key}")'
+            )
         else:
-            set_tool_line = f'rbt.set_tool("{tool_key}")'
-        set_tool_re = re.compile(r"^\s*rbt\.\s*set_tool\s*\(")
+            set_tool_line = f'rbt.select_tool("{tool_key}")'
+        set_tool_re = re.compile(r"^\s*rbt\.\s*select_tool\s*\(")
 
-        # Check for existing set_tool line
+        # Check for existing select_tool line
         for i, line in enumerate(lines):
             if set_tool_re.match(line):
-                # Update existing set_tool with current tool
+                # Update existing select_tool with current tool
                 lines[i] = set_tool_line
                 textarea.value = "\n".join(lines)
-                logger.info("Updated existing set_tool to %s", tool_key)
+                logger.info("Updated existing select_tool to %s", tool_key)
                 return
 
-        # No existing set_tool — insert before first motion command
+        # No existing select_tool — insert before first motion command
         motion_names = self._get_motion_cmd_names()
         motion_re = re.compile(
             r"^\s*rbt\.(" + "|".join(re.escape(n) for n in motion_names) + r")\s*\("
@@ -134,7 +125,9 @@ class MotionRecorder:
             if motion_re.match(line):
                 lines.insert(i, set_tool_line)
                 textarea.value = "\n".join(lines)
-                logger.info("Inserted set_tool before first motion at line %d", i + 1)
+                logger.info(
+                    "Inserted select_tool before first motion at line %d", i + 1
+                )
                 return
 
         # No motion commands found — just append
@@ -169,12 +162,12 @@ class MotionRecorder:
             robot_state.rz,
         )
 
-        # Ensure set_tool is before the first move command in the script
+        # Ensure select_tool is before the first move command in the script
         tool_key = robot_state.tool_key
         if tool_key and tool_key != "NONE":
-            self._ensure_set_tool(tool_key, variant_key=robot_state.tool_variant_key)
+            self._ensure_select_tool(tool_key, variant_key=robot_state.tool_variant_key)
 
-        # Insert anchor moveJ to establish recording start position — but only
+        # Insert anchor move_j to establish recording start position — but only
         # if the robot has moved away from where the script's simulation ends.
         # This avoids a redundant zero-distance segment (e.g. script ends with
         # home() and robot is still at home when recording starts).
@@ -184,7 +177,7 @@ class MotionRecorder:
                 args = ", ".join(f"{a:.2f}" for a in angles)
                 spd = ui_state.jog_speed / 100.0
                 acc = ui_state.jog_accel / 100.0
-                anchor_snippet = f"rbt.moveJ([{args}], speed={spd}, accel={acc})  # Recording start position"
+                anchor_snippet = f"rbt.move_j([{args}], speed={spd}, accel={acc})  # Recording start position"
                 self._insert_snippet(anchor_snippet)
                 logger.info(
                     "Inserted recording start anchor at joints: %s",
@@ -206,7 +199,7 @@ class MotionRecorder:
         """Record any robot action when recording is active.
 
         Args:
-            action_type: One of "moveJ", "moveL", "home",
+            action_type: One of "move_j", "move_l", "home",
                         "gripper", "io", "delay"
             **params: Action-specific parameters
         """
@@ -214,14 +207,14 @@ class MotionRecorder:
             return
 
         # If a jog is in progress (arm still moving to target), queue
-        # non-motion actions so they appear AFTER the pending moveJ/moveL.
-        if self._active_jog and action_type not in ("moveJ", "moveL"):
+        # non-motion actions so they appear AFTER the pending move_j/move_l.
+        if self._active_jog and action_type not in ("move_j", "move_l"):
             self._pending_actions.append((action_type, params, time.time()))
             return
 
         # Insert delay if time has passed since last recorded action
         # (covers remaining move time after non-blocking moves + idle time)
-        if self._last_action_wall_time > 0 and action_type not in ("moveJ", "moveL"):
+        if self._last_action_wall_time > 0 and action_type not in ("move_j", "move_l"):
             delay = time.time() - self._last_action_wall_time
             if delay > 0.05:
                 self._record_action_impl("delay", seconds=delay)
@@ -230,13 +223,7 @@ class MotionRecorder:
 
     def _record_action_impl(self, action_type: str, **params) -> None:
         """Core recording logic (no is_recording guard)."""
-        is_motion_action = action_type in EDITABLE_TARGET_METHODS
-
-        # Generate marker for motion commands (for interactive targets)
-        marker_id = uuid.uuid4().hex[:8] if is_motion_action else None
-
-        # Generate and insert code
-        snippet = self._generate_code(action_type, params, marker_id)
+        snippet = self._generate_code(action_type, params)
         self._insert_snippet(snippet)
         self._last_action_wall_time = time.time()
 
@@ -246,36 +233,31 @@ class MotionRecorder:
             )  # TRACE level
         logger.debug("Recorded action: %s", action_type)
 
-    def _generate_code(
-        self, action_type: str, params: dict, marker_id: str | None
-    ) -> str:
+    def _generate_code(self, action_type: str, params: dict) -> str:
         """Generate Python code snippet for an action.
 
         Args:
             action_type: Type of action
             params: Action parameters
-            marker_id: UUID marker for interactive targets (motion commands only)
 
         Returns:
             Python code snippet string
         """
-        marker = f"  # TARGET:{marker_id}" if marker_id else ""
-
-        if action_type == "moveJ":
+        if action_type == "move_j":
             angles = params["angles"]
             spd = ui_state.jog_speed / 100.0
             acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{a:.2f}" for a in angles)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.moveJ([{args}], speed={spd}, accel={acc}{wait_str}){marker}"
+            return f"rbt.move_j([{args}], speed={spd}, accel={acc}{wait_str})"
 
-        elif action_type == "moveL":
+        elif action_type == "move_l":
             pose = params["pose"]
             spd = ui_state.jog_speed / 100.0
             acc = ui_state.jog_accel / 100.0
             args = ", ".join(f"{p:.3f}" for p in pose)
             wait_str = ", wait=False" if not params.get("wait", True) else ""
-            return f"rbt.moveL([{args}], speed={spd}, accel={acc}{wait_str}){marker}"
+            return f"rbt.move_l([{args}], speed={spd}, accel={acc}{wait_str})"
 
         elif action_type == "home":
             return "rbt.home()"
@@ -299,7 +281,7 @@ class MotionRecorder:
         elif action_type == "io":
             port = params["port"]
             state = params["state"]
-            return f"rbt.set_io({port}, {state})"
+            return f"rbt.write_io({port}, {state})"
 
         elif action_type == "delay":
             seconds = params["seconds"]
@@ -342,14 +324,14 @@ class MotionRecorder:
             wait = not bool(self._pending_actions)
             if self._active_jog.move_type == "joint":
                 self.record_action(
-                    "moveJ",
+                    "move_j",
                     angles=self._get_current_angles(),
                     duration=duration,
                     wait=wait,
                 )
             else:
                 self.record_action(
-                    "moveL", pose=self._get_wrf_pose(), duration=duration, wait=wait
+                    "move_l", pose=self._get_wrf_pose(), duration=duration, wait=wait
                 )
 
             logger.debug(
@@ -392,10 +374,10 @@ class MotionRecorder:
         """
         if move_type == "joints":
             self._record_action_impl(
-                "moveJ", angles=self._get_current_angles(), duration=1.0
+                "move_j", angles=self._get_current_angles(), duration=1.0
             )
         else:
-            self._record_action_impl("moveL", pose=self._get_wrf_pose(), duration=1.0)
+            self._record_action_impl("move_l", pose=self._get_wrf_pose(), duration=1.0)
 
     def _insert_snippet(self, snippet: str) -> None:
         """Insert code snippet into the editor and flash the new line."""

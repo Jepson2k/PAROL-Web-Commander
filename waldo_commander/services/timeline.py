@@ -5,7 +5,7 @@ from __future__ import annotations
 import bisect
 from dataclasses import dataclass, field
 
-from waldo_commander.state import PathSegment, ToolAction
+from waldo_commander.state import PathSegment, ToolAction, ToolSelection
 
 DEFAULT_SEGMENT_DURATION = 0.5  # seconds, for segments without timing data
 
@@ -26,6 +26,15 @@ class ToolKeyframe:
 
     time: float
     positions: tuple[float, ...]
+
+
+@dataclass(slots=True)
+class ToolSelectionKeyframe:
+    """Records which tool is active at a given point in the timeline."""
+
+    time: float
+    tool_key: str
+    variant_key: str
 
 
 @dataclass(slots=True)
@@ -51,6 +60,8 @@ class Timeline:
     segment_durations: list[float] = field(default_factory=list)  # motion-only (no gap)
     tool_keyframes: list[ToolKeyframe] = field(default_factory=list)
     _tool_times: list[float] = field(default_factory=list)
+    tool_selection_keyframes: list[ToolSelectionKeyframe] = field(default_factory=list)
+    _tool_sel_times: list[float] = field(default_factory=list)
     checkpoints: list[Checkpoint] = field(default_factory=list)
 
     @classmethod
@@ -58,6 +69,7 @@ class Timeline:
         cls,
         segments: list[PathSegment],
         tool_actions: list[ToolAction] | None = None,
+        tool_selections: list[ToolSelection] | None = None,
     ) -> Timeline:
         """Build a timeline from path segments and optional tool actions.
 
@@ -95,6 +107,8 @@ class Timeline:
         if tool_actions:
             n_dof = len(tool_actions[0].target_positions)
             current: tuple[float, ...] = tuple(0.0 for _ in range(n_dof))
+            # Track accumulated time for sequential blocking actions on same segment
+            blocking_accum: dict[int, float] = {}
 
             for act in tool_actions:
                 dur = max(act.estimated_duration, 0.01)
@@ -103,12 +117,15 @@ class Timeline:
                         # Mid-motion: offset from start of preceding segment
                         t = cum[act.segment_index] + act.sleep_offset
                     else:
-                        # End-of-move: tool fires after segment motion ends
-                        # (before the blocking gap we inserted)
+                        # End-of-move: tool fires after segment motion ends.
+                        # Sequential blocking actions on the same segment are
+                        # placed one after another (not all at the same time).
                         seg_dur = segments[act.segment_index].estimated_duration
                         if seg_dur is None:
                             seg_dur = DEFAULT_SEGMENT_DURATION
-                        t = cum[act.segment_index] + seg_dur
+                        prev = blocking_accum.get(act.segment_index, 0.0)
+                        t = cum[act.segment_index] + seg_dur + prev
+                        blocking_accum[act.segment_index] = prev + dur
                 else:
                     t = total
                 tool_kf.append(ToolKeyframe(time=t, positions=current))
@@ -134,6 +151,24 @@ class Timeline:
                     )
                 )
 
+        # Build tool selection keyframes
+        sel_kf: list[ToolSelectionKeyframe] = []
+        if tool_selections:
+            for sel in tool_selections:
+                if sel.segment_index < 0:
+                    t_sel = 0.0
+                elif sel.segment_index < len(cum) - 1:
+                    t_sel = cum[sel.segment_index + 1]
+                else:
+                    t_sel = total
+                sel_kf.append(
+                    ToolSelectionKeyframe(
+                        time=t_sel,
+                        tool_key=sel.tool_key,
+                        variant_key=sel.variant_key,
+                    )
+                )
+
         return cls(
             cumulative_times=cum,
             total_duration=total,
@@ -141,6 +176,8 @@ class Timeline:
             segment_durations=seg_durs,
             tool_keyframes=tool_kf,
             _tool_times=[k.time for k in tool_kf],
+            tool_selection_keyframes=sel_kf,
+            _tool_sel_times=[k.time for k in sel_kf],
             checkpoints=cps,
         )
 
@@ -205,6 +242,20 @@ class Timeline:
         frac = (t - k0.time) / dt
         frac = max(0.0, min(1.0, frac))
         return tuple(a + (b - a) * frac for a, b in zip(k0.positions, k1.positions))
+
+    def sample_tool_selection(self, t: float) -> ToolSelectionKeyframe | None:
+        """Return the active tool selection at time t.
+
+        Finds the last tool selection keyframe with time <= t.
+        Returns None if no tool selections exist.
+        """
+        kf = self.tool_selection_keyframes
+        if not kf:
+            return None
+        idx = bisect.bisect_right(self._tool_sel_times, t) - 1
+        if idx < 0:
+            return kf[0] if kf[0].time <= t + 1e-6 else None
+        return kf[idx]
 
     def next_checkpoint(self, t: float) -> Checkpoint | None:
         """Find the first checkpoint at or after time t, or None."""

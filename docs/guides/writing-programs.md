@@ -1,6 +1,6 @@
 # Writing Programs
 
-This guide builds a single script from scratch, adding capabilities section by section. By the end you'll have a program that demos joint and Cartesian moves, curved paths, scan patterns, tool control, and precision orientation changes — a tour of what the robot can do.
+This guide builds a single script from scratch, adding capabilities section by section. By the end you'll have a program that demos joint and Cartesian moves, curved paths, scan patterns, tool control, TCP offset, and precision TRF rotations — a tour of what the robot can do.
 
 For the full method reference, see the [API Reference](api-reference.md).
 
@@ -9,14 +9,12 @@ For the full method reference, see the [API Reference](api-reference.md).
 Every program starts by importing the backend's sync client and connecting to the controller. The editor pre-fills the host and port from your configuration.
 
 ```python
-import math
-import time
 from parol6 import RobotClient
 
 rbt = RobotClient(host='127.0.0.1', port=5001)
 
-print("Angles:", rbt.get_angles())
-print("Pose:", rbt.get_pose_rpy())
+print("Angles:", rbt.angles())
+print("Pose:", rbt.pose())
 
 rbt.home()
 ```
@@ -25,69 +23,74 @@ rbt.home()
 
 <!-- video: connect and home -->
 
-## moveJ vs moveL
+## move_j vs move_l
 
-`moveJ` interpolates in joint space — each joint takes the shortest path to its target angle. `moveL` moves the TCP in a straight line through Cartesian space. The difference is visible: moveJ produces a curved TCP path, moveL produces a straight one.
+`move_j` interpolates in joint space — each joint takes the shortest path to its target angle. `move_l` moves the TCP in a straight line through Cartesian space. The difference is visible: move_j produces a curved TCP path, move_l produces a straight one.
 
-To show this, we'll move across the X axis with moveJ, then back with moveL. Watch the TCP path in the 3D view — the moveJ arc vs the moveL straight line.
+To show this, we'll move to a pose with move_j, then to another with move_l. Watch the TCP path in the 3D view — the move_j arc vs the move_l straight line.
 
 ```python
-# moveJ across — TCP follows a curved arc
-rbt.moveJ([-60, -90, 90, 0, 45, 0], speed=0.5)
+# move_j — TCP follows a curved arc through joint space
+rbt.move_j(pose=[175, 240, 334, 90, 0, 90], speed=0.5)
 
-# moveL back — TCP travels in a straight line
-rbt.moveL([60, 280, 200, 90, 0, 90], speed=0.5)
+# move_l — TCP travels in a straight Cartesian line
+rbt.move_l([-50, 240, 334, 90, 0, 90], speed=0.5)
 ```
 
 `speed` is normalized 0.0–1.0. You can also use `duration` (seconds) or `accel` (0.0–1.0). Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
 
-<!-- video: moveJ vs moveL -->
+<!-- video: move_j vs move_l -->
 
 ## Curved motion
 
-`moveC` draws a circular arc through a via-point to an end-point. `moveP` follows a series of waypoints at constant TCP speed. `moveS` fits a smooth spline through waypoints.
+`move_c` draws a circular arc through a via-point to an end-point. `move_p` follows a series of waypoints at constant TCP speed. `move_s` fits a smooth spline through waypoints.
 
-We'll draw three circles side by side, each with a different command, then thread a spline through all of them.
+We'll draw three circles stacked vertically, each with a different command, then thread a sine-wave spline through all of them.
 
 ```python
-ORIENTATION = [90, 0, 90]
+import math
+
 RADIUS = 30
 SPEED = 0.4
-
-CENTERS = [(-70, 280, 200), (0, 280, 200), (70, 280, 200)]
+CIRCLE_Y = 340
+ORIENTATION = [90, 0, 90]
+CENTERS = [(0, CIRCLE_Y, 280), (0, CIRCLE_Y, 210), (0, CIRCLE_Y, 140)]
 
 
 def circle_pt(cx, cz, angle_deg):
+    """Circle in the XZ plane (vertical) at fixed Y."""
     a = math.radians(angle_deg)
-    return [cx + RADIUS * math.cos(a), 280, cz + RADIUS * math.sin(a)] + ORIENTATION
+    return [cx + RADIUS * math.cos(a), CIRCLE_Y, cz + RADIUS * math.sin(a)] + ORIENTATION
 
 
-# Circle 1: single moveC — full circle in one command
+# Circle 1: full circle with a single move_c (start = end)
 cx, _, cz = CENTERS[0]
-rbt.moveL(circle_pt(cx, cz, 0), speed=SPEED)
-rbt.moveC(via=circle_pt(cx, cz, 180), end=circle_pt(cx, cz, 0), speed=SPEED)
+rbt.move_j(pose=circle_pt(cx, cz, 0), speed=0.5)
+rbt.move_c(via=circle_pt(cx, cz, 180), end=circle_pt(cx, cz, 0), speed=SPEED)
 
-# Circle 2: two moveC arcs — half-circles joined
+# Circle 2: two half-circle move_c arcs
 cx, _, cz = CENTERS[1]
-rbt.moveL(circle_pt(cx, cz, 0), speed=SPEED)
-rbt.moveC(via=circle_pt(cx, cz, 90), end=circle_pt(cx, cz, 180), speed=SPEED)
-rbt.moveC(via=circle_pt(cx, cz, 270), end=circle_pt(cx, cz, 0), speed=SPEED)
+rbt.move_l(circle_pt(cx, cz, 0), speed=SPEED)
+rbt.move_c(via=circle_pt(cx, cz, 90), end=circle_pt(cx, cz, 180), speed=SPEED)
+rbt.move_c(via=circle_pt(cx, cz, 270), end=circle_pt(cx, cz, 0), speed=SPEED)
 
-# Circle 3: moveP through 12 waypoints — constant TCP speed
+# Circle 3: computed waypoints with move_p
 cx, _, cz = CENTERS[2]
 waypoints = [circle_pt(cx, cz, i * 30) for i in range(12)]
 waypoints.append(waypoints[0])
-rbt.moveL(waypoints[0], speed=SPEED)
-rbt.moveP(waypoints, speed=SPEED)
+rbt.move_l(waypoints[0], speed=SPEED)
+rbt.move_p(waypoints, speed=SPEED)
 
-# Spline threading through all three circles
+# Sine wave through all three circle centers (bottom to top) using move_s
+SINE_POINTS = 36
+z_min, z_max = CENTERS[2][2], CENTERS[0][2]
 spline = []
-for cx, _, cz in CENTERS:
-    for angle in range(0, 360, 45):
-        spline.append(circle_pt(cx, cz, angle))
-spline.append(spline[0])
-rbt.moveL(spline[0], speed=SPEED)
-rbt.moveS(spline, speed=SPEED)
+for i in range(SINE_POINTS + 1):
+    t = i / SINE_POINTS
+    z = z_min + t * (z_max - z_min)
+    x = RADIUS * math.cos(t * 3 * 2 * math.pi)
+    spline.append([x, CIRCLE_Y, z] + ORIENTATION)
+rbt.move_s(spline, speed=SPEED)
 ```
 
 These commands raise `NotImplementedError` on backends that don't support them.
@@ -98,173 +101,258 @@ These commands raise `NotImplementedError` on backends that don't support them.
 
 Now we rotate to a new workspace area and do a raster scan. The blend radius `r` parameter rounds the corners so the robot doesn't stop at each turn — it blends the end of one move into the start of the next.
 
-Setting `wait=False` queues moves so the controller can blend them. `wait_motion_complete()` blocks until the queue drains.
+Setting `wait=False` queues moves so the controller can blend them. `wait_motion()` blocks until the queue drains.
 
 ```python
-# Rotate to a new area
-rbt.moveJ([90, -90, 90, 0, 45, 0], speed=0.5)
-
-ROWS = 5
-X_MIN, X_MAX = -80, 80
-Z_MIN, Z_MAX = 150, 250
-Y = 280
+ZZ_ORI = [-180, -90, -180]
+ROWS = 6
+Y_MIN, Y_MAX = 0, 160
+Z_MIN, Z_MAX = 200, 300
+X = 280
 BLEND = 15
 
-start = [X_MIN, Y, Z_MAX + 30] + ORIENTATION
-rbt.moveL(start, speed=0.5)
-
+rbt.move_j(pose=[X, 0, 334] + ZZ_ORI, speed=0.5)
+rbt.move_l([X, Y_MIN, Z_MAX + 30] + ZZ_ORI, speed=0.5)
 z_step = (Z_MAX - Z_MIN) / (ROWS - 1)
-
 for row in range(ROWS):
     z = Z_MAX - row * z_step
     is_last = row == ROWS - 1
-    x_start, x_end = (X_MIN, X_MAX) if row % 2 == 0 else (X_MAX, X_MIN)
-
-    rbt.moveL([x_start, Y, z] + ORIENTATION, speed=0.5, r=BLEND, wait=False)
-    rbt.moveL([x_end, Y, z] + ORIENTATION, speed=0.5, r=0 if is_last else BLEND, wait=False)
-
-rbt.wait_motion_complete()
+    y_start, y_end = (Y_MIN, Y_MAX) if row % 2 == 0 else (Y_MAX, Y_MIN)
+    rbt.move_l([X, y_start, z] + ZZ_ORI, speed=0.5, r=BLEND, wait=False)
+    rbt.move_l([X, y_end, z] + ZZ_ORI, speed=0.5, r=0 if is_last else BLEND, wait=False)
+rbt.wait_motion()
 ```
 
 <!-- video: zig-zag scan -->
 
-## Tool control
+## Tool control and precision
 
-Rotate to another area, attach a tool, and work with it. `set_tool` selects the active end-effector and updates the TCP offset. The `tool` object gives you `open()`, `close()`, and `set_position()`.
+Rotate to a third area, attach a tool, and demo precision moves. `select_tool` selects the active end-effector and updates the TCP. The `tool` object gives you `open()`, `close()`, and `set_position()`.
+
+### Gripper basics
 
 ```python
-# Rotate to a new area
-rbt.moveJ([180, -90, 90, 0, 45, 0], speed=0.5)
+rbt.select_tool("SSG-48")
 
-rbt.set_tool("SSG-48")
+PRECISION_POSE = [0, -250, 350, -90, 0, -90]
+rbt.move_j(pose=PRECISION_POSE, speed=0.5)
 
-rbt.tool.open()
-time.sleep(0.5)
-rbt.tool.close()
-time.sleep(0.5)
-rbt.tool.set_position(0.5)  # 0.0 = fully open, 1.0 = fully closed
+# Quick close/open cycles
+rbt.tool.close(speed=1.0)
+rbt.tool.open(speed=1.0)
+rbt.tool.close(speed=1.0)
+rbt.tool.open(speed=1.0)
 ```
 
 Electric grippers accept `speed` and `current` keyword arguments for finer control.
 
-<!-- video: tool control -->
+### Pencil pickup
 
-## Precision orientation
-
-Finally, we demo the robot's ability to maintain an exact TCP position while changing orientation — rotating around a fixed point in space. This is useful for inspection, welding, or any task where the tool tip stays put but the approach angle changes.
+Use joint-space angles to reach 100mm above the pickup, then descend linearly for a precise approach:
 
 ```python
-# Move to a fixed point
-TCP = [0, 250, 80]
-rbt.moveL(TCP + [0, 0, 90], speed=1.0)
+# Approach: move_j to 100mm above, descend linearly, grab, retract
+PENCIL_ABOVE = [-90, -81.6, 161.8, 0, -69.4, 180]
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.tool.close(wait=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_j(pose=PRECISION_POSE, speed=0.3)
+```
 
-# Sweep RX: tilt forward and back while TCP stays at the same XYZ
-rbt.moveL(TCP + [-50, 0, 90], speed=1.0)
-rbt.moveL(TCP + [50, 0, 90], speed=1.0)
-rbt.moveL(TCP + [0, 0, 90], speed=1.0)
+### TCP offset and TRF moves
 
-# Sweep RY: tilt side to side
-rbt.moveL(TCP + [0, 50, 90], speed=1.0)
-rbt.moveL(TCP + [0, -50, 90], speed=1.0)
-rbt.moveL(TCP + [0, 0, 90], speed=1.0)
+`set_tcp_offset` shifts the tool center point. With a pencil gripped vertically, offsetting by -100mm in the tool X axis puts the TCP at the pencil tip. All subsequent moves reference this new TCP.
 
+`frame="TRF"` with `rel=True` makes moves relative to the current tool frame — the robot moves in the tool's local axes regardless of its world-frame orientation.
+
+```python
+# Offset TCP to pencil tip (~100mm exposed below gripper)
+rbt.set_tcp_offset(-100, 0, 0)
+
+# Pencil tip traces straight lines in tool frame
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+
+rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, -120, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+```
+
+### Precision rotations
+
+TRF rotations keep the TCP stationary while the wrist rotates around it — the pencil tip stays fixed and the robot pivots. This is useful for inspection, welding, or any task where the tool tip stays put but the approach angle changes.
+
+```python
+SWEEP = 20
+for axis in range(3):
+    delta = [0, 0, 0, 0, 0, 0]
+    delta[3 + axis] = -SWEEP
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    delta[3 + axis] = SWEEP
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    delta[3 + axis] = -SWEEP
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+```
+
+### Cleanup
+
+Reset the TCP offset, return the pencil, and go home:
+
+```python
+# Place pencil back: descend linearly, release, retract
+rbt.set_tcp_offset(0, 0, 0)
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.tool.open(wait=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
+
+rbt.move_j(pose=PRECISION_POSE, speed=0.3)
 rbt.home()
 print("Done!")
 ```
 
-<!-- video: precision orientation -->
+<!-- video: tool control and precision -->
 
 ## The complete script
 
-Here's everything together — one continuous program:
+Here's everything together — one continuous program that exercises all motion types across three sides of the workspace:
 
 ```python
+"""Showcase script demonstrating all motion types.
+
+Exercises move_j, move_l, move_c, move_p, move_s, blended zig-zag,
+tool actions, TCP offset, and precision TRF rotations.
+"""
+
 import math
-import time
 from parol6 import RobotClient
 
 rbt = RobotClient(host='127.0.0.1', port=5001)
-ORIENTATION = [90, 0, 90]
 
-# ── Home ──────────────────────────────────────────────────────────────
+# Select tool and home
+rbt.select_tool("SSG-48")
 rbt.home()
 
-# ── moveJ vs moveL ───────────────────────────────────────────────────
-rbt.moveJ([-60, -90, 90, 0, 45, 0], speed=0.5)
-rbt.moveL([60, 280, 200, 90, 0, 90], speed=0.5)
+# move_j vs move_l
+rbt.move_j(pose=[175, 240, 334, 90, 0, 90], speed=0.5)
+rbt.move_l([-50, 240, 334, 90, 0, 90], speed=0.5)
 
-# ── Curved motion: three circles + spline ─────────────────────────────
+
+# ── Curved motion: three vertical circles + sine-wave spline ──────────
 RADIUS = 30
 SPEED = 0.4
-CENTERS = [(-70, 280, 200), (0, 280, 200), (70, 280, 200)]
+CIRCLE_Y = 340
+ORIENTATION = [90, 0, 90]
+CENTERS = [(0, CIRCLE_Y, 280), (0, CIRCLE_Y, 210), (0, CIRCLE_Y, 140)]
 
 
 def circle_pt(cx, cz, angle_deg):
+    """Circle in the XZ plane (vertical) at fixed Y."""
     a = math.radians(angle_deg)
-    return [cx + RADIUS * math.cos(a), 280, cz + RADIUS * math.sin(a)] + ORIENTATION
+    return [cx + RADIUS * math.cos(a), CIRCLE_Y, cz + RADIUS * math.sin(a)] + ORIENTATION
 
 
+# Circle 1: full circle with a single move_c (start = end)
 cx, _, cz = CENTERS[0]
-rbt.moveL(circle_pt(cx, cz, 0), speed=SPEED)
-rbt.moveC(via=circle_pt(cx, cz, 180), end=circle_pt(cx, cz, 0), speed=SPEED)
+rbt.move_j(pose=circle_pt(cx, cz, 0), speed=0.5)
+rbt.move_c(via=circle_pt(cx, cz, 180), end=circle_pt(cx, cz, 0), speed=SPEED)
 
+# Circle 2: two half-circle move_c arcs
 cx, _, cz = CENTERS[1]
-rbt.moveL(circle_pt(cx, cz, 0), speed=SPEED)
-rbt.moveC(via=circle_pt(cx, cz, 90), end=circle_pt(cx, cz, 180), speed=SPEED)
-rbt.moveC(via=circle_pt(cx, cz, 270), end=circle_pt(cx, cz, 0), speed=SPEED)
+rbt.move_l(circle_pt(cx, cz, 0), speed=SPEED)
+rbt.move_c(via=circle_pt(cx, cz, 90), end=circle_pt(cx, cz, 180), speed=SPEED)
+rbt.move_c(via=circle_pt(cx, cz, 270), end=circle_pt(cx, cz, 0), speed=SPEED)
 
+# Circle 3: computed waypoints with move_p
 cx, _, cz = CENTERS[2]
 waypoints = [circle_pt(cx, cz, i * 30) for i in range(12)]
 waypoints.append(waypoints[0])
-rbt.moveL(waypoints[0], speed=SPEED)
-rbt.moveP(waypoints, speed=SPEED)
+rbt.move_l(waypoints[0], speed=SPEED)
+rbt.move_p(waypoints, speed=SPEED)
 
+# Sine wave through all three circle centers (bottom to top) using move_s
+SINE_POINTS = 36
+z_min, z_max = CENTERS[2][2], CENTERS[0][2]
 spline = []
-for cx, _, cz in CENTERS:
-    for angle in range(0, 360, 45):
-        spline.append(circle_pt(cx, cz, angle))
-spline.append(spline[0])
-rbt.moveL(spline[0], speed=SPEED)
-rbt.moveS(spline, speed=SPEED)
+for i in range(SINE_POINTS + 1):
+    t = i / SINE_POINTS
+    z = z_min + t * (z_max - z_min)
+    x = RADIUS * math.cos(t * 3 * 2 * math.pi)
+    spline.append([x, CIRCLE_Y, z] + ORIENTATION)
+rbt.move_s(spline, speed=SPEED)
 
-# ── Zig-zag scan ──────────────────────────────────────────────────────
-rbt.moveJ([90, -90, 90, 0, 45, 0], speed=0.5)
-
-ROWS = 5
-X_MIN, X_MAX = -80, 80
-Z_MIN, Z_MAX = 150, 250
-Y = 280
+# ── Zig-zag scan ─────────────────────────────────────────────────────
+ZZ_ORI = [-180, -90, -180]
+ROWS = 6
+Y_MIN, Y_MAX = 0, 160
+Z_MIN, Z_MAX = 200, 300
+X = 280
 BLEND = 15
 
-rbt.moveL([X_MIN, Y, Z_MAX + 30] + ORIENTATION, speed=0.5)
+rbt.move_j(pose=[X, 0, 334] + ZZ_ORI, speed=0.5)
+rbt.move_l([X, Y_MIN, Z_MAX + 30] + ZZ_ORI, speed=0.5)
 z_step = (Z_MAX - Z_MIN) / (ROWS - 1)
 for row in range(ROWS):
     z = Z_MAX - row * z_step
     is_last = row == ROWS - 1
-    x_start, x_end = (X_MIN, X_MAX) if row % 2 == 0 else (X_MAX, X_MIN)
-    rbt.moveL([x_start, Y, z] + ORIENTATION, speed=0.5, r=BLEND, wait=False)
-    rbt.moveL([x_end, Y, z] + ORIENTATION, speed=0.5, r=0 if is_last else BLEND, wait=False)
-rbt.wait_motion_complete()
+    y_start, y_end = (Y_MIN, Y_MAX) if row % 2 == 0 else (Y_MAX, Y_MIN)
+    rbt.move_l([X, y_start, z] + ZZ_ORI, speed=0.5, r=BLEND, wait=False)
+    rbt.move_l([X, y_end, z] + ZZ_ORI, speed=0.5, r=0 if is_last else BLEND, wait=False)
+rbt.wait_motion()
 
-# ── Tool control ──────────────────────────────────────────────────────
-rbt.moveJ([180, -90, 90, 0, 45, 0], speed=0.5)
-rbt.set_tool("SSG-48")
-rbt.tool.open()
-time.sleep(0.5)
-rbt.tool.close()
-time.sleep(0.5)
-rbt.tool.set_position(0.5)
+# ── Precision demo: pencil pick-up and TCP-offset rotations ──────────
+PRECISION_POSE = [0, -250, 350, -90, 0, -90]
+rbt.move_j(pose=PRECISION_POSE, speed=0.5)
 
-# ── Precision orientation ─────────────────────────────────────────────
-TCP = [0, 250, 80]
-rbt.moveL(TCP + [0, 0, 90], speed=1.0)
-rbt.moveL(TCP + [-50, 0, 90], speed=1.0)
-rbt.moveL(TCP + [50, 0, 90], speed=1.0)
-rbt.moveL(TCP + [0, 0, 90], speed=1.0)
-rbt.moveL(TCP + [0, 50, 90], speed=1.0)
-rbt.moveL(TCP + [0, -50, 90], speed=1.0)
-rbt.moveL(TCP + [0, 0, 90], speed=1.0)
+# Test gripper: two quick close/open cycles
+rbt.tool.close(speed=1.0)
+rbt.tool.open(speed=1.0)
+rbt.tool.close(speed=1.0)
+rbt.tool.open(speed=1.0)
 
+# Approach pencil: move_j to 100mm above, descend linearly, grab, retract
+PENCIL_ABOVE = [-90, -81.6, 161.8, 0, -69.4, 180]
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.tool.close(wait=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_j(pose=PRECISION_POSE, speed=0.3)
+
+# Offset TCP to pencil tip (~100mm exposed below gripper)
+rbt.set_tcp_offset(-100, 0, 0)
+
+# Pencil tip traces straight lines (linear precision demo)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, -120, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+
+# Precision TRF rotations — pencil tip stays stationary while wrist rotates
+SWEEP = 20
+for axis in range(3):
+    delta = [0, 0, 0, 0, 0, 0]
+    delta[3 + axis] = -SWEEP
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    delta[3 + axis] = SWEEP
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    delta[3 + axis] = -SWEEP
+    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+
+# Place pencil back: descend linearly, release, retract
+rbt.set_tcp_offset(0, 0, 0)
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.tool.open(wait=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
+
+# Return and finish
+rbt.move_j(pose=PRECISION_POSE, speed=0.3)
 rbt.home()
 print("Done!")
 ```

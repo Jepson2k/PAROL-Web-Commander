@@ -37,7 +37,7 @@ class TestDryRunClient:
 
     @pytest.mark.asyncio
     async def test_move_joints_creates_path_segment(self):
-        """moveJ should create a path segment with joint data."""
+        """move_j should create a path segment with joint data."""
         segments: list[dict] = []
         targets: list[dict] = []
         client = PathPreviewClient(
@@ -47,7 +47,7 @@ class TestDryRunClient:
         )
 
         # Use angles away from singularities (J5 != 0 avoids gimbal lock)
-        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
 
         # Verify path segment created in collector
         assert len(segments) == 1
@@ -63,7 +63,7 @@ class TestDryRunClient:
 
     @pytest.mark.asyncio
     async def test_move_cartesian_creates_path_segment(self):
-        """moveL should create a path segment with cartesian data."""
+        """move_l should create a path segment with cartesian data."""
         segments: list[dict] = []
         targets: list[dict] = []
         client = PathPreviewClient(
@@ -72,7 +72,7 @@ class TestDryRunClient:
             target_collector=targets,
         )
 
-        client.moveL([150, 100, 250, 0, 0, 0], speed=1.0)
+        client.move_l([150, 100, 250, 0, 0, 0], speed=1.0)
 
         # Verify segment created
         assert len(segments) == 1
@@ -81,15 +81,13 @@ class TestDryRunClient:
         assert segment["move_type"] == "cartesian"
 
     @pytest.mark.asyncio
-    async def test_move_creates_segment_but_not_target_without_marker(self):
-        """Moves without TARGET marker should create segment but not target.
+    async def test_move_creates_segment_but_not_target_without_literal_args(self):
+        """Moves without literal list arguments should create segment but not target.
 
-        The dry-run client only creates ProgramTarget objects when:
-        1. The source line has a TARGET:uuid marker
-        2. The source line has literal list arguments (not variables)
-
-        When moveJ is called directly (not via code parsing), there's
-        no source line with a marker, so no target is created.
+        ProgramTarget objects are only created when the source line has
+        literal list arguments (not variables). When move_j is called
+        directly (not via code parsing), there's no source line to
+        inspect, so no target is created.
         """
         segments: list[dict] = []
         targets: list[dict] = []
@@ -100,7 +98,7 @@ class TestDryRunClient:
         )
 
         # Use angles away from singularities (J5 != 0 avoids gimbal lock)
-        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
 
         # Verify path segment was created (always created for visualization)
         assert len(segments) == 1
@@ -123,7 +121,7 @@ class TestDryRunClient:
         )
 
         # Extremely far target — mostly unreachable
-        client.moveL([9999, 9999, 9999, 0, 0, 0], speed=1.0)
+        client.move_l([9999, 9999, 9999, 0, 0, 0], speed=1.0)
 
         # Per-pose IK diagnostic produces green (valid) + red (invalid) segments
         assert len(segments) >= 1
@@ -171,26 +169,26 @@ class TestMotionRecorder:
     """Tests for motion recording functionality (code-insertion API)."""
 
     def test_capture_current_pose_inserts_code(self, mock_editor):
-        """capture_current_pose should insert moveL code into editor."""
+        """capture_current_pose should insert move_l code into editor."""
         set_robot_pose(150.0, 250.0, 350.0)
 
         recorder = MotionRecorder()
         recorder.capture_current_pose()
 
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.moveL([150.000, 250.000, 350.000" in inserted_code
+        assert "rbt.move_l([150.000, 250.000, 350.000" in inserted_code
         assert "speed=" in inserted_code
         assert "accel=" in inserted_code
 
     def test_capture_current_pose_joints_mode(self, mock_editor):
-        """capture_current_pose with joints mode should insert moveJ code."""
+        """capture_current_pose with joints mode should insert move_j code."""
         robot_state.angles.set_deg(np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
 
         recorder = MotionRecorder()
         recorder.capture_current_pose(move_type="joints")
 
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.moveJ([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
+        assert "rbt.move_j([10.00, 20.00, 30.00, 40.00, 50.00, 60.00" in inserted_code
 
     def test_toggle_recording_lifecycle(self, mock_editor):
         """toggle_recording should toggle recording state on/off."""
@@ -231,7 +229,7 @@ class TestMotionRecorder:
 
         # Check that code was inserted
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.moveL(" in inserted_code
+        assert "rbt.move_l(" in inserted_code
 
     def test_jog_events_ignored_when_not_recording(self):
         """Jog start and end events should be ignored when not recording."""
@@ -289,14 +287,14 @@ class TestMotionRecorder:
         assert "rbt.tool.set_position(1.0)" in inserted_code
 
     def test_record_action_io(self, mock_editor):
-        """record_action for io should generate set_io code."""
+        """record_action for io should generate write_io code."""
         recorder = MotionRecorder()
         recording_state.is_recording = True
 
         recorder.record_action("io", port=1, state=1)
 
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.set_io(1, 1)" in inserted_code
+        assert "rbt.write_io(1, 1)" in inserted_code
 
     def test_record_action_ignored_when_not_recording(self, mock_editor):
         """record_action should be ignored when not recording."""
@@ -353,7 +351,7 @@ class TestMotionRecorder:
 
         # Check that code was inserted
         inserted_code = mock_editor.program_textarea.value
-        assert "rbt.moveL(" in inserted_code
+        assert "rbt.move_l(" in inserted_code
 
 
 class TestMotionRecorderWaitTimeGaps:
@@ -403,7 +401,7 @@ class TestMotionRecorderWaitTimeGaps:
         recorder.toggle_recording()
 
     def test_no_gap_for_motion_actions(self, mock_editor):
-        """Motion actions (moveJ/moveL) don't get delay inserted before them."""
+        """Motion actions (move_j/move_l) don't get delay inserted before them."""
         recorder = MotionRecorder()
         recorder.toggle_recording()
 
@@ -414,18 +412,18 @@ class TestMotionRecorderWaitTimeGaps:
         # Record a motion — should NOT get a delay
         set_robot_pose(100, 200, 300)
         recorder.record_action(
-            "moveJ",
+            "move_j",
             angles=[0, 0, 0, 0, 0, 0],
             speed=0.5,
             accel=0.5,
         )
 
         inserted_code = mock_editor.program_textarea.value
-        # time.sleep should NOT appear between gripper and moveJ
+        # time.sleep should NOT appear between gripper and move_j
         lines = inserted_code.strip().split("\n")
-        # Find the moveJ line and check the line before it
+        # Find the move_j line and check the line before it
         for i, line in enumerate(lines):
-            if "rbt.moveJ" in line and i > 0:
+            if "rbt.move_j" in line and i > 0:
                 assert "time.sleep" not in lines[i - 1], (
                     "No delay should be inserted before a motion command"
                 )
@@ -648,12 +646,12 @@ class TestEditorAutoSimulation:
 
                 panel = EditorPanel()
                 panel.program_textarea = MagicMock()
-                panel.program_textarea.value = "rbt.moveJ([0,0,0,0,0,0])"
+                panel.program_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
 
                 await panel._run_simulation()
 
                 assert update_called is True
-                assert update_content == "rbt.moveJ([0,0,0,0,0,0])"
+                assert update_content == "rbt.move_j([0,0,0,0,0,0])"
 
     @pytest.mark.asyncio
     async def test_run_simulation_empty_content_skips_visualization(self):
@@ -712,7 +710,7 @@ class TestSimulationCaching:
         assert panel._is_default_script(default_content + "\n\n  \n") is True
 
         # Non-default content should not match
-        assert panel._is_default_script("rbt.moveJ([0,0,0,0,0,0])") is False
+        assert panel._is_default_script("rbt.move_j([0,0,0,0,0,0])") is False
 
     @pytest.mark.asyncio
     async def test_results_stored_in_originating_tab(self):
@@ -830,7 +828,7 @@ import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 """
 
         await visualizer.update_path_visualization(program)
@@ -851,8 +849,8 @@ import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([80, -80, 170, 10, 10, 170], speed=1.0)
-        await rbt.moveJ([100, -100, 190, -10, -10, 190], speed=1.0)
+        await rbt.move_j([80, -80, 170, 10, 10, 170], speed=1.0)
+        await rbt.move_j([100, -100, 190, -10, -10, 190], speed=1.0)
 """
 
         await visualizer.update_path_visualization(program)
@@ -875,7 +873,7 @@ import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
 """
 
         await visualizer.update_path_visualization(program)
@@ -901,77 +899,66 @@ async def main():
         )
 
     @pytest.mark.asyncio
-    async def test_target_markers_create_targets(self):
-        """Programs with TARGET markers should create ProgramTarget objects."""
+    async def test_literal_moves_create_targets(self):
+        """Moves with literal coordinates create auto-generated targets for 3D editing."""
         visualizer = PathVisualizer()
 
-        # Use joint moves with valid targets (within PAROL6 limits) and TARGET markers
         program = """
 import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)  # TARGET:abc12345
-        await rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)  # TARGET:def67890
+        await rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
+        await rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
 """
 
         await visualizer.update_path_visualization(program)
 
-        # Should have created 2 path segments
         assert len(simulation_state.path_segments) >= 2, (
             f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
         )
 
-        # Should have created 2 targets (one for each TARGET marker)
         assert len(simulation_state.targets) == 2, (
-            f"Expected 2 targets (one per TARGET marker), got {len(simulation_state.targets)}. "
+            f"Expected 2 targets (one per literal move), got {len(simulation_state.targets)}. "
             f"Bug: compile() may not be using 'simulation_script.py' filename for frame inspection."
         )
 
-        # Verify target IDs match the markers in the code
         target_ids = [t.id for t in simulation_state.targets]
-        assert "abc12345" in target_ids, (
-            f"Expected target 'abc12345' not found in {target_ids}"
-        )
-        assert "def67890" in target_ids, (
-            f"Expected target 'def67890' not found in {target_ids}"
+        assert all(tid.startswith("auto_") for tid in target_ids), (
+            f"Expected auto-generated target IDs, got {target_ids}"
         )
 
     @pytest.mark.asyncio
-    async def test_move_with_literals_auto_generates_targets(self):
-        """Moves with literal values auto-generate targets for 3D editing.
-
-        Even without explicit TARGET:uuid markers, moves with literal coordinates
-        get auto-generated targets so users can edit positions in the 3D scene.
+    async def test_infeasible_duration_marks_segment_not_timing_feasible(self):
+        """A move with an unrealistically short duration produces a path segment
+        with timing_feasible=False so the editor can surface a warning diagnostic.
         """
         visualizer = PathVisualizer()
 
-        # Valid joint targets with literal coordinates
         program = """
 import parol6
 
 async def main():
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ([85, -85, 175, 5, 5, 175], speed=1.0)
-        await rbt.moveJ([95, -95, 185, -5, -5, 185], speed=1.0)
+        await rbt.move_j([85, -85, 175, 5, 5, 175], duration=0.01)
 """
 
         await visualizer.update_path_visualization(program)
 
-        # Should have created path segments (for visualization)
-        assert len(simulation_state.path_segments) >= 2, (
-            f"Expected at least 2 segments, got {len(simulation_state.path_segments)}"
+        assert len(simulation_state.path_segments) >= 1, (
+            f"Expected at least 1 segment, got {len(simulation_state.path_segments)}"
         )
 
-        # Should have auto-generated targets for moves with literal values
-        assert len(simulation_state.targets) >= 2, (
-            f"Expected at least 2 auto-generated targets, got {len(simulation_state.targets)}"
+        infeasible = [
+            s for s in simulation_state.path_segments if not s.timing_feasible
+        ]
+        assert len(infeasible) >= 1, (
+            "Expected at least one segment with timing_feasible=False; "
+            f"got {[s.timing_feasible for s in simulation_state.path_segments]}"
         )
-
-        # Auto-generated target IDs should be based on line numbers
-        target_ids = [t.id for t in simulation_state.targets]
-        assert any(tid.startswith("auto_") for tid in target_ids), (
-            f"Expected auto-generated target IDs, got {target_ids}"
+        seg = infeasible[0]
+        assert seg.estimated_duration is not None and seg.estimated_duration > 0.01, (
+            f"Expected estimated_duration > requested 0.01s, got {seg.estimated_duration}"
         )
 
     @pytest.mark.asyncio
@@ -992,8 +979,8 @@ async def main():
     joints_a = [85, -85, 175, 5, 5, 175]
     joints_b = [95, -95, 185, -5, -5, 185]
     async with parol6.AsyncRobotClient() as rbt:
-        await rbt.moveJ(joints_a, speed=1.0)
-        await rbt.moveJ(joints_b, speed=1.0)
+        await rbt.move_j(joints_a, speed=1.0)
+        await rbt.move_j(joints_b, speed=1.0)
 """
 
         await visualizer.update_path_visualization(program)
@@ -1028,7 +1015,7 @@ class TestHomeAndCheckpoints:
         )
 
         # Start from non-home position, then home
-        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
 
         assert len(segments) == 2
@@ -1041,16 +1028,16 @@ class TestHomeAndCheckpoints:
         assert np.allclose(home_seg["joints"], home_rad, atol=0.01)
 
     def test_home_updates_planner_for_subsequent_moves(self):
-        """After home(), subsequent moveJ starts from home position."""
+        """After home(), subsequent move_j starts from home position."""
         segments: list[dict] = []
         client = PathPreviewClient(
             dry_run_client_cls=DryRunRobotClient,
             segment_collector=segments,
         )
 
-        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.home()
-        client.moveJ([90, -90, 140, 15, 50, 175], speed=1.0)
+        client.move_j([90, -90, 140, 15, 50, 175], speed=1.0)
 
         assert len(segments) == 3
         # Third segment should have a trajectory starting near home
@@ -1066,7 +1053,7 @@ class TestHomeAndCheckpoints:
             segment_collector=segments,
         )
 
-        client.moveJ([85, -85, 135, 10, 45, 170], speed=1.0)
+        client.move_j([85, -85, 135, 10, 45, 170], speed=1.0)
         client.checkpoint("pick_done")
 
         assert len(segments) == 2
@@ -1126,7 +1113,7 @@ class TestToolActionTracking:
             tool_meta_registry=tool_meta,
         )
 
-        client.set_tool("SSG-48", "pinch")
+        client.select_tool("SSG-48", "pinch")
         client.tool.close()
         client.tool.open()
 

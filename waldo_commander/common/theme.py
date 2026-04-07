@@ -88,7 +88,7 @@ class PathColors:
 
     CARTESIAN = "#10b981"  # emerald-500 - cartesian/linear moves
     JOINTS = "#2563eb"  # blue-600 - joint space moves
-    SMOOTH = "#a855f7"  # purple-500 - smooth moves (moveC, moveS)
+    SMOOTH = "#a855f7"  # purple-500 - smooth moves (move_c, move_s)
     INVALID = "#ef4444"  # red-500 - IK failure / unreachable
     TIMING_WARNING = "#f59e0b"  # amber-500 - needs more time than requested
     CHECKPOINT = "#94a3b8"  # slate-400 - checkpoint markers on scrubber
@@ -101,7 +101,7 @@ MOVE_TYPE_COLORS: dict[str, str] = {
     "cartesian": PathColors.CARTESIAN,
     # Joint moves (blue)
     "joints": PathColors.JOINTS,
-    # Curved/smooth moves: moveC, moveS (purple)
+    # Curved/smooth moves: move_c, move_s (purple)
     "smooth": PathColors.SMOOTH,
     "smooth_arc": PathColors.SMOOTH,
     "smooth_spline": PathColors.SMOOTH,
@@ -963,20 +963,12 @@ html, body {
 .cm-line.cm-line-flash {
   animation: cm-line-flash 1.5s ease-out forwards;
 }
-.cm-timing-warning-mark {
-  background-color: color-mix(in srgb, var(--sem-warning) 25%, transparent);
-  border-radius: 2px;
-}
-.cm-line.cm-timing-warning::after {
-  content: attr(data-timing);
-  float: right;
-  color: #ffab40;
-  opacity: 0.8;
-  font-size: 0.85em;
-  font-style: italic;
-  padding-left: 2em;
-  pointer-events: none;
-}
+
+/* Remove CodeMirror's default line padding (overrides .ͼN .cm-line).
+   Keep the 6px left gutter for breathing room. */
+# .cm-editor .cm-content .cm-line {
+#   padding: 0 2px 0 0px !important;
+# }
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */
 .editor-tab-panel {

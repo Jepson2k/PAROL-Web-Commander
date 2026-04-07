@@ -503,12 +503,12 @@ class EditingMixin:
         self._end_editing_session()
 
     def _confirm_unified_as_joint(self) -> None:
-        """Confirm as joint target (converts moveL→moveJ if editing existing)."""
+        """Confirm as joint target (converts move_l→move_j if editing existing)."""
         if not self._editing_unified_target:
             return
 
         if self._editing_target_id:
-            # Editing existing target — convert to moveJ in place
+            # Editing existing target — convert to move_j in place
             target = self._find_target_by_id(self._editing_target_id)
             n = len(self.joint_names)
             angles_deg = list(robot_state.angles.deg[:n])
@@ -726,11 +726,11 @@ class EditingMixin:
             pose[5] if len(pose) > 5 else 0.0,
         ]
 
-        marker_id = ui_state.editor_panel.add_target_code(pose_mm, move_type)
-        if marker_id:
+        line_number = ui_state.editor_panel.add_target_code(pose_mm, move_type)
+        if line_number:
             new_target = ProgramTarget(
-                id=marker_id,
-                line_number=0,
+                id=f"pending_{line_number}",
+                line_number=line_number,
                 pose=pose,
                 move_type=move_type,
                 scene_object_id="",

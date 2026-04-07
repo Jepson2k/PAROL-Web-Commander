@@ -19,7 +19,7 @@ class IoPage:
     async def set_output(self, index: int, state: int) -> None:
         """Set digital output via the robot client (0-based index)."""
         try:
-            await self.client.set_io(index, state)
+            await self.client.write_io(index, state)
             motion_recorder.record_action("io", port=index, state=state)
             logger.info("OUTPUT%s -> %s", index + 1, "HIGH" if state else "LOW")
         except Exception as e:

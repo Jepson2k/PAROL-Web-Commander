@@ -70,7 +70,7 @@ class LinuxpyBackend:
 
     def open(self, device: int | str, width: int, height: int) -> bool:
         try:
-            from linuxpy.video.device import BufferType, Device, VideoCapture  # ty: ignore[unresolved-import]
+            from linuxpy.video.device import BufferType, Device, VideoCapture
         except ImportError:
             logger.debug("linuxpy not installed — skipping v4l2 backend")
             return False
@@ -274,7 +274,7 @@ def enumerate_video_devices(max_check: int = 10) -> list[dict[str, int | str]]:
 def _enumerate_v4l2(max_check: int) -> list[dict[str, int | str]] | None:
     """List v4l2 devices that support VIDEO_CAPTURE. Returns None if linuxpy unavailable."""
     try:
-        from linuxpy.video.device import Capability, Device  # ty: ignore[unresolved-import]
+        from linuxpy.video.device import Capability, Device
     except ImportError:
         return None
 

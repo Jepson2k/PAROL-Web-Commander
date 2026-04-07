@@ -54,6 +54,7 @@ class PlaybackController:
         self._teleport_task: asyncio.Task | None = None
         self._last_highlighted_index: int = -1
         self._last_slider_update: float = 0.0  # throttle slider visual updates
+        self._last_tool_selection: tuple[str, str] | None = None
 
     @property
     def sim_loading_progress(self) -> ui.element | None:
@@ -253,6 +254,7 @@ class PlaybackController:
     def invalidate_timeline(self) -> None:
         """Clear cached timeline so it gets rebuilt from new segments."""
         self._timeline = None
+        self._last_tool_selection = None
 
     def update_scrub_segments(self) -> None:
         """Update the segmented scrub bar to match path_segments.
@@ -393,6 +395,32 @@ class PlaybackController:
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_playback_opacity()
 
+        # Swap tool mesh when crossing a select_tool boundary
+        if tl.tool_selection_keyframes and ui_state.urdf_scene:
+            sel = tl.sample_tool_selection(t)
+            if sel is not None:
+                sel_pair = (sel.tool_key, sel.variant_key)
+                if sel_pair != self._last_tool_selection:
+                    self._last_tool_selection = sel_pair
+                    # Update robot model so FK reflects the new tool
+                    ui_state.active_robot.set_active_tool(
+                        sel.tool_key,
+                        variant_key=sel.variant_key or None,
+                    )
+                    ui_state.urdf_scene.apply_tool(
+                        sel.tool_key,
+                        variant_key=sel.variant_key or None,
+                    )
+                    ui_state.urdf_scene._update_tcp_ball_position()
+                    # Sync to controller so readout reflects tool TCP
+                    if ui_state.control_panel and ui_state.control_panel.client:
+                        asyncio.create_task(
+                            ui_state.control_panel.client.select_tool(
+                                sel.tool_key,
+                                variant_key=sel.variant_key or "",
+                            )
+                        )
+
         # Drive tool animation from timeline keyframes
         if (
             tool_pos
@@ -447,6 +475,7 @@ class PlaybackController:
             self._timeline = Timeline.from_segments(
                 simulation_state.path_segments,
                 simulation_state.tool_actions or None,
+                tool_selections=simulation_state.tool_selections or None,
             )
             simulation_state.sim_total_duration = self._timeline.total_duration
             if self._scrub_slider is not None:
@@ -481,6 +510,7 @@ class PlaybackController:
         # Let the auto-clear in main.py handle the handback after 100ms
         simulation_state.last_teleport_ts = time.monotonic()
         simulation_state.is_playing = False
+        self._last_tool_selection = None
         # Snapshot so position-change checker doesn't re-sim
         self._snapshot_joints()
         if self._scrub_slider:

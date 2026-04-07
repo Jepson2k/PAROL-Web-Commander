@@ -273,9 +273,11 @@ async def test_tcp_offset_changes_fk(user: User) -> None:
     robot.set_active_tool("PNEUMATIC", tcp_offset_m=(0.0, 0.0, 0.01))
     robot.fk(q_zero, fk_buf)
 
+    # The offset is in the tool's local frame. At q_zero, the PNEUMATIC
+    # tool Z-axis points in world -Z, so a +Z tool offset shifts world by -Z.
     diff_mm = (fk_buf[:3] - fk_base[:3]) * 1000
-    assert abs(diff_mm[2] - 10.0) < 0.01, (
-        f"Expected ~10mm Z shift, got {diff_mm[2]:.3f}mm"
+    assert abs(abs(diff_mm[2]) - 10.0) < 0.01, (
+        f"Expected ~10mm |Z| shift, got {diff_mm[2]:.3f}mm"
     )
     assert abs(diff_mm[0]) < 0.01, f"X should not shift, got {diff_mm[0]:.3f}mm"
     assert abs(diff_mm[1]) < 0.01, f"Y should not shift, got {diff_mm[1]:.3f}mm"

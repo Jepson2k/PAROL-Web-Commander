@@ -496,7 +496,7 @@ def session_client(
 ) -> Generator["AsyncRobotClient", None, None]:
     """Session-scoped async client connected to the session controller.
 
-    Performs initial setup (simulator_on, enable) once per session.
+    Performs initial setup (simulator, enable) once per session.
     The controller_reset fixture can be used for per-test reset if needed.
     """
     from parol6 import AsyncRobotClient
@@ -508,7 +508,7 @@ def session_client(
     # Initial setup - wait for controller and enable simulator
     async def setup():
         await client.wait_ready(timeout=10.0)
-        await client.simulator_on()
+        await client.simulator(True)
         await client.resume()
 
     loop = asyncio.new_event_loop()

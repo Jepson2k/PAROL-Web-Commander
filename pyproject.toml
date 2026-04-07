@@ -49,7 +49,20 @@ dependencies = [
 [project.optional-dependencies]
 parol6 = ["parol6>=0.1.0"]
 v4l2 = ["linuxpy>=0.24"]
-dev = ["parol6>=0.1.0", "ruff", "ty", "pytest", "pytest-asyncio", "pytest-timeout", "pytest-xdist", "pre-commit", "selenium"]
+dev = [
+  "parol6>=0.1.0",
+  "ruff",
+  "ty",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-timeout",
+  "pytest-xdist",
+  "pre-commit",
+  "selenium",
+  # linuxpy is needed by the v4l2 camera backend; install it on Linux
+  # so ty can resolve the import in waldo_commander/services/camera_service.py
+  "linuxpy>=0.24; sys_platform == 'linux'",
+]
 
 [project.scripts]
 waldo-commander = "waldo_commander.main:main"

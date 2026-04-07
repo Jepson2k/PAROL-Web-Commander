@@ -38,6 +38,9 @@ logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  #
 MAX_PATH_SEGMENTS = 10000
 SIMULATION_TIMEOUT_S = 5.0
 
+# Sentinel returned by update_path_visualization when results are unchanged
+_UNCHANGED = "__unchanged__"
+
 
 def _warm_worker(backend_package: str = "parol6") -> bool:
     """Import heavy modules in subprocess worker. Called once per worker at startup."""
@@ -116,7 +119,7 @@ def _run_simulation_isolated(
     global state.
 
     The simulation starts with no tool attached. The script must call
-    set_tool() explicitly to configure the correct tool and variant.
+    select_tool() explicitly to configure the correct tool and variant.
 
     Args:
         program_text: The Python program to simulate
@@ -138,6 +141,7 @@ def _run_simulation_isolated(
     local_segments: list[dict] = []
     local_targets: list[dict] = []
     local_tool_actions: list = []
+    local_tool_selections: list = []
     # Track final state (updated by client on each motion)
     final_state: dict[str, Any] = {"joints_rad": None}
     truncated = False
@@ -158,6 +162,7 @@ def _run_simulation_isolated(
         # with preview clients. This runs in a subprocess so patching is safe.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
+
         _dr_cls: type = dry_run_client_cls
 
         class LocalPathPreviewClient(PathPreviewClient):
@@ -166,6 +171,7 @@ def _run_simulation_isolated(
                     segment_collector=local_segments,
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
+                    tool_selection_collector=local_tool_selections,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -178,6 +184,7 @@ def _run_simulation_isolated(
                     segment_collector=local_segments,
                     target_collector=local_targets,
                     tool_action_collector=local_tool_actions,
+                    tool_selection_collector=local_tool_selections,
                     initial_joints=initial_joints_rad,
                     dry_run_client_cls=_dr_cls,
                     tool_meta_registry=tool_meta_registry,
@@ -246,8 +253,8 @@ def _run_simulation_isolated(
             "time": mock_time,  # Provide time module for scripts using time.sleep() without import
         }
 
-        # Populate linecache with program source so DryRunRobotClient can find
-        # source lines for TARGET marker detection
+        # Populate linecache so PathPreviewClient can read source lines
+        # for literal-arg detection and line number extraction
         lines = program_text.splitlines(keepends=True)
         # Ensure lines end with newline for linecache compatibility
         if lines and not lines[-1].endswith("\n"):
@@ -341,6 +348,7 @@ def _run_simulation_isolated(
         "segments": local_segments,
         "targets": local_targets,
         "tool_actions": local_tool_actions,
+        "tool_selections": local_tool_selections,
         "truncated": truncated,
         "error": error_message,
         "total_steps": len(local_segments),
@@ -354,6 +362,25 @@ class PathVisualizer:
     def __init__(self):
         self._simulation_lock = asyncio.Lock()
         self._simulation_count = 0
+
+    @staticmethod
+    def _segments_match(old: list[PathSegment], new: list[PathSegment]) -> bool:
+        """Fast check whether two segment lists are visually identical."""
+        if len(old) != len(new):
+            return False
+        for a, b in zip(old, new):
+            if (
+                len(a.points) != len(b.points)
+                or a.color != b.color
+                or a.is_valid != b.is_valid
+                or a.line_number != b.line_number
+            ):
+                return False
+            # Compare first/last point (same as scene fingerprint)
+            if a.points and b.points:
+                if a.points[0] != b.points[0] or a.points[-1] != b.points[-1]:
+                    return False
+        return True
 
     async def update_path_visualization(
         self, program_text: str, tab_id: str | None = None
@@ -390,15 +417,6 @@ class PathVisualizer:
                     targets_before,
                 )
 
-            # Clear current state (but DON'T notify yet - wait until new data is populated
-            # to avoid a transient "empty" state that destroys scene objects like TransformControls)
-            simulation_state.path_segments.clear()
-            simulation_state.targets.clear()
-            simulation_state.tool_actions.clear()
-            simulation_state.current_step_index = 0
-            simulation_state.total_steps = 0
-            # NOTE: No notify_changed() here - we notify once at the end after new data arrives
-
             # Get current robot joint angles for initial position
             initial_joints_rad: np.ndarray | None = None
             if len(robot_state.angles) >= ui_state.active_robot.joints.count:
@@ -421,7 +439,7 @@ class PathVisualizer:
                 return None
 
             # Build serializable tool metadata registry for all tools.
-            # Scripts can call set_tool() to switch tools mid-program, so we
+            # Scripts can call select_tool() to switch tools mid-program, so we
             # need metadata for every tool — not just the currently active one.
             # Each entry includes base motions + per-variant motions.
             tool_meta_registry: dict[str, dict] = {}
@@ -529,21 +547,40 @@ class PathVisualizer:
                 target_tab = editor_tabs_state.get_active_tab()
 
             if target_tab:
-                # Store simulation results in the tab
-                target_tab.path_segments = [
-                    PathSegment.from_dict(d) for d in result["segments"]
-                ]
-                target_tab.targets = [
-                    ProgramTarget.from_dict(d) for d in result["targets"]
-                ]
-                target_tab.tool_actions = result.get("tool_actions", [])
+                new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
+                new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
+                new_tool_actions = result.get("tool_actions", [])
+                new_tool_selections = result.get("tool_selections", [])
+
+                # Always store final_joints_rad (used for position-change
+                # detection even when segments are unchanged).
                 target_tab.final_joints_rad = result.get("final_joints_rad")
+
+                # Check if results match what's already stored — skip update
+                # to avoid unnecessary scrub bar rebuilds and visual flash.
+                # Don't skip when there's an error: the caller needs the error
+                # string to apply diagnostics even if segments are the same.
+                if self._segments_match(
+                    target_tab.path_segments, new_segments
+                ) and not result.get("error"):
+                    logger.info(
+                        "Simulation results unchanged (sim_id=%d), skipping update",
+                        sim_id,
+                    )
+                    return _UNCHANGED
+
+                # Store simulation results in the tab
+                target_tab.path_segments = new_segments
+                target_tab.targets = new_targets
+                target_tab.tool_actions = new_tool_actions
+                target_tab.tool_selections = new_tool_selections
 
                 # Only update global simulation_state if this tab is still active
                 if target_tab.id == editor_tabs_state.active_tab_id:
                     simulation_state.path_segments = list(target_tab.path_segments)
                     simulation_state.targets = list(target_tab.targets)
                     simulation_state.tool_actions = list(target_tab.tool_actions)
+                    simulation_state.tool_selections = list(target_tab.tool_selections)
                     simulation_state.total_steps = len(target_tab.path_segments)
                 else:
                     logger.debug(

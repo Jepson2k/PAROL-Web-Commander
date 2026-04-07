@@ -1,10 +1,10 @@
 # Backend Development Guide
 
-This guide walks through integrating a new robot backend with Waldo Commander. By the end, your robot will appear in the 3D viewer, respond to jog commands, run user scripts, and (optionally) preview motion paths offline.
+This guide walks through integrating a new robot backend with Waldo Commander. By the end, your robot will appear in the 3D viewer, respond to jog commands, run user scripts, and preview motion paths.
 
 ## What is waldoctl?
 
-[waldoctl](https://github.com/Jepson2k/waldoctl) is a small Python package that defines the abstract interfaces your backend implements. It contains no robot-specific logic -- just ABCs, Protocols, frozen dataclasses, and type aliases. Install it as a dependency of your backend package:
+[waldoctl](https://github.com/Jepson2k/waldoctl) is a small Python package that defines the abstract interfaces your backend implements. It contains no robot-specific logic -- just ABCs, Protocols, and type definitions. Install it as a dependency of your backend package:
 
 ```
 pip install waldoctl
@@ -14,141 +14,293 @@ This guide explains the concepts and patterns. For exact method signatures, defa
 
 ## Architecture overview
 
+Waldo Commander interacts with your backend through three client interfaces. The diagrams below split this into two flows: **live control** (direct, real-time user interaction) and **script execution** (recorded path preview, script run, and timeline scrubbing). Both can target either the real robot or the simulator -- the difference is whether commands originate from a live user action or a script being executed.
+
+### Interactive control
+
 ```mermaid
-graph TB
-    subgraph "Waldo Commander"
-        UI[Web UI]
-        Viewer[3D Viewer]
-        Editor[Program Editor]
+graph TD
+    subgraph input["Frontend Input"]
+        Jog([Presses Jog Button])
+        Gizmo([TCP Gizmo])
+        Cmd([Home · Halt · Resume])
+        Grip([Tool Actions])
     end
 
-    subgraph "Script Execution"
-        Script[User Script<br>Python]
-        DryRun[DryRunClient<br>offline simulation]
-        Stepper[SteppingClient<br>debug mode]
+    subgraph output["Frontend Output"]
+        UI[3D Viewer · Readouts]
     end
 
-    subgraph "waldoctl"
-        AC[AsyncRobotClient]
-        SC[SyncRobotClient]
+    Jog --> JC{click/hold?}
+    JC -->|click| ac_move
+    JC -->|hold| JH{held?}
+    JH -->|yes| JH_delay@{ shape: delay, label: "50ms" } --> ac_jog
+    JH_delay --> JH
+
+    Gizmo --> GD{dragging?}
+    GD -->|yes| GD_delay@{ shape: delay, label: "50ms" } --> ac_servo
+    GD_delay --> GD
+
+    Cmd --> ac_cmd
+    ac_cmd -.->|result| Cmd
+
+    Grip --> ActiveTool[get active tool] --> ac_tool
+
+    subgraph AC["AsyncClient"]
+        ac_jog["jog_j / jog_l"]
+        ac_move["move_j / move_l"]
+        ac_servo[servo_l]
+        ac_cmd["home · halt · resume"]
+        ac_tool[tool_action]
     end
 
-    Backend[Robot Backend<br>e.g. PAROL6]
-
-    UI -- jog, home, halt --> AC
-    AC -- status telemetry --> UI
-    AC -- joint angles --> Viewer
-
-    Editor -- run --> Script
-    Script -- moveJ, moveL, ... --> SC
-    SC --> Backend
-
-    Editor -- dry run --> DryRun
-    DryRun -- path segments --> Viewer
-
-    Editor -- step mode --> Stepper
-    Stepper -. IPC .-> Script
-
-    AC --> Backend
-    Backend --> AC
+    AC -.->|StatusBuffer| UI
 ```
 
-There are three data paths between Waldo Commander and your backend:
+The UI creates an `AsyncRobotClient` at startup. This client serves two purposes: streaming status telemetry back to the UI, and sending control commands.
 
-**Interactive control** -- The web UI creates an `AsyncRobotClient` for real-time operations: jogging, homing, e-stop, tool actions. The same client streams status telemetry back to the UI at 20-100 Hz, driving the joint readouts, 3D viewer, I/O panel, and gripper display.
+**Status streaming** -- `stream_status_shared()` is an async iterator that yields `StatusBuffer` snapshots. It drives the entire UI: joint angle readouts, 3D viewer pose, TCP speed, I/O state, gripper position, action state, and simulator status. The buffer is a Protocol with numpy array fields for zero-copy access. You fill these arrays in your backend's status loop and yield the same buffer object each iteration.
 
-**Script execution** -- User programs are plain Python files that run in a subprocess. They use a `SyncRobotClient` (synchronous wrapper) to call `moveJ`, `moveL`, `tool_action`, etc. Because there's no event loop in the subprocess, the sync client typically manages a background thread with `asyncio.run_coroutine_threadsafe`.
+**Jogging** -- When the user holds a jog button, the UI sends `jog_j` or `jog_l` commands at 20 Hz, each with a 0.1-second duration. Your backend should blend consecutive commands into smooth motion -- don't queue stale ones. When the user clicks (rather than holds) a jog button, the UI sends a single `move_j` or `move_l` step instead.
 
-**Offline simulation** -- The `DryRunClient` intercepts the same motion calls (`moveJ`, `moveL`, `home`) and simulates them locally without hardware. Since user scripts are ordinary Python, the dry-run client simply replaces the real client -- all language features (loops, conditionals, math) work identically in simulation. The `SteppingClient` wraps the real client to pause after each motion command for debug/step mode.
+**Gizmo drag** -- When the user drags the TCP gizmo in the 3D viewer, the UI sends `servo_l` position targets at 20 Hz. Your backend should replace stale targets rather than enqueuing them.
+
+**Single commands** -- `home`, `halt`, `resume`, `move_j`, `move_l` are one-off commands triggered by UI buttons. `halt` must stop motion immediately.
+
+### Script execution
+
+```mermaid
+graph TD
+    subgraph input["Frontend Input"]
+        Edit([Edit code])
+        Run([▶ Run])
+        StepCtrl([⏸ Pause · ▶ Step])
+        Scrub([Scrub timeline])
+        SimToggle([Toggle Simulator])
+    end
+
+    subgraph output["Frontend Output"]
+        UI[3D Viewer · Readouts · Path Viz]
+    end
+
+    TL@{ shape: cyl, label: "Timeline" }
+
+    Edit --> Deb@{ shape: delay, label: "1s" } --> EditSub
+    subgraph EditSub["Subprocess"]
+        EditImport[hook backend library import]
+        EditScript([execute user script])
+        EditDec{motion call?}
+        DRC[DryRunClient]
+        Drop@{ shape: dbl-circ, label: "ignore" }
+        EditImport --> EditScript --> EditDec
+        EditDec -->|yes| DRC
+        EditDec -->|no| Drop
+    end
+
+    Run --> PlaybackMode
+    StepCtrl --> PlaybackMode
+    PlaybackMode@{ shape: hex, label: "playback mode" }
+    PlaybackMode --> RunSim{sim?}
+    RunSim -->|no| RunSub
+    subgraph RunSub["Subprocess"]
+        RunImport[hook backend library import]
+        RunScript([execute user script])
+        RunDec{step ready?}
+        QueryMode[query playback mode]
+        SC[SyncClient]
+        RunImport --> RunScript --> RunDec
+        RunDec -->|no| QueryMode
+        QueryMode --> RunDec
+        RunDec -->|yes| SC
+    end
+    PlaybackMode -.-> QueryMode
+    RunSim -->|yes| GetState
+
+    ac_sim["simulator()"]
+    ac_tp["teleport()"]
+    RobotState@{ shape: hex, label: "robot / sim state" }
+    SC --> RobotState
+    ac_tp --> RobotState
+    RobotState -.->|StatusBuffer| UI
+
+    DRC -.->|DryRunResult| UI
+    DRC -.->|DryRunResult| TL
+
+    SimToggle --> ac_sim
+    ac_sim -->|sets| SimState@{ shape: hex, label: "sim state" }
+    SimState -.-> RunSim
+    SimState -.-> ScrubSim
+
+    Scrub --> ScrubSim{sim?}
+    ScrubSim -->|yes| GetState
+    GetState[play through timeline]
+    TL -.-> GetState
+    GetState --> Fork@{ shape: fork }
+    Fork -.-> UI
+    Fork -->|"keep sim position in sync"| ac_tp
+```
+User programs are plain Python files that import your backend's client directly:
+
+```python
+from mybackend import RobotClient
+
+rbt = RobotClient(host='127.0.0.1', port=5001)
+rbt.home()
+rbt.move_j(pose=[100, 200, 300, 0, 0, 0], speed=0.5)
+```
+
+The same script works in three contexts without modification:
+
+- **Standalone** -- the script connects to the real backend and executes on hardware or simulator.
+- **In Waldo Commander (run)** -- Commander hooks the import to wrap your client with stepping support (pause/step/play for debugging). Commands still flow to the real backend.
+- **In Waldo Commander (path preview)** -- When the user edits code in the editor, Commander debounces for 1 second of idle time, then runs the script in an isolated subprocess with your `DryRunClient` substituted for the real client. The script runs identically -- loops, conditionals, math all work -- but each motion call returns trajectory data instead of executing normally. Results feed the path visualizer and populate the timeline. In **simulator mode**, the timeline slider is interactive -- the user can scrub freely and play at variable speeds. Commander sends `teleport` commands in parallel to keep the backend's simulator state in sync. After playback stops, the simulator knows where the robot "is" and subsequent operations start from the correct position. During teleport playback, Commander suppresses real-time status updates to the 3D viewer to prevent jitter.
+
+The backend author doesn't need to do anything special for this. Commander handles the hooking; your client just needs to work as a normal Python class.
 
 ## What you implement
 
-Your backend is a Python package that provides three things (plus an optional fourth):
+Your backend is a Python package that provides:
 
 1. A `Robot` subclass -- configuration and kinematics
-2. An `AsyncRobotClient` subclass -- async control interface
-3. A sync client -- synchronous wrapper for script execution
-4. A `DryRunClient` (optional) -- offline path preview
+2. A `RobotClient` subclass -- control interface (async and sync)
+3. A `DryRunClient` (optional) -- trajectory preview
+4. Tool definitions -- end-effector configuration
 
 ### Robot subclass
 
-The `Robot` ABC is the central configuration object. It tells Waldo Commander everything about your robot's geometry, capabilities, and how to create clients. The abstract methods fall into several groups:
+The `Robot` ABC is the central configuration object. It tells Waldo Commander everything about your robot's geometry, capabilities, and how to create clients.
 
-**Identity and units.** The `name` property is a display string. `position_unit` (`"mm"` or `"m"`) tells the UI how your users think about distance -- it affects readout formatting but not internal math (which is always meters + radians).
+#### Identity and units
 
-**Joint configuration.** The `joints` property returns a `JointsSpec` -- a frozen dataclass bundle containing:
+The `name` property is a display string. `position_unit` (`"mm"` or `"m"`) tells the UI how your users think about distance -- it affects readout formatting but not internal math (which is always meters + radians). This enables users of small robots to use millimeters and users of large robots to use meters.
+
+#### Joint configuration
+
+The `joints` property returns a `JointsSpec` containing:
 
 - `count` -- number of actuated joints
 - `names` -- display names for each joint
 - `limits` -- position limits (degrees and radians), plus kinodynamic limits (velocity, acceleration, jerk) for both hardware maximums and reduced jog-mode limits
 - `home` -- the home/standby position in degrees and radians
 
-All of these are frozen dataclasses built from numpy arrays. You construct them once in your `Robot.__init__` and they never change.
+You construct `JointsSpec` once in `__init__` -- see the [minimal skeleton](#minimal-skeleton) for an example.
 
-**Tool configuration.** The `tools` property returns a `ToolsSpec` -- a collection of `ToolSpec` objects describing your end-effectors. Even a bare-flange robot needs at least a "NONE" tool. Grippers get dedicated UI panels -- see the `GripperTool`, `PneumaticGripperTool`, and `ElectricGripperTool` subclasses in waldoctl. Each tool declares its TCP offset, 3D meshes, and motion descriptors (how jaws translate, spindles rotate, etc.).
+#### Kinematics
 
-**Kinematics.** You implement `fk` and `ik` for forward and inverse kinematics:
+You implement `fk` and `ik` for forward and inverse kinematics:
 
-- `fk` takes joint angles in radians and a pre-allocated output buffer, returns `[x, y, z, rx, ry, rz]` in meters + radians. The buffer is reused to avoid allocations in the hot path.
-- `ik` takes a pose and seed angles, returns an `IKResult` with the solution in radians, a success flag, and optional violation descriptions.
-- `fk_batch` and `ik_batch` are used for path preview -- same semantics on arrays of poses.
+- `fk(q_rad, out)` -- takes joint angles in radians and a pre-allocated output buffer, returns `[x, y, z, rx, ry, rz]` in meters + radians. The buffer is reused to avoid allocations in the hot path.
+- `ik(pose, q_seed_rad)` -- takes a pose and seed angles, returns an `IKResult` with the solution in radians, a success flag, and optional violation descriptions.
+- `fk_batch` and `ik_batch` -- used for path preview, same semantics on arrays of poses.
 
 If you already have an IK library (KDL, ikfast, Pinocchio, or your SDK's built-in solver), you just wrap it here.
 
-**Lifecycle.** `start` initializes the backend (spawn a subprocess, connect to a server, launch a ROS node -- whatever applies). `stop` tears it down. `is_available` is a quick health check.
+#### Lifecycle
 
-**Client factories.** `create_async_client` and `create_sync_client` construct connected clients. `create_dry_run_client` returns a `DryRunClient` or `None` if you don't support offline simulation.
+`start` initializes the backend (spawn a subprocess, connect to a server, launch a ROS node -- whatever applies). `stop` tears it down. `is_available` is a quick health check.
 
-### AsyncRobotClient subclass
+#### Client factories
 
-The `RobotClient` ABC defines the async control interface. Its methods fall into three motion patterns:
+`create_async_client` and `create_sync_client` construct connected clients. `create_dry_run_client` returns a `DryRunClient` or `None` if you don't support trajectory preview.
 
-**Trajectory-planned motion** -- `moveJ`, `moveL`, and `home` are the core commands. The backend plans the full trajectory (time-optimal, trapezoidal, spline -- your choice) and executes it. Each returns a command index that can be passed to `wait_command_complete`. Optional extensions include `moveC` (circular arc), `moveS` (spline), and `moveP` (process move) -- these have default implementations that raise `NotImplementedError`, and the UI gracefully disables controls that depend on them.
+### RobotClient (async and sync)
 
-**Streaming position** -- `servoJ` and `servoL` are fire-and-forget position targets. The UI uses these for interactive jogging at 20 Hz. Your backend should consume each target immediately and blend or interpolate to the next one. Don't queue them -- stale targets cause sluggish response.
+The `RobotClient` ABC defines the control interface. Your backend provides two variants -- async and sync -- that expose the same methods with the same behavior. The only difference is Python calling convention: `async`/`await` vs blocking calls.
 
-**Streaming velocity** -- `jogJ` and `jogL` are velocity-mode jog commands with a duration parameter. Each command says "move joint N at this speed for this long." The UI sends a new one every 50 ms; if it stops sending, the robot stops after the duration expires.
-
-**Status streaming** -- `status_stream_shared` is the critical method. It's an async iterator that yields `StatusBuffer` snapshots, driving the entire UI: joint angle readouts, 3D viewer pose, I/O state, gripper position, action state, and TCP speed. The buffer is a Protocol with numpy array fields for zero-copy access. You fill these arrays in your backend's status loop and yield the same buffer object each iteration (the "shared" in the name).
-
-**Graceful degradation** -- Many methods are optional (their defaults raise `NotImplementedError`). The UI detects this and disables the corresponding controls. You can ship a minimal backend and add features incrementally.
-
-### SyncRobotClient
-
-User scripts run in a plain Python subprocess with no event loop. The sync client wraps your async client so that `rbt.moveJ(...)` works as a blocking call. The typical pattern is to spin up a background thread running `asyncio.run_forever()` and dispatch calls with `asyncio.run_coroutine_threadsafe`. waldoctl doesn't prescribe the implementation -- just expose the same method names synchronously.
+How you implement them is up to you. You can write the async client first and wrap it to get the sync version (the approach PAROL6 takes), or vice versa, or implement both independently. waldoctl doesn't prescribe the relationship.
 
 Your `Robot` must expose `sync_client_class` and `async_client_class` properties so the editor can discover available commands for autocomplete.
 
+The client's methods fall into several patterns:
+
+**Trajectory-planned motion** -- `move_j`, `move_l`, and `home` are the core commands. The backend plans the full trajectory and executes it. Each returns a command index that can be passed to `wait_command`. Optional extensions (`move_c`, `move_s`, `move_p`) have ABC defaults that raise `NotImplementedError`. Waldo Commander itself doesn't expose UI controls for these moves today, but user scripts can call them and will get the standard exception if your backend hasn't implemented them.
+
+**Streaming position** -- `servo_j` and `servo_l` are fire-and-forget position targets. The UI uses these for gizmo drag at 20 Hz. Consume each target immediately and blend or interpolate to the next one. Don't queue them.
+
+**Streaming velocity** -- `jog_j` and `jog_l` are velocity-mode jog commands with a duration parameter. Each says "move at this speed for this long." The UI sends a new one every 50 ms; if it stops sending, the robot stops after the duration expires.
+
+**Status streaming** -- `stream_status_shared` yields `StatusBuffer` snapshots driving the entire UI. See [Interactive control](#interactive-control) above.
+
+**Optional methods** -- Many `RobotClient` methods have ABC defaults that raise `NotImplementedError`. Waldo Commander does **not** introspect your client to disable controls automatically -- if a user script calls an unimplemented method, it will raise at runtime. Document which optional features your backend supports so users know what to expect.
+
+### Simulator mode
+
+Your client implements `simulator(enabled)` and `is_simulator()` to toggle and query simulator mode. When simulator mode is on, the backend simulates robot behavior without hardware -- how you do this is entirely up to you. The PAROL6 backend swaps its serial transport for a very basic simulation; another backend might do something completely different.
+
+The important contract is:
+
+- Status streaming, motion planning, and command execution all work normally in simulator mode
+- `StatusBuffer.simulator_active` reflects the current mode in every status update
+- `teleport(angles, tool_positions)` is available for instant position jumps without trajectory planning (simulator only)
+
+Commander uses teleport during simulation playback to keep the backend's state synchronized with the timeline animation.
+
 ### DryRunClient (optional)
 
-The `DryRunClient` Protocol enables offline path preview and simulation playback. It mirrors a subset of the real client's motion commands (`moveJ`, `moveL`, `home`) but runs them against simulated controller state. Each call returns a `DryRunResult` containing the TCP trajectory and final joint state.
+The `DryRunClient` Protocol enables trajectory preview. It mirrors a subset of the real client's motion commands (`move_j`, `move_l`, `home`) -- each call returns a `DryRunResult` describing the trajectory the motion would produce:
 
-If you skip this, the dry-run button in the editor is disabled, but everything else works fine. If you implement it, `flush()` must return a list of all accumulated `DryRunResult` objects since the last flush, which the path visualizer uses to render trajectory segments.
+- `tcp_poses` -- the TCP trajectory as an array of `[x, y, z, rx, ry, rz]` poses
+- `joint_trajectory_rad` -- the full joint trajectory (enables simulation playback with timeline scrubbing)
+- `duration` -- estimated trajectory duration
+- `valid` -- per-pose IK validity (enables reachability coloring in the 3D viewer)
+- `error` -- diagnostic when a motion fails in simulation
+
+`flush()` returns a list of all accumulated `DryRunResult` objects since the last flush, which handles motions still in a blend buffer.
+
+### Tool configuration
+
+Tools are end-effectors: grippers, spindles, vacuum cups, bare flanges. The `tools` property on your `Robot` returns a `ToolsSpec` -- a collection of `ToolSpec` objects describing your available tools.
+
+#### Tool types and UI generation
+
+`ToolType` determines what UI panel appears:
+
+- `ToolType.NONE` -- passive tool. TCP offset and 3D visual only, no control panel. Every robot needs at least one.
+- `ToolType.GRIPPER` -- gets a dedicated control panel with position slider, status indicators, and real-time data charts.
+
+Beyond the panel, any tool can have automatic action buttons in the UI. Setting `action_l_labels`, `action_l_icons`, and `action_l_mode` on your `ToolSpec` generates a toggle or trigger button on the left side. Same for `action_r_*` on the right. `adjust_step`, `adjust_labels`, and `adjust_icons` add +/- adjust buttons. The UI generates these controls from your ToolSpec properties -- you don't need a gripper to get tool controls.
+
+#### Gripper subtypes
+
+Currently, grippers get the most extensive UI support. Two subtypes:
+
+- `PneumaticGripperTool` -- binary open/close via a digital I/O port. `ActivationType.BINARY` means no position feedback from hardware; motion descriptors need `estimated_speed` fields so the viewer can animate transitions.
+- `ElectricGripperTool` -- continuous position control with speed and current parameters. `ActivationType.PROGRESSIVE` means real-time position feedback. Real-time charts plot position and current channels over time. `channel_descriptors` define the data channels (e.g., "Current" in mA).
+
+Both support `open()`, `close()`, and `set_position()` (normalized 0.0 = fully open, 1.0 = fully closed).
+
+#### Tool geometry
+
+Each tool declares:
+
+- `tcp_origin` / `tcp_rpy` -- TCP offset from the flange, applied to FK/IK
+- `meshes` -- tuple of `MeshSpec` entries, each with a filename, origin offset, orientation, and role (`BODY`, `JAW`, or `SPINDLE`)
+- `motions` -- `LinearMotion` or `RotaryMotion` descriptors that tell the viewer how to animate moving parts based on the tool status positions
+- `variants` -- named configurations (e.g., different jaw sets) that swap meshes and motions wholesale. A variant selector appears in the UI when variants are defined.
+
+#### Tool actions and status
+
+Tools dispatch actions through callbacks bound at client creation time. When user code calls `rbt.tool.close()`, it routes through `client.tool_action()` to your backend. Your backend executes the action and reports results via `ToolStatus` in the status stream:
+
+- `state` -- OFF, IDLE, ACTIVE, ERROR
+- `engaged` -- actively doing work
+- `part_detected` -- object presence confirmed
+- `positions` -- DOF positions (one per motion descriptor), normalized 0..1
+- `channels` -- process data (e.g., current in mA), described by `channel_descriptors`
+- `fault_code` -- 0 = no fault
 
 ## Registration
 
-To make your robot selectable, register it in `waldo_commander/profiles/__init__.py`:
-
-```python
-if name == "my_robot":
-    try:
-        from my_robot import Robot as MyRobot
-    except ImportError:
-        raise ImportError(
-            "my_robot backend not installed. Install with: "
-            "pip install waldo-commander[my-robot]"
-        ) from None
-    return MyRobot()
-```
-
-And add the optional dependency to `pyproject.toml`:
+Backends register themselves via a Python entry point in the `waldoctl.robots` group -- no edits to Waldo Commander are required. Add the entry point to your backend's `pyproject.toml`:
 
 ```toml
-[project.optional-dependencies]
-my-robot = ["my-robot>=0.1.0"]
+[project.entry-points."waldoctl.robots"]
+my_robot = "my_robot.robot:Robot"
 ```
 
-This currently requires forking or editing the Waldo Commander source. Entry-point-based auto-discovery is planned for a future release.
+The entry-point value must point to a `waldoctl.Robot` subclass. Once the package is installed in the same environment as Waldo Commander, the backend is automatically discovered by `waldoctl.discovery.available_backends()` and selectable from the UI.
+
+**Selecting a backend** -- if multiple backends are installed, choose one by setting the `WALDO_ROBOT` environment variable to the entry-point name. With a single backend installed, it is auto-selected. Otherwise Waldo Commander falls back to its built-in default (`parol6`).
 
 ## Visualization
 
@@ -168,47 +320,48 @@ These aren't enforced by waldoctl, but they matter for a good user experience.
 
 ### Feature activation
 
-The UI enables and disables panels based on what your backend reports:
+The UI conditionally renders some panels based on what your `Robot` reports:
 
-- `has_freedrive` -- freedrive toggle appears in the control panel
-- `has_force_torque` -- force/torque readout appears
-- `create_dry_run_client()` returning a client vs `None` -- dry-run button enabled or disabled
-- `ToolsSpec.available` -- tool and gripper panels appear when tools exist beyond the bare-flange default
-- `digital_inputs` / `digital_outputs` counts -- I/O panel layout adjusts to your pin count
-- Optional `RobotClient` methods -- controls are disabled when the method raises `NotImplementedError`
+- `digital_inputs` / `digital_outputs` counts -- the I/O panel renders exactly that many input/output rows.
+- `ToolsSpec.available` -- when the active tool is a `GripperTool`, the gripper tab is enabled and its panel is built.
+- `create_dry_run_client()` returning `None` -- path preview silently produces no segments. The editor still accepts code edits; the preview just doesn't render.
+
+The following `Robot` properties exist in the `waldoctl` ABC but are **not currently consumed by the UI**: `has_freedrive`, `has_force_torque`. Setting them has no effect today.
 
 ### Status update rate
 
-The 3D viewer interpolates joint angles at the browser's frame rate, but the source data comes from `status_stream_shared`. At 10 Hz the robot looks jerky; 50-100 Hz gives smooth real-time rendering. Consider the tradeoff with network bandwidth and CPU load on your controller.
-
-### Jog command cadence
-
-The UI emits servo/jog commands at `WALDO_WEBAPP_CONTROL_RATE_HZ` (20 Hz default). Your backend must consume these without building up a queue of stale commands. If a new target arrives before the previous one completes, replace it rather than enqueuing.
+The 3D viewer interpolates joint angles at the browser's frame rate, but the source data comes from `stream_status_shared`. At 10 Hz the robot looks jerky; 50-100 Hz gives smooth real-time rendering. Consider the tradeoff with network bandwidth and CPU load on your controller.
 
 ### Command palette
 
-`RobotClient` methods that include `Category:` and `Example:` sections in their docstrings appear in the editor's auto-complete palette. Follow this format in your client's docstrings to get free editor integration:
+`RobotClient` methods that include `Category:` and `Example:` sections in their docstrings appear in the editor's auto-complete palette. Follow this format in your client's docstrings to get easy editor integration:
 
 ```python
-async def moveJ(self, target, *, speed=0.0, **kwargs):
+async def move_j(self, target, *, speed=0.0, **kwargs):
     """Joint-space move.
 
     Category: Motion
 
     Example:
-        rbt.moveJ([0, -90, 0, 0, 0, 0], speed=0.5)
+        rbt.move_j([0, -90, 0, 0, 0, 0], speed=0.5)
     """
 ```
 
 ### DryRunResult fields
 
-Each field in `DryRunResult` enables a specific visualization feature. Missing fields degrade gracefully -- the feature is simply unavailable:
+The `DryRunResult` Protocol splits its fields into required and optional:
 
-- `tcp_poses` -- the TCP trajectory rendered as a 3D path (required)
-- `joint_trajectory_rad` -- enables simulation playback with timeline scrubbing
-- `valid` -- enables per-pose IK validity coloring (green for reachable, red for violations)
-- `duration` -- drives the estimated time display
-- `error` -- shown as a diagnostic when a motion fails in simulation
+**Required** (must always be set):
+
+- `tcp_poses` -- the TCP trajectory rendered as the 3D path
+- `end_joints_rad` -- final joint angles after the motion
+- `duration` -- estimated trajectory duration; `0.0` is valid for instant motions like teleport or home
+
+**Optional** (set to `None` to skip the corresponding feature):
+
+- `joint_trajectory_rad` -- full joint trajectory; required to enable timeline scrubbing playback
+- `valid` -- per-pose IK validity flags; enables green/red reachability coloring in the 3D viewer
+- `error` -- diagnostic shown when a motion fails in simulation
 
 ## Minimal skeleton
 
@@ -423,34 +576,38 @@ class AsyncClient(waldoctl.RobotClient):
     async def status_stream_shared(self) -> AsyncIterator[StatusBuffer]: ...  # type: ignore[override]
 
     # Trajectory-planned motion
-    async def moveJ(self, target, **kw) -> int: return -1
-    async def moveL(self, pose, **kw) -> int: return -1
+    async def move_j(self, target, **kw) -> int: return -1
+    async def move_l(self, pose, **kw) -> int: return -1
     async def home(self, **kw) -> int: return -1
 
     # Streaming position
-    async def servoJ(self, target, **kw) -> int: return -1
-    async def servoL(self, pose, **kw) -> int: return -1
+    async def servo_j(self, target, **kw) -> int: return -1
+    async def servo_l(self, pose, **kw) -> int: return -1
 
     # Streaming velocity
-    async def jogJ(self, joint, speed=0.0, duration=0.1, **kw) -> int: return -1
-    async def jogL(self, frame="WRF", axis=None, speed=0.0, duration=0.1, **kw) -> int: return -1
+    async def jog_j(self, joint, speed=0.0, duration=0.1, **kw) -> int: return -1
+    async def jog_l(self, frame="WRF", axis=None, speed=0.0, duration=0.1, **kw) -> int: return -1
 
     # Synchronization
-    async def wait_motion_complete(self, timeout=10.0, **kw) -> bool: return True
-    async def wait_command_complete(self, command_index, timeout=10.0) -> bool: return True
+    async def wait_motion(self, timeout=10.0, **kw) -> bool: return True
+    async def wait_command(self, command_index, timeout=10.0) -> bool: return True
 
     # Safety
     async def resume(self) -> int: return 0
     async def halt(self) -> int: return 0
 
+    # Simulator
+    async def simulator(self, enabled: bool) -> int: return 0
+    async def is_simulator(self) -> bool: return True
+    async def teleport(self, angles_deg, tool_positions=None) -> int: return 0
+
     # Queries
-    async def get_angles(self) -> list[float] | None: return [0.0] * NUM_JOINTS
-    async def get_pose(self, frame="WRF") -> list[float] | None: return [0.0] * 16
-    async def get_pose_rpy(self) -> list[float] | None: return [0.0] * 6
+    async def angles(self) -> list[float] | None: return [0.0] * NUM_JOINTS
+    async def pose(self, frame="WRF") -> list[float] | None: return [0.0] * 6
 
 
 class SyncClient:
-    """Synchronous wrapper -- same method names, blocking calls."""
+    """Synchronous variant -- same method names, blocking calls."""
     ...
 ```
 
@@ -461,17 +618,18 @@ This table shows which Waldo Commander features depend on which backend methods 
 | Feature | Required methods / properties |
 |---|---|
 | 3D viewer | `urdf_path`, `mesh_dir`, `joint_index_mapping`, `fk` |
-| Live telemetry | `status_stream_shared` |
+| Live telemetry | `stream_status_shared` |
 | Connection status | `ping` |
 | E-stop / resume | `halt`, `resume` |
 | Home | `home` |
-| Joint jogging | `jogJ`, `servoJ` |
-| Cartesian jogging | `jogL`, `servoL` |
-| Script execution | `moveJ`, `moveL`, `wait_motion_complete` |
-| Path preview | `DryRunClient` (`moveJ`, `moveL`, `home`, `flush`) |
-| Simulation playback | `DryRunClient` + `joint_trajectory_rad` in `DryRunResult` |
-| I/O panel | `digital_inputs`, `digital_outputs`, `get_io`, `set_io` |
+| Joint jogging | `jog_j`, `servo_j` |
+| Cartesian jogging | `jog_l`, `servo_l` |
+| Script execution | `move_j`, `move_l`, `wait_motion` |
+| Simulator mode | `simulator`, `is_simulator`, `teleport` |
+| Path preview | `DryRunClient` (`move_j`, `move_l`, `home`, `flush`) |
+| Simulation playback | `DryRunClient` + `joint_trajectory_rad` in `DryRunResult` + simulator mode |
+| I/O panel | `digital_inputs`, `digital_outputs`, `io`, `write_io` |
+| Tool action buttons | `ToolSpec` with `action_l_labels` / `action_r_labels` + `tool_action` |
 | Gripper panel | `ToolsSpec` with `GripperTool` + `tool_action` |
-| Freedrive toggle | `has_freedrive`, `set_freedrive` |
-| Force/torque readout | `has_force_torque` |
+| Gripper data charts | `ElectricGripperTool` + `channel_descriptors` + `ToolStatus.channels` |
 | Command palette | `Category:` / `Example:` in method docstrings |
