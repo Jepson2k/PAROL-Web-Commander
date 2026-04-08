@@ -61,7 +61,7 @@ class HelpMenu:
                             with (
                                 ui.link(
                                     "",
-                                    "https://jepson2k.github.io/PAROL-Web-Commander/",
+                                    "https://jepson2k.github.io/waldo-commander/",
                                     new_tab=True,
                                 )
                                 .classes("text-gray-400")
@@ -182,7 +182,7 @@ class HelpMenu:
                     """,
                     )
 
-    _TUTORIALS_URL = "https://jepson2k.github.io/PAROL-Web-Commander/videos"
+    _TUTORIALS_URL = "https://jepson2k.github.io/waldo-commander/videos"
 
     def _build_quickstart_stepper(self, include_safety_step: bool = False) -> None:
         """Build quick start stepper with tutorial videos.
