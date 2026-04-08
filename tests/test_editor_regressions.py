@@ -114,7 +114,12 @@ class TestEditorRegressions:
         target_content = "# ctrl-s regression test\n"
         target_path = ui_state.editor_panel.PROGRAM_DIR / target_name
         active_tab.filename = target_name
-        active_tab.content = target_content
+        # Push the content through CodeMirror so the editor's doc and
+        # tab.content stay in sync. Setting tab.content from Python alone
+        # races with the editor's on_change sync — on a slow CI runner the
+        # editor's empty initial value can clobber our update before
+        # _save_tab reads it, and the file ends up empty.
+        _set_editor_content(class_screen, target_content)
 
         try:
             cm_content = focus_editor(class_screen)
@@ -127,7 +132,10 @@ class TestEditorRegressions:
         finally:
             target_path.unlink(missing_ok=True)
             active_tab.filename = original_filename
-            active_tab.content = original_content
+            # Restore content via the same dispatch path so the editor doc
+            # matches the restored tab.content (otherwise the next test
+            # would see a stale editor doc).
+            _set_editor_content(class_screen, original_content)
 
     def test_ctrl_s_failure_shows_error_notification(
         self, class_screen: "Screen"
