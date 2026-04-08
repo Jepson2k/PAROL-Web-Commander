@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://jepson2k.github.io/PAROL-Web-Commander/</loc>
+         <loc>https://jepson2k.github.io/waldo-commander/</loc>
          <lastmod>2026-04-08</lastmod>
     </url>
     <url>
-         <loc>https://jepson2k.github.io/PAROL-Web-Commander/guides/api-reference/</loc>
+         <loc>https://jepson2k.github.io/waldo-commander/guides/api-reference/</loc>
          <lastmod>2026-04-08</lastmod>
     </url>
     <url>
-         <loc>https://jepson2k.github.io/PAROL-Web-Commander/guides/backend-development/</loc>
+         <loc>https://jepson2k.github.io/waldo-commander/guides/backend-development/</loc>
          <lastmod>2026-04-08</lastmod>
     </url>
     <url>
-         <loc>https://jepson2k.github.io/PAROL-Web-Commander/guides/writing-programs/</loc>
+         <loc>https://jepson2k.github.io/waldo-commander/guides/writing-programs/</loc>
          <lastmod>2026-04-08</lastmod>
     </url>
 </urlset>
