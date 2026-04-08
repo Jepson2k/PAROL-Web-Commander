@@ -140,6 +140,10 @@ Robot communication goes through a `waldoctl.RobotClient` ABC. Each backend (e.g
 - **Tests**: Use deterministic waits (polling for conditions) rather than blind sleeps. Exception: very small sleeps (~0.1s) for debouncing are acceptable.
 - **Exception handling**: Never use `except Exception: pass`. Either catch specific exceptions with `pass`, or if catching broad exceptions, log or handle the error meaningfully.
 
+## Shell Command Style
+
+- **Do NOT use compound `cd` commands** like `cd foo && git status` or `cd foo && pytest`. Compound commands that cross directories require explicit user approval and slow things down. Instead, issue a standalone `cd foo` command first, then run the action as a separate command. The Bash tool's working directory persists between calls.
+
 ### UI Component Preferences
 - **Prefer NiceGUI native elements** (ui.chip, ui.image, ui.icon, ui.label, ui.row, etc.) over raw HTML (`ui.html`). Only use `ui.html` when NiceGUI doesn't provide an equivalent.
 - **Use `ui.icon`** for Material Icons. Use `ui.icon("img:path")` for custom SVGs. Don't inline SVG content in Python strings.
