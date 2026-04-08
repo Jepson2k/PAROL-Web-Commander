@@ -2,7 +2,9 @@
 
 A web interface for controlling robotic arms, currently tested with the [PAROL6](https://github.com/PCrnjak/PAROL6-Desktop-robot-arm) robot.
 
-![Waldo Commander](assets/img/readme_screenshot.png)
+<video controls width="100%">
+  <source src="videos/demo_showcase.mp4" type="video/mp4">
+</video>
 
 - **Browser-based.** Control from any device on the network without being tethered to the arm.
 - **Python programs.** Write robot programs in Python with loops, math, and libraries. Built-in editor with auto-complete, live output, and step-through debugging.
@@ -37,7 +39,7 @@ Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[/]** to adjust
 
 ### Connecting Your Robot
 
-In the control panel, switch to the **Settings** tab and select your hardware connection — the port is applied automatically. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
 
 - <span style="color: #4caf50">&#9632;</span> Connected to robot hardware
 - <span style="color: #f44336">&#9632;</span> Robot mode but disconnected

@@ -13,15 +13,17 @@ from parol6 import RobotClient
 
 rbt = RobotClient(host='127.0.0.1', port=5001)
 
-print("Angles:", rbt.angles())
-print("Pose:", rbt.pose())
+HOME_ANGLES = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
+HOME_TOLERANCE_DEG = 2.0
 
-rbt.home()
+# Select tool, and home only if not already near the home pose
+rbt.select_tool("SSG-48")
+current = rbt.angles()
+if current is None or max(abs(a - h) for a, h in zip(current, HOME_ANGLES)) > HOME_TOLERANCE_DEG:
+    rbt.home()
 ```
 
-`home()` blocks until all joints reach the home position. All motion commands block by default — the sync client sets `wait=True` unless you say otherwise.
-
-<!-- video: connect and home -->
+`home()` blocks until all joints reach the home position. All motion commands block by default. Skipping the home when already there saves time on repeated runs.
 
 ## move_j vs move_l
 
@@ -31,15 +33,17 @@ To show this, we'll move to a pose with move_j, then to another with move_l. Wat
 
 ```python
 # move_j — TCP follows a curved arc through joint space
-rbt.move_j(pose=[175, 240, 334, 90, 0, 90], speed=0.5)
+rbt.move_j(pose=[100, 340, 334, 90, 0, 90], speed=0.5)
 
 # move_l — TCP travels in a straight Cartesian line
-rbt.move_l([-50, 240, 334, 90, 0, 90], speed=0.5)
+rbt.move_l([-50, 340, 334, 90, 0, 90], speed=0.5)
 ```
 
 `speed` is normalized 0.0–1.0. You can also use `duration` (seconds) or `accel` (0.0–1.0). Relative moves offset from the current position with `rel=True`, and `frame="TRF"` switches to the Tool Reference Frame for Cartesian moves.
 
-<!-- video: move_j vs move_l -->
+<video controls width="100%">
+  <source src="../videos/move_j_vs_move_l.mp4" type="video/mp4">
+</video>
 
 ## Curved motion
 
@@ -51,7 +55,7 @@ We'll draw three circles stacked vertically, each with a different command, then
 import math
 
 RADIUS = 30
-SPEED = 0.4
+SPEED = 0.8
 CIRCLE_Y = 340
 ORIENTATION = [90, 0, 90]
 CENTERS = [(0, CIRCLE_Y, 280), (0, CIRCLE_Y, 210), (0, CIRCLE_Y, 140)]
@@ -95,7 +99,9 @@ rbt.move_s(spline, speed=SPEED)
 
 These commands raise `NotImplementedError` on backends that don't support them.
 
-<!-- video: curved motion -->
+<video controls width="100%">
+  <source src="../videos/smooth_motion.mp4" type="video/mp4">
+</video>
 
 ## Zig-zag scan with blend radius
 
@@ -112,28 +118,28 @@ X = 280
 BLEND = 15
 
 rbt.move_j(pose=[X, 0, 334] + ZZ_ORI, speed=0.5)
-rbt.move_l([X, Y_MIN, Z_MAX + 30] + ZZ_ORI, speed=0.5)
+rbt.move_l([X, Y_MIN, Z_MAX + 30] + ZZ_ORI, speed=1.0)
 z_step = (Z_MAX - Z_MIN) / (ROWS - 1)
 for row in range(ROWS):
     z = Z_MAX - row * z_step
     is_last = row == ROWS - 1
     y_start, y_end = (Y_MIN, Y_MAX) if row % 2 == 0 else (Y_MAX, Y_MIN)
-    rbt.move_l([X, y_start, z] + ZZ_ORI, speed=0.5, r=BLEND, wait=False)
-    rbt.move_l([X, y_end, z] + ZZ_ORI, speed=0.5, r=0 if is_last else BLEND, wait=False)
+    rbt.move_l([X, y_start, z] + ZZ_ORI, speed=1.0, r=BLEND, wait=False)
+    rbt.move_l([X, y_end, z] + ZZ_ORI, speed=1.0, r=0 if is_last else BLEND, wait=False)
 rbt.wait_motion()
 ```
 
-<!-- video: zig-zag scan -->
+<video controls width="100%">
+  <source src="../videos/zig_zag_with_blend.mp4" type="video/mp4">
+</video>
 
 ## Tool control and precision
 
-Rotate to a third area, attach a tool, and demo precision moves. `select_tool` selects the active end-effector and updates the TCP. The `tool` object gives you `open()`, `close()`, and `set_position()`.
+Rotate to a third area and demo precision moves with the gripper we already selected at the start. `select_tool` selects the active end-effector and updates the TCP. The `tool` object gives you `open()`, `close()`, and `set_position()`.
 
 ### Gripper basics
 
 ```python
-rbt.select_tool("SSG-48")
-
 PRECISION_POSE = [0, -250, 350, -90, 0, -90]
 rbt.move_j(pose=PRECISION_POSE, speed=0.5)
 
@@ -153,11 +159,11 @@ Use joint-space angles to reach 100mm above the pickup, then descend linearly fo
 ```python
 # Approach: move_j to 100mm above, descend linearly, grab, retract
 PENCIL_ABOVE = [-90, -81.6, 161.8, 0, -69.4, 180]
-rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
-rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.8)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.4)
 rbt.tool.close(wait=True)
-rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
-rbt.move_j(pose=PRECISION_POSE, speed=0.3)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.4)
+rbt.move_j(pose=PRECISION_POSE, speed=0.8)
 ```
 
 ### TCP offset and TRF moves
@@ -171,16 +177,13 @@ rbt.move_j(pose=PRECISION_POSE, speed=0.3)
 rbt.set_tcp_offset(-100, 0, 0)
 
 # Pencil tip traces straight lines in tool frame
-rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-
-rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, -120, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+# (tool Z = world -Y at this pose)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
+rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
 ```
 
-### Precision rotations
+### Tool rotations
 
 TRF rotations keep the TCP stationary while the wrist rotates around it — the pencil tip stays fixed and the robot pivots. This is useful for inspection, welding, or any task where the tool tip stays put but the approach angle changes.
 
@@ -189,12 +192,12 @@ SWEEP = 20
 for axis in range(3):
     delta = [0, 0, 0, 0, 0, 0]
     delta[3 + axis] = -SWEEP
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
     delta[3 + axis] = SWEEP
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
     delta[3 + axis] = -SWEEP
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
 ```
 
 ### Cleanup
@@ -204,17 +207,20 @@ Reset the TCP offset, return the pencil, and go home:
 ```python
 # Place pencil back: descend linearly, release, retract
 rbt.set_tcp_offset(0, 0, 0)
-rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
-rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.8)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.4)
 rbt.tool.open(wait=True)
-rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.4)
 
-rbt.move_j(pose=PRECISION_POSE, speed=0.3)
-rbt.home()
+# Return to home position (joint move, not the full homing sequence)
+rbt.move_j(pose=PRECISION_POSE, speed=0.8)
+rbt.move_j(angles=HOME_ANGLES, speed=0.8)
 print("Done!")
 ```
 
-<!-- video: tool control and precision -->
+<video controls width="100%">
+  <source src="../videos/tool_control_and_rotations.mp4" type="video/mp4">
+</video>
 
 ## The complete script
 
@@ -232,18 +238,23 @@ from parol6 import RobotClient
 
 rbt = RobotClient(host='127.0.0.1', port=5001)
 
-# Select tool and home
-rbt.select_tool("SSG-48")
-rbt.home()
+HOME_ANGLES = [90.0, -90.0, 180.0, 0.0, 0.0, 180.0]
+HOME_TOLERANCE_DEG = 2.0
 
-# move_j vs move_l
-rbt.move_j(pose=[175, 240, 334, 90, 0, 90], speed=0.5)
-rbt.move_l([-50, 240, 334, 90, 0, 90], speed=0.5)
+# Select tool, and home only if not already near the home pose
+rbt.select_tool("SSG-48")
+current = rbt.angles()
+if current is None or max(abs(a - h) for a, h in zip(current, HOME_ANGLES)) > HOME_TOLERANCE_DEG:
+    rbt.home()
+
+# move_j vs move_l (joint-space then linear-cartesian to nearby pose)
+rbt.move_j(pose=[100, 340, 334, 90, 0, 90], speed=0.5)
+rbt.move_l([-50, 340, 334, 90, 0, 90], speed=0.5)
 
 
 # ── Curved motion: three vertical circles + sine-wave spline ──────────
 RADIUS = 30
-SPEED = 0.4
+SPEED = 0.8
 CIRCLE_Y = 340
 ORIENTATION = [90, 0, 90]
 CENTERS = [(0, CIRCLE_Y, 280), (0, CIRCLE_Y, 210), (0, CIRCLE_Y, 140)]
@@ -293,14 +304,14 @@ X = 280
 BLEND = 15
 
 rbt.move_j(pose=[X, 0, 334] + ZZ_ORI, speed=0.5)
-rbt.move_l([X, Y_MIN, Z_MAX + 30] + ZZ_ORI, speed=0.5)
+rbt.move_l([X, Y_MIN, Z_MAX + 30] + ZZ_ORI, speed=1.0)
 z_step = (Z_MAX - Z_MIN) / (ROWS - 1)
 for row in range(ROWS):
     z = Z_MAX - row * z_step
     is_last = row == ROWS - 1
     y_start, y_end = (Y_MIN, Y_MAX) if row % 2 == 0 else (Y_MAX, Y_MIN)
-    rbt.move_l([X, y_start, z] + ZZ_ORI, speed=0.5, r=BLEND, wait=False)
-    rbt.move_l([X, y_end, z] + ZZ_ORI, speed=0.5, r=0 if is_last else BLEND, wait=False)
+    rbt.move_l([X, y_start, z] + ZZ_ORI, speed=1.0, r=BLEND, wait=False)
+    rbt.move_l([X, y_end, z] + ZZ_ORI, speed=1.0, r=0 if is_last else BLEND, wait=False)
 rbt.wait_motion()
 
 # ── Precision demo: pencil pick-up and TCP-offset rotations ──────────
@@ -315,44 +326,46 @@ rbt.tool.open(speed=1.0)
 
 # Approach pencil: move_j to 100mm above, descend linearly, grab, retract
 PENCIL_ABOVE = [-90, -81.6, 161.8, 0, -69.4, 180]
-rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
-rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.8)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.4)
 rbt.tool.close(wait=True)
-rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
-rbt.move_j(pose=PRECISION_POSE, speed=0.3)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.4)
+rbt.move_j(pose=PRECISION_POSE, speed=0.8)
 
 # Offset TCP to pencil tip (~100mm exposed below gripper)
 rbt.set_tcp_offset(-100, 0, 0)
 
 # Pencil tip traces straight lines (linear precision demo)
-rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, -120, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
-rbt.move_l([0, 60, 0, 0, 0, 0], speed=0.3, frame="TRF", rel=True)
+# Forward/back (tool Z = world -Y at this pose)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
+rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
+rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
 
 # Precision TRF rotations — pencil tip stays stationary while wrist rotates
 SWEEP = 20
 for axis in range(3):
     delta = [0, 0, 0, 0, 0, 0]
     delta[3 + axis] = -SWEEP
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
     delta[3 + axis] = SWEEP
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
     delta[3 + axis] = -SWEEP
-    rbt.move_l(delta, speed=0.5, frame="TRF", rel=True)
+    rbt.move_l(delta, speed=0.8, frame="TRF", rel=True)
 
 # Place pencil back: descend linearly, release, retract
 rbt.set_tcp_offset(0, 0, 0)
-rbt.move_j(angles=PENCIL_ABOVE, speed=0.3)
-rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_j(angles=PENCIL_ABOVE, speed=0.8)
+rbt.move_l([0, 0, -100, 0, 0, 0], rel=True, speed=0.4)
 rbt.tool.open(wait=True)
-rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
+rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.4)
 
-# Return and finish
-rbt.move_j(pose=PRECISION_POSE, speed=0.3)
-rbt.home()
+# Return to home position (joint move, not the full homing sequence)
+rbt.move_j(pose=PRECISION_POSE, speed=0.8)
+rbt.move_j(angles=HOME_ANGLES, speed=0.8)
 print("Done!")
 ```
+
+<video controls width="100%">
+  <source src="../videos/demo_showcase.mp4" type="video/mp4">
+</video>
