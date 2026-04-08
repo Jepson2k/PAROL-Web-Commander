@@ -27,6 +27,23 @@ from parol6 import Robot
 from parol6.config import HOME_ANGLES_DEG
 from selenium import webdriver as _webdriver
 
+# SSH X11 forwarding gotcha: when pytest is run over SSH with X forwarding
+# enabled, DISPLAY is set to "localhost:N.0" pointing at the forwarded
+# tunnel. Headless Chromium honors DISPLAY even with --headless=new and
+# tries to use that "X server" for GL context creation, but the SSH tunnel
+# has no hardware GL extensions — every WebGL surface ends up with no
+# context at all, so three.js scenes never initialize and every WebGL
+# screen test times out at the data-initializing wait. Headless mode uses
+# /dev/dri directly via Mesa and does not need any X server, so unset
+# DISPLAY at import time. We narrow the check to localhost: prefix so a
+# real local X server (DISPLAY=":0", Unix socket, or path-based) is left
+# untouched, and HEADED=1 mode is preserved entirely because the developer
+# explicitly wants a real X window.
+if not os.environ.get("HEADED") and os.environ.get("DISPLAY", "").startswith(
+    "localhost:"
+):
+    os.environ.pop("DISPLAY", None)
+
 if TYPE_CHECKING:
     from parol6 import AsyncRobotClient
 
@@ -69,7 +86,20 @@ def nicegui_chrome_options():
         options.add_argument("headless=new")
     options.add_argument("--use-gl=angle")
     if "GITHUB_ACTIONS" in os.environ:
+        # GitHub runners have no GPU — force SwiftShader CPU rasterizer.
         options.add_argument("--use-angle=swiftshader-webgl")
+    elif sys.platform == "linux" and os.access(
+        "/dev/dri/renderD128", os.R_OK | os.W_OK
+    ):
+        # Linux with an accessible DRM render node — force ANGLE's GL/EGL
+        # backend so it picks up Mesa (or NVIDIA EGL) via /dev/dri instead
+        # of falling back to SwiftShader. Linux's default ANGLE backend is
+        # Vulkan, and the only Vulkan ICD bundled with Chromium is
+        # SwiftShader — that's how the silent software fallback happens.
+        # Headless mode does NOT need a DISPLAY for this; the render group
+        # on the user is enough. macOS and Windows already use Metal/D3D11
+        # by default and don't need a backend hint.
+        options.add_argument("--use-angle=gl-egl")
     options.add_argument(f"window-size={TEST_WINDOW_WIDTH},{TEST_WINDOW_HEIGHT}")
     options.set_capability("goog:loggingPrefs", {"browser": "ALL"})
     return options
@@ -171,9 +201,13 @@ def class_driver(
         options.add_argument("headless=new")
     options.add_argument("disable-search-engine-choice-screen")
     options.add_argument("--use-gl=angle")
-    # Use SwiftShader for software WebGL in CI, hardware GL locally
+    # ANGLE backend selection — see nicegui_chrome_options for the rationale.
     if "GITHUB_ACTIONS" in os.environ:
         options.add_argument("--use-angle=swiftshader-webgl")
+    elif sys.platform == "linux" and os.access(
+        "/dev/dri/renderD128", os.R_OK | os.W_OK
+    ):
+        options.add_argument("--use-angle=gl-egl")
     options.add_argument("no-sandbox")
     options.add_argument("disable-dev-shm-usage")
     # Disable CSS animations for deterministic testing
