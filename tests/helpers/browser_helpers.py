@@ -6,6 +6,7 @@ consistent patterns for interacting with the UI via Selenium.
 
 from typing import TYPE_CHECKING, Any
 
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
@@ -235,3 +236,94 @@ def wait_for_codemirror_ready(screen: "Screen", timeout: float = 20.0) -> None:
         WebDriverWait(screen.selenium, timeout).until(check_ready)
     except Exception as e:
         raise TimeoutError(f"CodeMirror not ready after {timeout}s") from e
+
+
+# ============================================================================
+# Keyboard / focus helpers
+# ============================================================================
+
+
+def defocus_editor(screen: "Screen") -> None:
+    """Blur the currently focused element so global keybindings can fire.
+
+    The KeybindingsFocusDetector JS module gates `_editor_focused` on the
+    document.activeElement being inside .cm-editor (or any contenteditable
+    / input). After we blur, sleep ~0.2s for the focusout → JS poll →
+    websocket → Python set_editor_focused(false) round-trip to settle.
+    The keybindings.js focusout handler also has a 50ms internal delay.
+    """
+    screen.selenium.execute_script(
+        "if (document.activeElement) document.activeElement.blur();"
+    )
+    _time.sleep(0.2)
+
+
+def send_global_key(screen: "Screen", key: str) -> None:
+    """Send a single keystroke to whatever currently has focus.
+
+    Use after defocus_editor() to target the document body so NiceGUI's
+    ui.keyboard listener (and the project's keybindings_manager) sees it.
+    """
+    ActionChains(screen.selenium).send_keys(key).perform()
+
+
+def focus_editor(screen: "Screen") -> WebElement:
+    """Click the CodeMirror content area to focus the editor.
+
+    Returns the .cm-content WebElement so callers can chain send_keys on
+    it (Selenium's send_keys on a contenteditable div needs the element
+    reference; ActionChains alone won't reliably target the editor's
+    keymap).
+    """
+    cm_content = screen.selenium.find_element(By.CSS_SELECTOR, ".cm-content")
+    cm_content.click()
+    return cm_content
+
+
+def type_in_editor(screen: "Screen", text: str) -> None:
+    """Send real keystrokes to the focused CodeMirror content area.
+
+    Unlike append_to_editor (which uses view.dispatch and bypasses
+    CodeMirror's keymap), this routes through the Mod-s save shortcut,
+    autocomplete activation, and any other key handlers in the keymap.
+    """
+    cm_content = screen.selenium.find_element(By.CSS_SELECTOR, ".cm-content")
+    cm_content.send_keys(text)
+
+
+def wait_for_autocomplete(screen: "Screen", timeout: float = 3.0) -> WebElement:
+    """Wait for the CodeMirror autocomplete popup to appear and return it."""
+    return WebDriverWait(screen.selenium, timeout).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, ".cm-tooltip-autocomplete"))
+    )
+
+
+def get_autocomplete_labels(screen: "Screen") -> list[str]:
+    """Read all completion entry text from the autocomplete popup."""
+    return (
+        screen.selenium.execute_script(
+            """
+            return Array.from(
+                document.querySelectorAll('.cm-tooltip-autocomplete li')
+            ).map(li => li.textContent);
+            """
+        )
+        or []
+    )
+
+
+def wait_for_notification(screen: "Screen", text: str, timeout: float = 3.0) -> None:
+    """Wait for a Quasar notification containing `text` to appear in the DOM.
+
+    Quasar renders ui.notify() output as .q-notification elements. We poll
+    rather than use a single presence check because the notification text
+    may take a tick to populate after the element first appears.
+    """
+
+    def matches(driver):
+        return any(
+            text in n.text
+            for n in driver.find_elements(By.CSS_SELECTOR, ".q-notification")
+        )
+
+    WebDriverWait(screen.selenium, timeout).until(matches)
