@@ -19,8 +19,8 @@ A web interface for controlling robotic arms, currently tested with the [PAROL6]
 Requires Python 3.12+. Runs on Linux, macOS, and Windows.
 
 ```bash
-git clone https://github.com/Jepson2k/waldo-commander.git
-cd waldo-commander
+git clone https://github.com/Jepson2k/Waldo-Commander.git
+cd Waldo-Commander
 pip install -e ".[parol6]"
 waldo-commander
 ```
@@ -164,4 +164,4 @@ The name "Waldo" comes from Robert Heinlein's 1942 story *Waldo*, about remote m
 
 ### License
 
-See the [LICENSE](https://github.com/Jepson2k/waldo-commander/blob/main/LICENSE) file.
+See the [LICENSE](https://github.com/Jepson2k/Waldo-Commander/blob/main/LICENSE) file.

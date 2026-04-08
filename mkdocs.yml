@@ -1,6 +1,6 @@
 site_name: Waldo Commander
-site_url: https://jepson2k.github.io/waldo-commander/
-repo_url: https://github.com/Jepson2k/waldo-commander
+site_url: https://jepson2k.github.io/Waldo-Commander/
+repo_url: https://github.com/Jepson2k/Waldo-Commander
 
 theme:
   name: material
