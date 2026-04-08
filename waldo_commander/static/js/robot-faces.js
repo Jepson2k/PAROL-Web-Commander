@@ -285,3 +285,120 @@ function scheduleSad(r) {
   // Antenna droop
   schedule(() => r.gentleDroop(), 6000, 12000);
 }
+
+/* ===== Bouncing sad robot for the takeover overlay =====
+ * DVD-screensaver-style: the face moves at a constant velocity and reflects
+ * off the viewport edges and the centered card. raf-driven so the motion
+ * stays smooth at any frame rate. The slow spin lives in CSS (.takeover-face
+ * animation: takeover-spin), independent of position, so it composes with
+ * the SVG's own breathing animation.
+ */
+window.startRobotMope = function() {
+  // The face element may not be in the DOM yet when this runs (NiceGUI
+  // dispatches run_javascript over the websocket; the DOM mount can lag
+  // by a tick or two). Poll briefly before giving up.
+  let tries = 0;
+  function start() {
+    const face = document.querySelector('.takeover-face');
+    if (!face) {
+      if (tries++ < 30) {
+        setTimeout(start, 50);
+      } else {
+        console.warn('startRobotMope: .takeover-face not found');
+      }
+      return;
+    }
+    runMope(face);
+  }
+  start();
+};
+
+function runMope(face) {
+  const FACE_SIZE = 96;
+  const SPEED = 90;        // pixels per second
+  const SPIN_DEG_PER_S = 30; // 360° every 12s, slow and steady
+  const CARD_W = 460;      // approximate card footprint with breathing room
+  const CARD_H = 320;
+
+  function randomVelocity() {
+    // Avoid axes — pick from a quadrant rotated by a random multiple of 90°.
+    const angle = (0.15 + Math.random() * 0.7) * Math.PI / 2 +
+                  Math.floor(Math.random() * 4) * Math.PI / 2;
+    return { vx: Math.cos(angle) * SPEED, vy: Math.sin(angle) * SPEED };
+  }
+
+  function randomStart() {
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const cardL = cx - CARD_W / 2, cardR = cx + CARD_W / 2;
+    const cardT = cy - CARD_H / 2, cardB = cy + CARD_H / 2;
+    for (let i = 0; i < 32; i++) {
+      const px = Math.random() * (window.innerWidth - FACE_SIZE);
+      const py = Math.random() * (window.innerHeight - FACE_SIZE);
+      const intersects = px < cardR && px + FACE_SIZE > cardL &&
+                         py < cardB && py + FACE_SIZE > cardT;
+      if (!intersects) return { x: px, y: py };
+    }
+    return { x: 40, y: 40 };
+  }
+
+  let { x, y } = randomStart();
+  let { vx, vy } = randomVelocity();
+  let angle = 0;        // degrees
+  let lastTime = null;
+
+  // Initial paint so we don't flash at (0,0).
+  face.style.transform = `translate(${x}px, ${y}px) rotate(${angle}deg)`;
+
+  function step(now) {
+    if (lastTime === null) {
+      lastTime = now;
+      requestAnimationFrame(step);
+      return;
+    }
+    // Cap dt so a backgrounded tab doesn't teleport the face on resume.
+    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    lastTime = now;
+
+    let nx = x + vx * dt;
+    let ny = y + vy * dt;
+    angle = (angle + SPIN_DEG_PER_S * dt) % 360;
+
+    // Viewport edges.
+    const maxX = window.innerWidth - FACE_SIZE;
+    const maxY = window.innerHeight - FACE_SIZE;
+    if (nx < 0)    { nx = 0;    vx = Math.abs(vx); }
+    if (nx > maxX) { nx = maxX; vx = -Math.abs(vx); }
+    if (ny < 0)    { ny = 0;    vy = Math.abs(vy); }
+    if (ny > maxY) { ny = maxY; vy = -Math.abs(vy); }
+
+    // Card collision: push out along the axis of shallowest penetration.
+    const cx = window.innerWidth / 2;
+    const cy = window.innerHeight / 2;
+    const cardL = cx - CARD_W / 2, cardR = cx + CARD_W / 2;
+    const cardT = cy - CARD_H / 2, cardB = cy + CARD_H / 2;
+    const overlapsCard = nx < cardR && nx + FACE_SIZE > cardL &&
+                         ny < cardB && ny + FACE_SIZE > cardT;
+    if (overlapsCard) {
+      const penL = (nx + FACE_SIZE) - cardL;
+      const penR = cardR - nx;
+      const penT = (ny + FACE_SIZE) - cardT;
+      const penB = cardB - ny;
+      const minPen = Math.min(penL, penR, penT, penB);
+      if (minPen === penL)      { nx = cardL - FACE_SIZE; vx = -Math.abs(vx); }
+      else if (minPen === penR) { nx = cardR;             vx =  Math.abs(vx); }
+      else if (minPen === penT) { ny = cardT - FACE_SIZE; vy = -Math.abs(vy); }
+      else                      { ny = cardB;             vy =  Math.abs(vy); }
+    }
+
+    x = nx;
+    y = ny;
+    // Single transform string drives both translate and rotate so nothing
+    // can race or get overridden by the browser's animation engine.
+    face.style.transform = `translate(${x}px, ${y}px) rotate(${angle}deg)`;
+
+    requestAnimationFrame(step);
+  }
+
+  requestAnimationFrame(step);
+}

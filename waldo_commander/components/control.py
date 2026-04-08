@@ -638,6 +638,12 @@ class ControlPanel:
         self._step_input_tooltip: ui.tooltip | None = None
         self._jog_mode_tabs: Any = None
 
+        # Rating-row widget refs (populated by _build_rating_row).
+        # Keyed by ui_attr ("jog_speed", "jog_accel"). Lets keybindings
+        # adjust the underlying value AND keep the visible rating, icon
+        # color, and tooltip in sync.
+        self._rating_widgets: dict[str, dict[str, Any]] = {}
+
         # Dirty checking caches for button enablement (avoid redundant CSS updates)
         self._last_joint_en_tuple: tuple[int, ...] | None = None
         self._last_cart_en_tuple: tuple[tuple, ...] | None = None
@@ -1840,37 +1846,65 @@ class ControlPanel:
         format_tooltip: Callable[[float], str],
     ) -> None:
         """Build a 10-step rating row (speed or acceleration) with persistence."""
-        unit = 10
         with ui.row().classes("items-center gap-2 w-full"):
             icon = ui.icon(icon_name, size="md", color=default_color)
             with icon:
                 tooltip = ui.tooltip(storage_key.replace("_", " ").title())
             stored = app.storage.general.get(storage_key, getattr(ui_state, ui_attr))
             setattr(ui_state, ui_attr, stored)
-            v_init = max(1, min(10, round(int(stored) / unit)))
-
-            def _on_change(
-                e,
-                _icon=icon,
-                _tooltip=tooltip,
-                _colors=colors,
-                _key=storage_key,
-                _attr=ui_attr,
-                _fmt=format_tooltip,
-            ):
-                val = max(1, min(10, int(e.args) if e.args else 1))
-                setattr(ui_state, _attr, int(val * unit))
-                app.storage.general[_key] = int(val * unit)
-                _icon.props(f"color={_colors[val - 1]}")
-                _tooltip.text = _fmt(val / 10.0)
+            v_init = max(1, min(10, round(int(stored) / self._RATING_UNIT)))
 
             rating = ui.rating(max=10, icon="circle", size="16px", value=v_init).props(
                 f':color="{colors}"'
             )
-            rating.on("update:model-value", _on_change)
+            self._rating_widgets[ui_attr] = {
+                "rating": rating,
+                "icon": icon,
+                "tooltip": tooltip,
+                "colors": colors,
+                "format_tooltip": format_tooltip,
+                "storage_key": storage_key,
+            }
+
+            # Click on the rating dispatches the new step value (1..10) as
+            # e.args; route both UI clicks and keybindings through the same
+            # _set_rating_step path so dependent visuals stay in sync.
+            rating.on(
+                "update:model-value",
+                lambda e, _attr=ui_attr: self._set_rating_step(
+                    _attr, int(e.args) if e.args else 1, sync_widget=False
+                ),
+            )
             if v_init > 0:
-                icon.props(f"color={colors[v_init - 1]}")
-                tooltip.text = format_tooltip(v_init / 10.0)
+                self._set_rating_step(ui_attr, v_init, sync_widget=False)
+
+    _RATING_UNIT = 10
+
+    def _set_rating_step(
+        self, ui_attr: str, step: int, *, sync_widget: bool = True
+    ) -> None:
+        """Apply a 1..10 rating step to the row's value, storage, icon color
+        and tooltip text. Set sync_widget=False when invoked from the rating's
+        own change event (the widget already holds the new value)."""
+        refs = self._rating_widgets.get(ui_attr)
+        if refs is None:
+            return
+        step = max(1, min(10, step))
+        new_value = step * self._RATING_UNIT
+        setattr(ui_state, ui_attr, new_value)
+        app.storage.general[refs["storage_key"]] = new_value
+        if sync_widget:
+            refs["rating"].value = step
+        refs["icon"].props(f"color={refs['colors'][step - 1]}")
+        refs["tooltip"].text = refs["format_tooltip"](step / 10.0)
+
+    def adjust_rating(self, ui_attr: str, delta: int) -> None:
+        """Adjust a rating-row backed value (jog_speed/jog_accel) by delta
+        and sync the widget. Used by the [/] keybindings so keyboard
+        adjustments behave the same as clicking the rating."""
+        current = int(getattr(ui_state, ui_attr, 0))
+        step = round((current + delta) / self._RATING_UNIT)
+        self._set_rating_step(ui_attr, step)
 
     def build(self, anchor: str = "bl") -> None:
         """Render the bottom-left control panel (overlay-bl).

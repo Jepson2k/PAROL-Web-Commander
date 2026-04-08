@@ -24,7 +24,7 @@ class RobotFace(Enum):
 
 # Load robot face SVGs at module level for inline rendering (CSS hover needs DOM access)
 _ICONS_DIR = Path(__file__).parent.parent / "static" / "icons"
-_FACE_SVGS = {
+FACE_SVGS = {
     RobotFace.HAPPY: (_ICONS_DIR / "robot_happy.svg").read_text(),
     RobotFace.NEUTRAL: (_ICONS_DIR / "robot_neutral.svg").read_text(),
     RobotFace.SAD: (_ICONS_DIR / "robot_sad.svg").read_text(),
@@ -154,7 +154,7 @@ class ReadoutPanel:
                 face = RobotFace.SAD
             if face != self._last_face_state:
                 self._last_face_state = face
-                self._robot_face_html.set_content(_FACE_SVGS[face])
+                self._robot_face_html.set_content(FACE_SVGS[face])
                 # Swap CSS class for breathing animation
                 remove = " ".join(
                     f"robot-face-{s.value}" for s in RobotFace if s != face
@@ -271,7 +271,7 @@ class ReadoutPanel:
                         )
                         with self._robot_face_container:
                             self._robot_face_html = ui.html(
-                                _FACE_SVGS[_init_face], sanitize=False
+                                FACE_SVGS[_init_face], sanitize=False
                             ).style("width: 36px; height: 36px")
                             self._robot_face_tooltip = ui.tooltip(
                                 _FACE_TOOLTIPS[_init_face]

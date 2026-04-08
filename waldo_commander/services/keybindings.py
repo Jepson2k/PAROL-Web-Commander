@@ -368,13 +368,14 @@ def _register_default_keybindings() -> None:
     # These are holdable: click = single step, hold = continuous jog
     _register_cartesian_jog_keybindings(cp, ep)
 
-    # Speed Control
+    # Speed Control — delegated to control panel so the rating widget,
+    # icon color, tooltip, and persisted storage stay in sync.
     keybindings_manager.register(
         Keybinding(
             key="]",
             display="]",
             description="Increase jog speed",
-            action=_increase_jog_speed,
+            action=lambda: cp.adjust_rating("jog_speed", 10),
             category="Speed Control",
         )
     )
@@ -384,7 +385,7 @@ def _register_default_keybindings() -> None:
             key="[",
             display="[",
             description="Decrease jog speed",
-            action=_decrease_jog_speed,
+            action=lambda: cp.adjust_rating("jog_speed", -10),
             category="Speed Control",
         )
     )
@@ -470,19 +471,3 @@ def _handle_jog_key(
     elif is_press:
         # Start continuous jog
         asyncio.create_task(cp.set_axis_pressed(axis, True))
-
-
-def _increase_jog_speed() -> None:
-    """Increase jog speed by 10%."""
-    current = ui_state.jog_speed
-    new_speed = min(100, current + 10)
-    ui_state.jog_speed = new_speed
-    ui.notify(f"Jog speed: {new_speed}%", position="bottom-right", timeout=1000)
-
-
-def _decrease_jog_speed() -> None:
-    """Decrease jog speed by 10%."""
-    current = ui_state.jog_speed
-    new_speed = max(1, current - 10)
-    ui_state.jog_speed = new_speed
-    ui.notify(f"Jog speed: {new_speed}%", position="bottom-right", timeout=1000)

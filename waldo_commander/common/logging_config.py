@@ -168,9 +168,18 @@ def configure_logging(
         ui_handler = NiceGuiLogHandler(level=level)
         logger.addHandler(ui_handler)
 
-    # Silence verbose third-party loggers
-    third_party_level = level if level >= logging.INFO else logging.INFO
-    logging.getLogger("numba").setLevel(third_party_level)
-    logging.getLogger("toppra").setLevel(third_party_level)
+    # Silence verbose third-party loggers. At INFO and above, push noisy
+    # libraries up to WARNING so a clean startup stays quiet; honor DEBUG
+    # by leaving them at the requested level.
+    quiet_level = max(level, logging.WARNING) if level >= logging.INFO else level
+    for name in (
+        "numba",
+        "numba.core",
+        "numba.cuda",
+        "toppra",
+        "uvicorn.access",
+        "nicegui",
+    ):
+        logging.getLogger(name).setLevel(quiet_level)
 
     return logger

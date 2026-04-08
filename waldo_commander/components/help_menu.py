@@ -191,38 +191,52 @@ class HelpMenu:
             include_safety_step: If True, prepend a safety acknowledgment step.
                                  Used for first-time visit dialog only.
         """
+        # Step descriptions are markdown that mirrors the relevant sections
+        # of docs/index.md so the in-app tutorial and the public docs stay
+        # in sync. Inline HTML spans are used for the colored status markers.
         steps = [
             {
-                "title": "Interface Overview",
-                "description": "PAROL Commander has three main areas: the 3D view (center), control panel (bottom-right), and program editor (left). The 3D view shows your robot and lets you interact with it directly.",
+                "title": "Basic Controls",
+                "description": """
+                    Jog in joint space (one joint at a time) or Cartesian space (translate in XYZ, rotate around RX/RY/RZ). Cartesian translation currently operates in the World reference frame while cartesian rotation operates in Tool reference frame. Future support is planned for additional reference frames.
+
+                    Keyboard shortcuts: **WASD** + **Q/E** for Cartesian movement, **[** / **]** to adjust speed. Clicking a jog button or key sends a single step; holding it jogs continuously until you release.
+                """,
                 "video": "basic_control.mp4",
             },
             {
-                "title": "Simulator vs Robot Mode",
-                "description": "Toggle between simulator mode (amber robot) and real hardware control using the robot/controller button. In simulator mode, you can test programs safely without moving the real robot.",
+                "title": "Connecting Your Robot",
+                "description": """
+                    In the control panel, switch to the **Settings** tab and select your hardware connection. On Linux you'll need access to the serial device — add yourself to the `dialout` group or set up a udev rule. Connection status is shown in the top right corner.
+
+                    - <span style="color: #4caf50">■</span> Connected to robot hardware
+                    - <span style="color: #f44336">■</span> Robot mode but disconnected
+                    - <span style="color: #9e9e9e">■</span> Simulator mode
+                """,
                 "video": "connecting_to_robot.mp4",
             },
             {
-                "title": "Program Tab",
-                "description": "Write Python programs to control your robot. Why Python? It gives you full programming power - loops, conditionals, math, and access to the complete robot API. Programs run step-by-step so you can pause and inspect.",
+                "title": "Programming, Recording, and Path Visualization",
+                "description": """
+                    Write robot programs in Python using the built-in editor with auto-complete for all robot commands. Or jog the robot into position and let the recorder generate `move_j` / `move_l` calls for you — I/O and tool actions are captured too. Right-click in the 3D view to place targets, press **T** to add one at the current pose, or drag existing targets with the gizmo to reposition them.
+
+                    Run programs against the simulator to preview the motion path in 3D. The path traces the TCP position through each move, color-coded by reachability. Execute on hardware when you're ready.
+                """,
                 "video": "recording_and_previewing_actions.mp4",
             },
             {
-                "title": "Set Serial Port",
-                "description": "To connect to real hardware, open Settings and select your serial port. The robot status indicator will turn green when connected.",
-                "video": "connecting_to_robot.mp4",
-            },
-            {
-                "title": "Begin! TCP Controls",
-                "description": "Click the TCP (Tool Center Point) in the 3D view to show movement gizmos. Drag the arrows to jog in cartesian space, or use the rotation rings for orientation. You can also use WASD+QE keys for quick jogging!",
-                "video": "basic_control.mp4",
+                "title": "I/O and Tool Control",
+                "description": """
+                    Toggle digital outputs, read inputs, and monitor E-stop state. For grippers, slide the position and current controls and watch the gripper track in real time — a live chart plots position and current over time. Tool and variant switching happens in the **Settings** tab; the 3D model updates to show the attached tool.
+                """,
+                "video": "attaching_a_tool.mp4",
             },
         ]
 
         with ui.scroll_area().classes("w-full h-full tutorial-scroll"):
             with (
                 ui.stepper()
-                .props("vertical header-nav flat")
+                .props("vertical header-nav flat active-color=white done-color=grey-5")
                 .classes("p-0")
                 .style("width: 700px;") as self._stepper
             ):
@@ -275,7 +289,13 @@ class HelpMenu:
                             "w-full rounded-lg"
                         ).props('preload="metadata"').style("max-height: 360px;")
 
-                        ui.label(step["description"]).classes("text-sm")
+                        # sanitize=False is safe here: the content is a
+                        # hardcoded literal that includes inline color spans
+                        # for the connection-status markers, and DOMPurify
+                        # would strip the inline styles otherwise.
+                        ui.markdown(step["description"], sanitize=False).classes(
+                            "text-md text-gray-300"
+                        )
 
                         with ui.stepper_navigation():
                             if i < len(steps) - 1:

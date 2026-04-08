@@ -77,6 +77,9 @@ status_consumer_task: asyncio.Task | None = None
 # Connectivity ping timer (1Hz)
 ping_timer: ui.timer | None = None
 last_ping_ok: bool = False
+# Set during _on_shutdown so the asyncio exception handler can swallow
+# expected cancellation/connection errors that fire as tasks unwind.
+_shutting_down: bool = False
 
 # Component instances (assigned in main(), None until then)
 control_panel: ControlPanel = None  # ty: ignore[invalid-assignment]
@@ -221,7 +224,7 @@ async def initialize_urdf_scene() -> None:
     # Cache joint names for mapping
     ui_state.urdf_joint_names = list(ui_state.urdf_scene.get_joint_names())
 
-    logger.info("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
+    logger.debug("URDF scene initialized with joints: %s", ui_state.urdf_joint_names)
 
     # Signal URDF scene ready for tests
     readiness_state.signal_urdf_scene_ready()
@@ -293,7 +296,7 @@ async def start_controller(com_port: str | None) -> None:
     if status_consumer_task is None or status_consumer_task.done():
         status_consumer_task = asyncio.create_task(_status_consumer())
     controller_state.running = True
-    logger.info("Controller started")
+    logger.debug("Controller started")
 
 
 async def stop_controller() -> None:
@@ -321,8 +324,31 @@ async def stop_controller() -> None:
 
 # --------------- Connectivity Check ---------------
 async def check_ping() -> None:
-    """Check connectivity via PING (1Hz)"""
+    """Check connectivity via PING (1Hz) and arbitrate multi-tab ownership.
+
+    This timer fires in *every* open tab (active and shadow). It first
+    decides whether this tab is the active controller; shadow tabs short-
+    circuit before touching any panel state.
+    """
     global last_ping_ok
+
+    # Multi-tab arbitration. ui.timer fires the callback inside the timer's
+    # owning client context, so ui.context.client.id is this tab's id.
+    this_id = ui.context.client.id
+    active_id = ui_state.active_client_id
+    if active_id is None:
+        # No tab holds the slot — claim it by reloading. The reloaded
+        # client lands fresh in index_page and atomically sets the slot.
+        ui.navigate.reload()
+        return
+    if active_id != this_id:
+        # Some other tab holds the slot. Make sure we're showing the
+        # takeover overlay and skip the active-tab heartbeat (the panel
+        # singletons point at the active tab's widgets, not ours). The
+        # build is idempotent per Client via _waldo_overlay_shown.
+        _build_takeover_overlay("Session was taken over by another tab")
+        return
+
     try:
         result = await client.ping()
         new_ok = result.hardware_connected if result else False
@@ -341,13 +367,14 @@ async def check_ping() -> None:
             logger.debug("ping: connected True → False (exception)")
         last_ping_ok = False
 
-    # Update robot connectivity status
+    # Update robot connectivity status. The multicast status consumer drives
+    # the joint/cartesian button sync at status rate; the two calls below
+    # cover the "stream went silent" path that the consumer cannot, since
+    # they read robot_state.connected directly.
     robot_state.connected = last_ping_ok
     if readout_panel is not None:
         readout_panel.update_conn_io()
     if control_panel is not None:
-        control_panel.refresh_joint_enablement()
-        control_panel.sync_cartesian_button_states()
         control_panel.sync_gizmo_for_jog_state()
 
 
@@ -811,6 +838,33 @@ def build_page_content() -> None:
 # When NiceGUI fails to reset between tests, runpy.run_path() re-executes main.py
 
 
+def _quiet_shutdown_exception_handler(
+    loop: asyncio.AbstractEventLoop, context: dict[str, object]
+) -> None:
+    """Filter expected cancellation noise once shutdown is in progress.
+
+    During Ctrl-C, in-flight tasks (status consumer, ping timer, multicast
+    socket reads) are cancelled mid-await. The resulting CancelledError /
+    ConnectionResetError / "task was destroyed" messages aren't actionable —
+    they're just the cost of asyncio teardown. While the app is alive we
+    delegate to the default handler so real bugs still surface.
+    """
+    if _shutting_down:
+        exc = context.get("exception")
+        if isinstance(
+            exc, (asyncio.CancelledError, ConnectionResetError, BrokenPipeError)
+        ):
+            return
+        msg = str(context.get("message", ""))
+        if (
+            "was destroyed but it is pending" in msg
+            or "coroutine was never awaited" in msg
+            or "Task was destroyed" in msg
+        ):
+            return
+    loop.default_exception_handler(context)
+
+
 def _register_handlers() -> None:
     """Register startup/shutdown handlers only once.
 
@@ -874,6 +928,11 @@ def _register_handlers() -> None:
         Any failure to start the controller (including "server already running")
         is treated as a hard error so tests cannot silently proceed in a bad state.
         """
+        # Install an asyncio exception handler that swallows the cancellation
+        # noise that fires when uvicorn tears down tasks during Ctrl-C.
+        asyncio.get_running_loop().set_exception_handler(
+            _quiet_shutdown_exception_handler
+        )
         try:
             # Pre-warm process pool workers with RTB imports (runs in background)
             backend_pkg = ui_state.active_robot.backend_package
@@ -890,6 +949,11 @@ def _register_handlers() -> None:
             # Sync editor slider mode now that simulator_active is known
             if editor_panel:
                 editor_panel.playback.sync_mode()
+            logger.info(
+                "waldo-commander ready on http://%s:%s",
+                config.server_host,
+                config.server_port,
+            )
         except Exception as e:
             logger.error("App startup init failed: %s", e)
             robot = ui_state.robot
@@ -903,6 +967,8 @@ def _register_handlers() -> None:
     @ng_app.on_shutdown
     async def _on_shutdown() -> None:
         """NiceGUI shutdown hook - ensure controller and child processes are stopped."""
+        global _shutting_down
+        _shutting_down = True
         logger.debug("Nicegui Shutting Down...")
         camera_service.stop()
 
@@ -921,7 +987,7 @@ def _register_handlers() -> None:
                 and editor_panel.script_running
                 and editor_panel.script_handle
             ):
-                logger.info("Stopping running script process during shutdown...")
+                logger.debug("Stopping running script process during shutdown...")
                 from waldo_commander.services.script_runner import stop_script
 
                 await stop_script(editor_panel.script_handle, timeout=2.0)
@@ -952,30 +1018,17 @@ def _register_handlers() -> None:
 
         # Shut down NiceGUI's process pool before stopping the controller,
         # so pool workers exit cleanly instead of becoming orphans.
+        # Detach from the module global *before* calling shutdown(): NiceGUI's
+        # own tear_down() also tries to kill the workers, and if it sees a
+        # non-None process_pool whose internal _processes dict has been cleared
+        # by our shutdown() call, it raises AssertionError on the way out.
         try:
             from nicegui import run as ng_run
 
-            if ng_run.process_pool is not None:
-                pool = ng_run.process_pool
-                # Log worker state before shutdown
-                for pid, proc in list(pool._processes.items()):
-                    logger.debug(
-                        "Pool worker pid=%d name=%s alive=%s exitcode=%s",
-                        pid,
-                        proc.name,
-                        proc.is_alive(),
-                        proc.exitcode,
-                    )
-                pool.shutdown(wait=False, cancel_futures=True)
-                # Log worker state after shutdown(wait=False)
-                for pid, proc in list(pool._processes.items()):
-                    logger.debug(
-                        "Post-shutdown worker pid=%d alive=%s exitcode=%s",
-                        pid,
-                        proc.is_alive(),
-                        proc.exitcode,
-                    )
+            pool = ng_run.process_pool
+            if pool is not None:
                 ng_run.process_pool = None
+                pool.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
             logger.debug("Error shutting down process pool: %s", e)
 
@@ -1041,6 +1094,74 @@ def _cleanup_script_processes_sync() -> None:
 atexit.register(_cleanup_script_processes_sync)
 
 
+# --------------- Multi-tab takeover overlay ---------------
+def _build_takeover_overlay(message: str) -> None:
+    """Render the takeover overlay: scrim + glass card + wandering sad robot.
+
+    Used as the entire page body for fresh shadow tabs, and as a top-layer
+    overlay for previously-active tabs that have been evicted by another tab.
+    All visual styling lives in theme.py under the `Takeover Overlay` section;
+    this function only assigns class names.
+
+    Idempotent per-client: sets a flag on the current Client instance so
+    repeat callers (e.g. check_ping firing on a shadow tab that was already
+    built with an overlay by index_page) skip a duplicate build.
+    """
+    from waldo_commander.components.readout import FACE_SVGS, RobotFace
+
+    c = ui.context.client
+    if getattr(c, "_waldo_overlay_shown", False):
+        return
+    c._waldo_overlay_shown = True  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+
+    # robot-faces.js is normally loaded by build_page_content, which the
+    # shadow branch skips. Load it here so initRobotFace / startRobotMope
+    # are defined when the run_javascript bootstrap fires below.
+    ui.add_head_html('<script src="/static/js/robot-faces.js" defer></script>')
+
+    with ui.column().classes(
+        "fixed inset-0 z-[9999] items-center justify-center bg-black/60"
+    ):
+        # Wandering sad robot — sibling of the card. JS sets transform to
+        # mope around the viewport, avoiding the centered card's footprint.
+        with ui.element("div").classes("robot-face robot-face-sad takeover-face"):
+            ui.html(FACE_SVGS[RobotFace.SAD], sanitize=False).style(
+                "width: 96px; height: 96px;"
+            )
+
+        with ui.column().classes("overlay-card items-center max-w-sm p-8"):
+            ui.label("Waldo Commander").classes("text-xl font-semibold")
+            ui.label(message).classes("text-sm text-center opacity-90")
+
+            def _take_over() -> None:
+                ui_state.active_client_id = None
+                ui.navigate.reload()
+
+            ui.button("Take over", on_click=_take_over).props(
+                "color=primary unelevated rounded"
+            ).classes("mt-2")
+
+    # Bootstrap face animations + wandering. The robot-faces.js script tag
+    # uses `defer`, so the functions may not be defined yet when this JS
+    # arrives over the websocket. Poll briefly for them.
+    ui.run_javascript(
+        """
+        (function bootstrap(retries) {
+          if (typeof window.startRobotMope === 'function') {
+            if (typeof window.initRobotFace === 'function') {
+              window.initRobotFace('sad');
+            }
+            window.startRobotMope();
+          } else if (retries > 0) {
+            setTimeout(() => bootstrap(retries - 1), 50);
+          } else {
+            console.warn('takeover overlay: robot-faces.js never loaded');
+          }
+        })(60);
+        """
+    )
+
+
 @ui.page("/")
 async def index_page():
     global ping_timer, _page_client
@@ -1049,14 +1170,45 @@ async def index_page():
     # status consumer never touches stale panel references from a
     # previous (deleted) client.
 
-    async def _on_disconnect():
+    # Atomic claim of the multi-tab "active" slot. The CPython GIL makes
+    # this race-safe enough for the rare case where two reloaded clients
+    # connect simultaneously: only one branch will see an empty slot.
+    # Also reclaim if the held id is stale (tab disconnected without
+    # firing _on_disconnect, or test fixtures churning clients rapidly).
+    held_id = ui_state.active_client_id
+    if held_id is None or held_id not in Client.instances:
+        ui_state.active_client_id = this_client.id
+    is_active = ui_state.active_client_id == this_client.id
+
+    def _on_disconnect():
+        # Synchronous handler so the active-slot release happens *inline*
+        # during NiceGUI's handle_disconnect() — async handlers are scheduled
+        # as background tasks and would let the new client see a stale slot
+        # on refresh.
         global _page_client, _connection_notification
+        if ui_state.active_client_id == this_client.id:
+            ui_state.active_client_id = None
         # Only clear if this is still the active client (avoid race on refresh)
         if _page_client is this_client:
             _page_client = None
         _connection_notification = None
 
     this_client.on_disconnect(_on_disconnect)
+
+    if not is_active:
+        # Shadow tab: render the takeover overlay only. Do NOT call
+        # build_page_content / initialize_urdf_scene — those would mutate
+        # the singletons that the active tab depends on. Install the
+        # 1 Hz check_ping watchdog so the tab can auto-promote when the
+        # active tab eventually closes.
+        # Theme + layout CSS must be applied here too so the .takeover-*
+        # classes (defined in theme.py) actually exist on shadow pages.
+        apply_theme("dark")
+        inject_layout_css()
+        _build_takeover_overlay("Session active in another tab")
+        ping_timer = ui.timer(interval=1.0, callback=check_ping, active=True)
+        return
+
     # Theme and layout
     apply_theme("dark")
     ui.query(".nicegui-content").classes("p-0")
@@ -1322,10 +1474,10 @@ def main():
 
     # Configure logging
     configure_logging(config.log_level)
-    logger.info(
+    logger.debug(
         "Webserver bind: host=%s port=%s", config.server_host, config.server_port
     )
-    logger.info(
+    logger.debug(
         "Controller target: host=%s port=%s",
         config.controller_host,
         config.controller_port,
@@ -1347,18 +1499,27 @@ def main():
             binding_refresh_interval=0.05,
         )
     except KeyboardInterrupt:
-        import multiprocessing
-        import threading
+        # The NiceGUI on_shutdown hook already cleaned up child processes,
+        # threads, and the controller; nothing else to do here.
+        if logger.isEnabledFor(logging.DEBUG):
+            import multiprocessing
+            import threading
 
-        print("\nShutting down...")
-        for child in multiprocessing.active_children():
-            print(
-                f"  [exit] active child: pid={child.pid} name={child.name}"
-                f" alive={child.is_alive()} exitcode={child.exitcode} daemon={child.daemon}"
-            )
-        for t in threading.enumerate():
-            if t is not threading.current_thread():
-                print(f"  [exit] alive thread: name={t.name} daemon={t.daemon}")
+            for child in multiprocessing.active_children():
+                logger.debug(
+                    "exit: active child pid=%d name=%s alive=%s exitcode=%s daemon=%s",
+                    child.pid,
+                    child.name,
+                    child.is_alive(),
+                    child.exitcode,
+                    child.daemon,
+                )
+            for t in threading.enumerate():
+                if t is not threading.current_thread():
+                    logger.debug(
+                        "exit: alive thread name=%s daemon=%s", t.name, t.daemon
+                    )
+        print("waldo-commander: shutdown complete")
 
 
 if __name__ in {"__main__", "__mp_main__"}:

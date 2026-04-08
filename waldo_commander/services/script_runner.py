@@ -149,7 +149,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
     proc = handle["proc"]
 
     if proc.returncode is not None:
-        logger.info("Script process already terminated (code: %s)", proc.returncode)
+        logger.debug("Script process already terminated (code: %s)", proc.returncode)
         return
 
     try:
@@ -169,7 +169,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=timeout)
-            logger.info("Script process terminated gracefully")
+            logger.debug("Script process terminated gracefully")
         except asyncio.TimeoutError:
             # Force kill if graceful termination failed
             if sys.platform != "win32" and proc.pid:
@@ -201,7 +201,7 @@ async def stop_script(handle: ScriptProcessHandle, timeout: float = 2.0) -> None
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error("Error canceling stream task: %s", e)
+                logger.debug("Error canceling stream task: %s", e)
 
 
 def create_default_config(filename: str, cwd: str | None = None) -> ScriptRunConfig:

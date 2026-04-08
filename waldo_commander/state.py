@@ -436,6 +436,11 @@ class UiState:
     # URDF scene instance (holds UrdfSceneConfig)
     urdf_scene: "UrdfScene | None" = None
     urdf_joint_names: list[str] | None = None
+
+    # Tab currently allowed to control the robot. None during the brief
+    # window between a takeover click and the reloaded client reconnecting.
+    # See main.index_page / main.check_ping for the lifecycle.
+    active_client_id: str | None = None
     urdf_index_mapping: list[int] = field(default_factory=lambda: list(range(6)))
     current_tool_stls: list[Any] = field(default_factory=list)
 
@@ -490,6 +495,7 @@ class UiState:
     def reset(self) -> None:
         """Reset UI state. Does not reset robot (set once at startup)."""
         self.urdf_scene = None
+        self.active_client_id = None
 
 
 @dataclass(slots=True)

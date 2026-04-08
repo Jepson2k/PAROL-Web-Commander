@@ -1382,6 +1382,7 @@ print(f"Robot status: {{status}}")
                             t, e.value
                         ),
                         on_cursor_line=lambda e, t=tab: self._on_cursor_line(t, e),
+                        on_save=lambda _e, t=tab: self._save_tab(t),
                         custom_completions=completions,
                     )
                     .classes("w-full h-full")

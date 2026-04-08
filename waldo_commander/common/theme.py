@@ -964,11 +964,6 @@ html, body {
   animation: cm-line-flash 1.5s ease-out forwards;
 }
 
-/* Remove CodeMirror's default line padding (overrides .ͼN .cm-line).
-   Keep the 6px left gutter for breathing room. */
-# .cm-editor .cm-content .cm-line {
-#   padding: 0 2px 0 0px !important;
-# }
 
 /* Fade CodeMirror content at bottom using mask - fades to transparent */
 .editor-tab-panel {
@@ -1240,6 +1235,22 @@ html, body {
 /* Help tab has no panel — hide its indicator to prevent stale marker at startup */
 .side-tab-bar.absolute.bottom-0 .q-tab:last-child .q-tab__indicator {
     display: none !important;
+}
+
+
+/* ========== Takeover Overlay ========== */
+
+/* Wandering sad robot — DVD-screensaver-style bounce around the viewport.
+   Dimensions and fixed positioning are load-bearing: robot-faces.js uses
+   FACE_SIZE = 96 for collision math, and the JS sets `transform` directly
+   to compose translate + rotate without browser animation interference. */
+.takeover-face {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 96px;
+  height: 96px;
+  pointer-events: none;
 }
 
 

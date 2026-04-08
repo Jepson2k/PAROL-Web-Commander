@@ -73,21 +73,21 @@ class TestTutorialStepper:
         await asyncio.sleep(0)
 
         # Should see first step (description text, since step titles are Quasar props)
-        await user.should_see("PAROL Commander has three main areas")
+        await user.should_see("Jog in joint space")
 
         # Click Next to advance
         user.find("Next").click()
         await asyncio.sleep(0)
 
         # Should see second step
-        await user.should_see("Toggle between simulator mode")
+        await user.should_see("In the control panel")
 
         # Click Back to return
         user.find("Back").click()
         await asyncio.sleep(0)
 
         # Should see first step again
-        await user.should_see("PAROL Commander has three main areas")
+        await user.should_see("Jog in joint space")
 
     async def test_tutorial_can_reach_final_step(self, user: User) -> None:
         """Test that tutorial can navigate to the final step with Finish button."""
@@ -100,12 +100,12 @@ class TestTutorialStepper:
         await asyncio.sleep(0)
 
         # Navigate through all steps to reach Finish button
-        for _ in range(4):  # 5 steps total, need 4 Next clicks
+        for _ in range(3):  # 4 steps total, need 3 Next clicks
             user.find("Next").click()
             await asyncio.sleep(0)
 
         # Should see last step with Finish button
-        await user.should_see("WASD+QE keys")
+        await user.should_see("Toggle digital outputs")
         await user.should_see("Finish")
 
 
@@ -148,4 +148,4 @@ class TestFirstTimeDialogWithSafety:
         await asyncio.sleep(0.1)
 
         # Should now see the first tutorial step
-        await user.should_see("PAROL Commander has three main areas")
+        await user.should_see("Jog in joint space")
