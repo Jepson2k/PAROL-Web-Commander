@@ -722,11 +722,12 @@
 
 <span class="c1"># Select tool, and home only if not already near the home pose</span>
 <span class="n">rbt</span><span class="o">.</span><span class="n">select_tool</span><span class="p">(</span><span class="s2">&quot;SSG-48&quot;</span><span class="p">)</span>
+<span class="n">rbt</span><span class="o">.</span><span class="n">tool</span><span class="o">.</span><span class="n">calibrate</span><span class="p">()</span>
 <span class="n">current</span> <span class="o">=</span> <span class="n">rbt</span><span class="o">.</span><span class="n">angles</span><span class="p">()</span>
 <span class="k">if</span> <span class="n">current</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="nb">max</span><span class="p">(</span><span class="nb">abs</span><span class="p">(</span><span class="n">a</span> <span class="o">-</span> <span class="n">h</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span><span class="p">,</span> <span class="n">h</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">current</span><span class="p">,</span> <span class="n">HOME_ANGLES</span><span class="p">))</span> <span class="o">&gt;</span> <span class="n">HOME_TOLERANCE_DEG</span><span class="p">:</span>
     <span class="n">rbt</span><span class="o">.</span><span class="n">home</span><span class="p">()</span>
 </code></pre></div>
-<p><code>home()</code> blocks until all joints reach the home position. All motion commands block by default. Skipping the home when already there saves time on repeated runs.</p>
+<p><code>select_tool</code> activates the end-effector and updates the TCP. <code>tool.calibrate()</code> runs the gripper's one-time-per-session calibration routine — required before any <code>tool.open</code> / <code>tool.close</code> / <code>tool.set_position</code> calls. <code>home()</code> blocks until all joints reach the home position. All motion commands block by default. Skipping the home when already there saves time on repeated runs.</p>
 <h2 id="move_j-vs-move_l">move_j vs move_l<a class="headerlink" href="#move_j-vs-move_l" title="Permanent link">&para;</a></h2>
 <p><code>move_j</code> interpolates in joint space — each joint takes the shortest path to its target angle. <code>move_l</code> moves the TCP in a straight line through Cartesian space. The difference is visible: move_j produces a curved TCP path, move_l produces a straight one.</p>
 <p>To show this, we'll move to a pose with move_j, then to another with move_l. Watch the TCP path in the 3D view — the move_j arc vs the move_l straight line.</p>
@@ -902,6 +903,7 @@
 
 <span class="c1"># Select tool, and home only if not already near the home pose</span>
 <span class="n">rbt</span><span class="o">.</span><span class="n">select_tool</span><span class="p">(</span><span class="s2">&quot;SSG-48&quot;</span><span class="p">)</span>
+<span class="n">rbt</span><span class="o">.</span><span class="n">tool</span><span class="o">.</span><span class="n">calibrate</span><span class="p">()</span>
 <span class="n">current</span> <span class="o">=</span> <span class="n">rbt</span><span class="o">.</span><span class="n">angles</span><span class="p">()</span>
 <span class="k">if</span> <span class="n">current</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="nb">max</span><span class="p">(</span><span class="nb">abs</span><span class="p">(</span><span class="n">a</span> <span class="o">-</span> <span class="n">h</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span><span class="p">,</span> <span class="n">h</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">current</span><span class="p">,</span> <span class="n">HOME_ANGLES</span><span class="p">))</span> <span class="o">&gt;</span> <span class="n">HOME_TOLERANCE_DEG</span><span class="p">:</span>
     <span class="n">rbt</span><span class="o">.</span><span class="n">home</span><span class="p">()</span>
