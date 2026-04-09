@@ -18,12 +18,13 @@ HOME_TOLERANCE_DEG = 2.0
 
 # Select tool, and home only if not already near the home pose
 rbt.select_tool("SSG-48")
+rbt.tool.calibrate()
 current = rbt.angles()
 if current is None or max(abs(a - h) for a, h in zip(current, HOME_ANGLES)) > HOME_TOLERANCE_DEG:
     rbt.home()
 ```
 
-`home()` blocks until all joints reach the home position. All motion commands block by default. Skipping the home when already there saves time on repeated runs.
+`select_tool` activates the end-effector and updates the TCP. `tool.calibrate()` runs the gripper's one-time-per-session calibration routine — required before any `tool.open` / `tool.close` / `tool.set_position` calls. `home()` blocks until all joints reach the home position. All motion commands block by default. Skipping the home when already there saves time on repeated runs.
 
 ## move_j vs move_l
 
@@ -243,6 +244,7 @@ HOME_TOLERANCE_DEG = 2.0
 
 # Select tool, and home only if not already near the home pose
 rbt.select_tool("SSG-48")
+rbt.tool.calibrate()
 current = rbt.angles()
 if current is None or max(abs(a - h) for a, h in zip(current, HOME_ANGLES)) > HOME_TOLERANCE_DEG:
     rbt.home()
