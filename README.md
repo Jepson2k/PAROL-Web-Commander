@@ -2,7 +2,7 @@
 
 A web interface for controlling robotic arms, currently tested with the [PAROL6](https://github.com/PCrnjak/PAROL6-Desktop-robot-arm) robot.
 
-<video src="https://jepson2k.github.io/Waldo-Commander/videos/demo_showcase.mp4" controls width="100%"></video>
+https://github.com/user-attachments/assets/61c5aec4-9611-4f61-b1b0-35f25931e11e
 
 - **Browser-based.** Control from any device on the network without being tethered to the arm.
 - **Python programs.** Write robot programs in Python with loops, math, and libraries. Built-in editor with auto-complete, live output, and step-through debugging.
