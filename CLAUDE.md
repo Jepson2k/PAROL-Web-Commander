@@ -204,17 +204,32 @@ them as sibling directories and use this multi-step install:
 
 ```bash
 pip install -e waldoctl/
-pip install -e PAROL6-python-API/ --no-deps
+pip install -e PAROL6-python-API/ --config-settings editable_mode=compat --no-deps
 pip install -e . --no-deps
 pip install -e ".[dev]"   # final pass picks up the rest of the deps
 ```
 
-The `--no-deps` flags are load-bearing. Both `Waldo-Commander/pyproject.toml`
-and `PAROL6-python-API/pyproject.toml` pin `waldoctl @ git+...@v0.2.0` as a
+Two flags are load-bearing here, for two unrelated reasons:
+
+**`--no-deps`** is needed because both `Waldo-Commander/pyproject.toml` and
+`PAROL6-python-API/pyproject.toml` pin `waldoctl @ git+...@v0.2.0` as a
 *direct URL* requirement, and pip's resolver refuses to reconcile a direct
 URL spec with a local editable install of the same version — even when both
-resolve to identical code. Empirically verified: `pip install -e waldoctl/ -e
-PAROL6-python-API/ -e ".[dev]"` fails with `ResolutionImpossible` on pip 25,
-saying "waldoctl 0.2.0 (from local path)" conflicts with "waldoctl 0.2.0
-(from git URL)". Installing the editable sibling first and then telling pip
-to skip dep resolution on the dependents bypasses the conflict.
+resolve to identical code. Empirically verified: `pip install -e waldoctl/
+-e PAROL6-python-API/ -e ".[dev]"` fails with `ResolutionImpossible` on
+pip 25, saying "waldoctl 0.2.0 (from local path)" conflicts with "waldoctl
+0.2.0 (from git URL)". Installing the editable sibling first and skipping
+dep resolution on the dependents bypasses the conflict.
+
+**`--config-settings editable_mode=compat`** is needed only for parol6,
+because `parol6/robot.py` resolves the URDF via
+`importlib.resources.files("parol6")`. Pip's default PEP 660 "strict"
+editable install puts a thin shim directory in site-packages and that's
+what `files("parol6")` returns — so `pkg_files("parol6") /
+"urdf_model/urdf/PAROL6.urdf"` resolves under site-packages instead of
+the source tree, and `waldo-commander` crashes at startup with
+`File ...site-packages/parol6/urdf_model/urdf/PAROL6.urdf does not exist`.
+The `compat` mode falls back to the older `.pth`/develop-style install
+where `files("parol6")` correctly returns the source tree path. waldoctl
+and waldo_commander don't need this flag (waldoctl has no package data,
+and waldo_commander happens to resolve correctly even in strict mode).
