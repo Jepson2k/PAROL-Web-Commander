@@ -186,8 +186,35 @@ This means devs can work on cross-repo changes without publishing releases first
 
 ### Local development
 
-Clone dependency repos as sibling directories and use editable installs:
+For the common case — editing `waldo_commander/` only, with `waldoctl` and
+`parol6` pulled from the pinned git tags:
 
 ```bash
-pip install -e waldoctl/ -e PAROL6-python-API/ -e ".[dev]"
+pip install -e ".[dev]"
 ```
+
+This is what most contributors should use. It installs `waldoctl`, `parol6`,
+and the vendored `nicegui` fork from the git URLs pinned in `pyproject.toml`,
+plus all dev tools (ruff, ty, pytest, pre-commit, selenium).
+
+#### Advanced: editing sibling repos in place
+
+If you also need to edit `waldoctl/` or `PAROL6-python-API/` directly, clone
+them as sibling directories and use this multi-step install:
+
+```bash
+pip install -e waldoctl/
+pip install -e PAROL6-python-API/ --no-deps
+pip install -e . --no-deps
+pip install -e ".[dev]"   # final pass picks up the rest of the deps
+```
+
+The `--no-deps` flags are load-bearing. Both `Waldo-Commander/pyproject.toml`
+and `PAROL6-python-API/pyproject.toml` pin `waldoctl @ git+...@v0.2.0` as a
+*direct URL* requirement, and pip's resolver refuses to reconcile a direct
+URL spec with a local editable install of the same version — even when both
+resolve to identical code. Empirically verified: `pip install -e waldoctl/ -e
+PAROL6-python-API/ -e ".[dev]"` fails with `ResolutionImpossible` on pip 25,
+saying "waldoctl 0.2.0 (from local path)" conflicts with "waldoctl 0.2.0
+(from git URL)". Installing the editable sibling first and then telling pip
+to skip dep resolution on the dependents bypasses the conflict.
