@@ -459,6 +459,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Contributing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#editing-sibling-repos-in-place" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing sibling repos in place
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -746,6 +763,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Contributing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#editing-sibling-repos-in-place" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editing sibling repos in place
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1002,9 +1036,15 @@ waldo-commander
 <div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[dev]&quot;</span>
 pre-commit<span class="w"> </span>install
 </code></pre></div>
-<p>Pre-commit hooks run ruff (linter + formatter) and ty (type checker) on every commit. Tests use pytest:</p>
-<div class="highlight"><pre><span></span><code>pytest
+<p>Pre-commit hooks run ruff and ty on every commit. Tests use <code>pytest</code>.</p>
+<h3 id="editing-sibling-repos-in-place">Editing sibling repos in place<a class="headerlink" href="#editing-sibling-repos-in-place" title="Permanent link">&para;</a></h3>
+<p>If you need to edit <code>waldoctl/</code> or <code>PAROL6-python-API/</code> alongside <code>waldo_commander/</code>, clone them as sibling directories and run:</p>
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>waldoctl/
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>PAROL6-python-API/<span class="w"> </span>--config-settings<span class="w"> </span><span class="nv">editable_mode</span><span class="o">=</span>compat<span class="w"> </span>--no-deps
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-deps
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[dev]&quot;</span>
 </code></pre></div>
+<p><code>--no-deps</code> sidesteps a pip resolver conflict between the local editable <code>waldoctl</code> and the <code>waldoctl @ git+...</code> direct URL pin in dependents. <code>editable_mode=compat</code> is needed only for parol6, so <code>importlib.resources.files("parol6")</code> resolves to the source tree (otherwise the URDF lookup fails at startup).</p>
 <hr />
 <h2 id="about">About<a class="headerlink" href="#about" title="Permanent link">&para;</a></h2>
 <p>Waldo Commander builds on the open-source PAROL6 robotics ecosystem:</p>
