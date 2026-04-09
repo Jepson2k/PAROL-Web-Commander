@@ -125,9 +125,21 @@ class TestEditorRegressions:
             cm_content = focus_editor(class_screen)
             cm_content.send_keys(Keys.CONTROL + "s")
 
-            WebDriverWait(class_screen.selenium, 10).until(
-                lambda _d: target_path.exists()
-            )
+            # Wait for the file to *contain* the expected content, not just
+            # to exist. The save creates the file before writing content, so
+            # a bare exists() check races against the open-then-write window
+            # and observed-empty reads on slow CI runners (the failing
+            # ubuntu/3.13 + 3.14 jobs that prompted this fix).
+            def _has_target_content(_d: object) -> bool:
+                try:
+                    return (
+                        target_path.exists()
+                        and target_path.read_text() == target_content
+                    )
+                except OSError:
+                    return False
+
+            WebDriverWait(class_screen.selenium, 10).until(_has_target_content)
             assert target_path.read_text() == target_content
         finally:
             target_path.unlink(missing_ok=True)
