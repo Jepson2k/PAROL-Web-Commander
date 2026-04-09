@@ -263,13 +263,16 @@ async def start_controller(com_port: str | None) -> None:
     running at the configured host/port instead of silently reusing it.
     """
     robot = ui_state.active_robot
-    # If AUTO_START requested, ensure a server is running at the target tuple
+    # If AUTO_START requested, ensure a server is running at the target tuple.
+    # 60s timeout (vs parol6's 10s default) accommodates first-run numba JIT
+    # warmup on slower machines; cached runs are much faster.
     if config.exclusive_start:
         await asyncio.to_thread(
             robot.start,
             host=config.controller_host,
             port=config.controller_port,
             com_port=com_port,
+            timeout=60,
         )
     else:
         # If a controller is already running, reuse it
