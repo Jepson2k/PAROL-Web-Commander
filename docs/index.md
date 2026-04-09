@@ -141,11 +141,20 @@ pip install -e ".[dev]"
 pre-commit install
 ```
 
-Pre-commit hooks run ruff (linter + formatter) and ty (type checker) on every commit. Tests use pytest:
+Pre-commit hooks run ruff and ty on every commit. Tests use `pytest`.
+
+### Editing sibling repos in place
+
+If you need to edit `waldoctl/` or `PAROL6-python-API/` alongside `waldo_commander/`, clone them as sibling directories and run:
 
 ```bash
-pytest
+pip install -e waldoctl/
+pip install -e PAROL6-python-API/ --config-settings editable_mode=compat --no-deps
+pip install -e . --no-deps
+pip install -e ".[dev]"
 ```
+
+`--no-deps` sidesteps a pip resolver conflict between the local editable `waldoctl` and the `waldoctl @ git+...` direct URL pin in dependents. `editable_mode=compat` is needed only for parol6, so `importlib.resources.files("parol6")` resolves to the source tree (otherwise the URDF lookup fails at startup).
 
 ---
 
