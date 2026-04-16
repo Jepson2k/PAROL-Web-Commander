@@ -1458,7 +1458,7 @@ class ControlPanel:
             if editor_panel and simulation_state.script_running:
                 logger.info("Stopping running script before mode switch")
                 try:
-                    await editor_panel._stop_script_process()
+                    await editor_panel.script_exec.stop()
                 except Exception as e:
                     logger.warning("Failed to stop script before mode switch: %s", e)
 

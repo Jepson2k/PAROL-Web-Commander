@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 from nicegui import ui, context
@@ -20,7 +20,7 @@ from waldo_commander.state import (
 )
 
 if TYPE_CHECKING:
-    from waldo_commander.components.editor import EditorPanel
+    from waldo_commander.components.script_execution import ScriptExecutionController
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,26 @@ logger = logging.getLogger(__name__)
 class PlaybackController:
     """Owns the bottom playback bar UI and all simulation/script playback logic."""
 
-    def __init__(self, editor: EditorPanel) -> None:
-        self._editor = editor
+    def __init__(
+        self,
+        script_exec: ScriptExecutionController,
+        *,
+        on_highlight_line: Callable[[int], None],
+        on_record_click: Callable[[], None],
+        on_log_toggle_click: Callable[[], None],
+    ) -> None:
+        self._script_exec = script_exec
+        self._on_highlight_line = on_highlight_line
+        self._on_record_click = on_record_click
+        self._on_log_toggle_click = on_log_toggle_click
+
+        # Widget references that used to live on EditorPanel — stored here
+        # and exposed via the playback attribute for tests.
+        self.record_btn: ui.button | None = None
+        self.record_btn_tooltip: ui.tooltip | None = None
+        self.capture_btn: ui.button | None = None
+        self.log_toggle_btn: ui.button | None = None
+        self.log_toggle_btn_tooltip: ui.tooltip | None = None
 
         # Bottom playback bar elements
         self.playback_bar: ui.element | None = None
@@ -86,7 +104,7 @@ class PlaybackController:
 
             # 2. Stop button
             self._stop_btn = (
-                ui.button(icon="stop", on_click=self._editor._stop_script_process)
+                ui.button(icon="stop", on_click=self._script_exec.stop)
                 .props("round dense color=negative unelevated")
                 .tooltip("Stop")
             )
@@ -167,15 +185,15 @@ class PlaybackController:
                 )
 
             # 6. Record button
-            self._editor.record_btn = ui.button(
-                icon="fiber_manual_record", on_click=self._editor._toggle_recording
+            self.record_btn = ui.button(
+                icon="fiber_manual_record", on_click=self._on_record_click
             ).props("round dense color=negative unelevated")
-            with self._editor.record_btn:
-                self._editor._record_btn_tooltip = ui.tooltip("Start Recording")
-            self._editor.record_btn.mark("editor-record-btn")
+            with self.record_btn:
+                self.record_btn_tooltip = ui.tooltip("Start Recording")
+            self.record_btn.mark("editor-record-btn")
 
             # 7. Capture position
-            self._editor._capture_btn = (
+            self.capture_btn = (
                 ui.button(
                     icon="camera_alt", on_click=motion_recorder.capture_current_pose
                 )
@@ -184,14 +202,14 @@ class PlaybackController:
             )
 
             # 8. Log show/hide
-            self._editor.log_toggle_btn = (
-                ui.button(icon="expand_more", on_click=self._editor._toggle_log)
+            self.log_toggle_btn = (
+                ui.button(icon="expand_more", on_click=self._on_log_toggle_click)
                 .props("round dense flat")
                 .classes("text-white")
             )
-            with self._editor.log_toggle_btn:
-                self._editor._log_toggle_btn_tooltip = ui.tooltip("Show Output")
-            self._editor.log_toggle_btn.mark("editor-log-toggle")
+            with self.log_toggle_btn:
+                self.log_toggle_btn_tooltip = ui.tooltip("Show Output")
+            self.log_toggle_btn.mark("editor-log-toggle")
 
     def setup_timers(self) -> None:
         """Create timers and register listeners. Must be called within client context."""
@@ -208,13 +226,11 @@ class PlaybackController:
         """Toggle play/pause for script execution or simulation playback."""
         if simulation_state.script_running:
             if simulation_state.is_playing:
-                if self._editor._step_controller:
-                    self._editor._step_controller.signal_pause()
+                self._script_exec.pause()
                 simulation_state.is_playing = False
                 logger.debug("Script paused")
             else:
-                if self._editor._step_controller:
-                    self._editor._step_controller.signal_play()
+                self._script_exec.play()
                 simulation_state.is_playing = True
                 logger.debug("Script playing")
             self._update_play_button()
@@ -224,12 +240,12 @@ class PlaybackController:
             else:
                 self._start_sim_playback()
         else:
-            await self._editor._start_script_process()
+            await self._script_exec.start()
 
     def step_forward(self) -> None:
         """Step forward one segment."""
-        if simulation_state.script_running and self._editor._step_controller:
-            self._editor._step_controller.signal_step()
+        if simulation_state.script_running and self._script_exec.has_stepper():
+            self._script_exec.step()
             logger.debug("Step forward signal sent to script")
         elif self._timeline and simulation_state.total_steps > 0:
             next_idx = min(
@@ -311,14 +327,14 @@ class PlaybackController:
                 self._sim_timer.active = True
             simulation_state.current_step_index = step
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(step)
+            self._on_highlight_line(step)
 
     def on_script_step_complete(self, step: int, ui_client: Any) -> None:
         """Called when a script command completes."""
         with ui_client:
             simulation_state.current_step_index = step
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(step)
+            self._on_highlight_line(step)
             # Snap slider to segment end
             if self._timeline and self._scrub_slider:
                 end_idx = min(step + 1, len(self._timeline.cumulative_times) - 1)
@@ -391,7 +407,7 @@ class PlaybackController:
         if sample.segment_index != simulation_state.current_step_index:
             simulation_state.current_step_index = sample.segment_index
             self._highlight_current_segment()
-            self._editor.highlight_executing_line(sample.segment_index)
+            self._on_highlight_line(sample.segment_index)
             if ui_state.urdf_scene:
                 ui_state.urdf_scene.update_playback_opacity()
 
