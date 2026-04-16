@@ -124,7 +124,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
     assert editor is not None, "Editor panel should exist"
 
     # Initially log should be collapsed with expand_more icon (down chevron)
-    assert editor._log_expanded is False, "Log should be collapsed initially"
+    assert editor.log_panel._log_expanded is False, "Log should be collapsed initially"
     log_toggle_btn = editor.log_toggle_btn
     assert log_toggle_btn is not None, "Log toggle button should exist"
 
@@ -140,7 +140,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
     await asyncio.sleep(0.1)
 
     # Log should now be expanded with expand_less icon (up chevron)
-    assert editor._log_expanded is True, "Log should be expanded after click"
+    assert editor.log_panel._log_expanded is True, "Log should be expanded after click"
     expanded_props = log_toggle_btn._props.get("icon", "")
     assert expanded_props == "expand_less", (
         f"Expanded icon should be expand_less, got {expanded_props}"
@@ -151,7 +151,9 @@ async def test_log_toggle_expands_log(user: User) -> None:
     await asyncio.sleep(0.1)
 
     # Should be back to collapsed with expand_more icon
-    assert editor._log_expanded is False, "Log should be collapsed after second click"
+    assert editor.log_panel._log_expanded is False, (
+        "Log should be collapsed after second click"
+    )
     collapsed_props = log_toggle_btn._props.get("icon", "")
     assert collapsed_props == "expand_more", (
         f"Collapsed icon should be expand_more, got {collapsed_props}"

@@ -27,6 +27,7 @@ from waldo_commander.services.command_discovery import (
 )
 from waldo_commander.components.playback import PlaybackController
 from waldo_commander.components.script_execution import ScriptExecutionController
+from waldo_commander.components.log_panel import LogPanelController
 from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ class EditorPanel(FileOperationsMixin):
         self.program_log: ui.log | None = None
         self.run_btn: ui.button | None = None
 
+        # Log panel controller (shared log area below playback bar)
+        self.log_panel = LogPanelController()
+
         # Script execution controller (owns subprocess lifecycle + stepping)
         self.script_exec = ScriptExecutionController(
             on_script_start=lambda: self.playback.on_script_start(),
@@ -83,7 +87,7 @@ class EditorPanel(FileOperationsMixin):
                 else ""
             ),
             get_program_log=lambda: self.program_log,
-            expand_log=lambda: self._expand_log(),
+            expand_log=lambda: self.log_panel.expand(),
             clear_highlight=lambda: self.clear_executing_line_highlight(),
             program_dir=self.PROGRAM_DIR,
         )
@@ -93,14 +97,7 @@ class EditorPanel(FileOperationsMixin):
             self.script_exec,
             on_highlight_line=lambda n: self.highlight_executing_line(n),
             on_record_click=lambda: self._toggle_recording(),
-            on_log_toggle_click=lambda: self._toggle_log(),
-        )
-
-        # Shared log area (below play bar)
-        self._log_expanded: bool = False
-        self.editor_splitter: ui.splitter | None = None
-        self._splitter_value_when_expanded: float = (
-            70.0  # Remember user's preferred split
+            on_log_toggle_click=lambda: self.log_panel.toggle(),
         )
 
         # Per-tab simulation tracking (for cancellation on tab close/switch)
@@ -721,54 +718,6 @@ print(f"Robot status: {{status}}")
                     pass  # No client context available
                 self._recording_notification = None
 
-    def _toggle_log(self) -> None:
-        """Toggle shared log panel visibility via splitter position."""
-        if self._log_expanded:
-            self._collapse_log()
-        else:
-            self._expand_log()
-
-    def _expand_log(self) -> None:
-        """Expand the shared log panel by adjusting splitter."""
-        self._log_expanded = True
-        if self.editor_splitter:
-            self.editor_splitter.set_value(self._splitter_value_when_expanded)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_less")
-            if self._log_toggle_btn_tooltip:
-                self._log_toggle_btn_tooltip.text = "Hide Output"
-
-    def _collapse_log(self) -> None:
-        """Collapse the shared log panel by adjusting splitter."""
-        self._log_expanded = False
-        if self.editor_splitter:
-            self.editor_splitter.set_value(94)  # 94% to editor (collapsed)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_more")
-            if self._log_toggle_btn_tooltip:
-                self._log_toggle_btn_tooltip.text = "Show Output"
-
-    def _on_splitter_change(self, e) -> None:
-        """Handle splitter drag changes to update log expanded state."""
-        value = e.value
-        if value is None:
-            return
-
-        # If user drags to near-bottom (>90%), treat as collapsed
-        if value > 90:
-            self._log_expanded = False
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_more")
-                if self._log_toggle_btn_tooltip:
-                    self._log_toggle_btn_tooltip.text = "Show Output"
-        else:
-            self._log_expanded = True
-            self._splitter_value_when_expanded = value  # Remember user's preference
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_less")
-                if self._log_toggle_btn_tooltip:
-                    self._log_toggle_btn_tooltip.text = "Hide Output"
-
     # ---- Tab Management Methods ----
 
     def _new_tab(
@@ -1351,12 +1300,12 @@ print(f"Robot status: {{status}}")
                     horizontal=True,
                     value=94,  # Start collapsed (94% to editor, leaves room for playbar)
                     limits=(50, 94),
-                    on_change=self._on_splitter_change,
+                    on_change=self.log_panel.on_splitter_change,
                 )
                 .classes("w-full flex-1 editor-splitter")
                 .style("overflow: hidden;") as splitter
             ):
-                self.editor_splitter = splitter
+                self.log_panel.editor_splitter = splitter
 
                 # ---- Tab Panels Area (CodeMirror) in splitter.before ----
                 with splitter.before:
@@ -1371,6 +1320,11 @@ print(f"Robot status: {{status}}")
                 with splitter.separator:
                     self.playback.build_bar()
                     self.run_btn = self.playback._play_btn
+                    # Wire log toggle button + tooltip through to log_panel
+                    self.log_panel.log_toggle_btn = self.playback.log_toggle_btn
+                    self.log_panel.log_toggle_btn_tooltip = (
+                        self.playback.log_toggle_btn_tooltip
+                    )
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:
