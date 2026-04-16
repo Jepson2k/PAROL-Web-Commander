@@ -1,7 +1,4 @@
-"""Path renderer mixin for UrdfScene.
-
-This mixin handles rendering of path segments with optional dashing and direction arrows.
-"""
+"""Path renderer: stateless 3D rendering of path segments and tool actions."""
 
 from __future__ import annotations
 
@@ -26,13 +23,24 @@ def _hex_to_rgb(hex_color: str) -> list[float]:
     return [int(h[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
 
 
-class PathRendererMixin:
-    """Mixin providing path segment rendering functionality."""
+def _extract_tcp_rotation(tcp_pose: list[float]) -> ScipyRotation | None:
+    """Extract rotation from a 6-element TCP pose (XYZ intrinsic Euler in radians).
 
-    # Type hints for attributes used from main class
-    scene: Any
+    Returns None if the pose has no rotation component (len < 6).
+    """
+    if len(tcp_pose) < 6:
+        return None
+    return ScipyRotation.from_euler("XYZ", [tcp_pose[3], tcp_pose[4], tcp_pose[5]])
 
-    def _render_path_segment(
+
+class PathRenderer:
+    """Stateless renderer for path segments and tool actions.
+
+    All methods return newly created scene objects; the caller is responsible
+    for storing them and clearing them when replacing.  No instance state.
+    """
+
+    def render_path_segment(
         self,
         segment: PathSegment,
         point_pair_colors: list[str] | None = None,
@@ -125,8 +133,8 @@ class PathRendererMixin:
 
         return objects, object_colors, uses_vertex_colors
 
+    @staticmethod
     def _create_direction_cone(
-        self,
         position: np.ndarray,
         direction: np.ndarray,
         scale: float,
@@ -228,10 +236,7 @@ class PathRendererMixin:
         assert action.tcp_pose is not None
         px, py, pz = action.tcp_pose[0], action.tcp_pose[1], action.tcp_pose[2]
 
-        has_rotation = len(action.tcp_pose) >= 6
-        if has_rotation:
-            rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
-            tcp_rot = ScipyRotation.from_euler("XYZ", [rx, ry, rz])
+        tcp_rot = _extract_tcp_rotation(action.tcp_pose)
 
         for idx, motion in enumerate(action.motions):
             target = (
@@ -240,10 +245,7 @@ class PathRendererMixin:
                 else 0.0
             )
             local_axis = np.asarray(motion.get("axis", (0, 0, 1)), dtype=np.float64)
-            if has_rotation:
-                world_axis = tcp_rot.apply(local_axis)
-            else:
-                world_axis = local_axis
+            world_axis = tcp_rot.apply(local_axis) if tcp_rot else local_axis
 
             if motion.get("type") == "linear":
                 travel = motion.get("travel_m", 0.01)
@@ -323,10 +325,7 @@ class PathRendererMixin:
         n = len(path)
 
         # Use rotation from tcp_pose (6-element) for axis transformation
-        has_rotation = len(action.tcp_pose) >= 6
-        if has_rotation:
-            rx, ry, rz = action.tcp_pose[3], action.tcp_pose[4], action.tcp_pose[5]
-            tcp_rot = ScipyRotation.from_euler("XYZ", [rx, ry, rz])
+        tcp_rot = _extract_tcp_rotation(action.tcp_pose)
 
         for idx, motion in enumerate(action.motions):
             if motion.get("type") != "linear":
@@ -338,10 +337,7 @@ class PathRendererMixin:
                 else 0.0
             )
             local_axis = np.asarray(motion.get("axis", (0, 0, 1)), dtype=np.float64)
-            if has_rotation:
-                world_axis = tcp_rot.apply(local_axis)
-            else:
-                world_axis = local_axis
+            world_axis = tcp_rot.apply(local_axis) if tcp_rot else local_axis
 
             travel = motion.get("travel_m", 0.01)
             symmetric = motion.get("symmetric", True)
