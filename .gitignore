@@ -22,6 +22,7 @@ site/
 # Local development directories
 PAROL6-Desktop-robot-arm/
 PAROL6-python-API/
+PAROL6-python-API
 Spectral-Micro-BLDC-controller/
 nicegui/
 pinokin/
