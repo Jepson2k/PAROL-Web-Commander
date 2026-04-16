@@ -31,7 +31,7 @@ rbt.move_l([0, 0, 100, 0, 0, 0], rel=True, speed=0.2)
 rbt.move_j(pose=PRECISION_POSE, speed=0.3)
 
 # Offset TCP to pencil tip (~100mm exposed below gripper)
-rbt.set_tcp_offset(-100, 0, 0)
+rbt.set_tcp_offset(0, 0, -100)
 
 # Pencil tip traces straight lines (linear precision demo)
 # Forward/back (tool Z = world -Y at this pose)

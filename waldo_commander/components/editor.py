@@ -597,7 +597,11 @@ print(f"Robot status: {{status}}")
             await self._start_script_process()
 
     async def _start_script_process(self) -> None:
-        """Save current editor content and start it as a Python subprocess."""
+        """Start the current editor content as a Python subprocess.
+
+        Writes to a scratch file under ``PROGRAM_DIR/.runtime/`` so the user's
+        named file is only modified by explicit save.
+        """
         self.playback.stop_playback()
 
         if self.script_running:
@@ -616,9 +620,11 @@ print(f"Robot status: {{status}}")
             if not filename.endswith(".py"):
                 filename += ".py"
 
-            # Save script content to file
+            # Write to scratch location — do not overwrite the user's saved file
             content = self.program_textarea.value if self.program_textarea else ""
-            script_path = self.PROGRAM_DIR / filename
+            runtime_dir = self.PROGRAM_DIR / ".runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            script_path = runtime_dir / filename
             script_path.write_text(content, encoding="utf-8")
 
             # Update filename input
