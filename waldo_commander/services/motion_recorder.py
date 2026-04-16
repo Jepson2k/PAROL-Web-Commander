@@ -398,7 +398,7 @@ class MotionRecorder:
 
             # Flash the newly added line
             new_line_number = lines_before + 1
-            ui_state.editor_panel.flash_editor_lines([new_line_number])
+            ui_state.editor_panel.decorations.flash_editor_lines([new_line_number])
         else:
             logger.error("Editor textarea not ready - open Program tab first")
 

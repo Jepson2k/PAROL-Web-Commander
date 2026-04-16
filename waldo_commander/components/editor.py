@@ -28,6 +28,7 @@ from waldo_commander.services.command_discovery import (
 from waldo_commander.components.playback import PlaybackController
 from waldo_commander.components.script_execution import ScriptExecutionController
 from waldo_commander.components.log_panel import LogPanelController
+from waldo_commander.components.editor_decorations import EditorDecorations
 from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,9 @@ class EditorPanel(FileOperationsMixin):
         self.program_log: ui.log | None = None
         self.run_btn: ui.button | None = None
 
+        # Editor decorations (line highlights, diagnostics, metadata)
+        self.decorations = EditorDecorations()
+
         # Log panel controller (shared log area below playback bar)
         self.log_panel = LogPanelController()
 
@@ -88,14 +92,14 @@ class EditorPanel(FileOperationsMixin):
             ),
             get_program_log=lambda: self.program_log,
             expand_log=lambda: self.log_panel.expand(),
-            clear_highlight=lambda: self.clear_executing_line_highlight(),
+            clear_highlight=lambda: self.decorations.clear_executing_line_highlight(),
             program_dir=self.PROGRAM_DIR,
         )
 
         # Playback controller (owns bottom bar UI and playback logic)
         self.playback = PlaybackController(
             self.script_exec,
-            on_highlight_line=lambda n: self.highlight_executing_line(n),
+            on_highlight_line=lambda n: self.decorations.highlight_executing_line(n),
             on_record_click=lambda: self._toggle_recording(),
             on_log_toggle_click=lambda: self.log_panel.toggle(),
         )
@@ -114,11 +118,6 @@ class EditorPanel(FileOperationsMixin):
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
-
-        # Python-side mirror of CM6 StateField target positions.
-        # Updated via target-positions events emitted by JS on document changes.
-        # Maps target index → current 1-indexed line number.
-        self._target_positions: dict[str, int] = {}
 
         # Recording notification
         self._recording_notification: ui.notification | None = None
@@ -233,7 +232,7 @@ print(f"Robot status: {{status}}")
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = self._target_positions.get(target_id)
+        line_number = self.decorations._target_positions.get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -295,7 +294,7 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea:
             return
 
-        line_number = self._target_positions.get(target_id)
+        line_number = self.decorations._target_positions.get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -354,7 +353,7 @@ print(f"Robot status: {{status}}")
 
         # Flash the newly added line
         new_line_number = lines_before + 1
-        self.flash_editor_lines([new_line_number])
+        self.decorations.flash_editor_lines([new_line_number])
 
         logger.info("Added target code at line %d: %s", new_line_number, code_line)
         return new_line_number
@@ -369,58 +368,6 @@ print(f"Robot status: {{status}}")
             1-indexed line number of the new line, or None on failure.
         """
         return self.add_target_code(joint_angles, move_type="joints")
-
-    def flash_editor_lines(self, line_numbers: list[int]) -> None:
-        """Flash specific lines in the CodeMirror editor to highlight newly added content.
-
-        Args:
-            line_numbers: List of 1-indexed line numbers to flash
-        """
-        if not self.program_textarea or not line_numbers:
-            return
-
-        # Check if editor panel is visible (not collapsed)
-        if self._is_editor_panel_visible():
-            # Use NiceGUI CodeMirror's highlight_lines method
-            # Auto-removal is handled by the decorations system
-            self.program_textarea.highlight_lines(
-                line_numbers,
-                css_class="cm-line-flash",
-                duration_ms=1500,
-            )
-        else:
-            # Flash the editor tab instead
-            self._flash_editor_tab()
-
-    def _flash_editor_tab(self) -> None:
-        """Flash the editor tab to indicate new content when panel is collapsed."""
-        # Find the editor tab element and add flash class
-        js_code = """
-        (function() {
-            // Find the program tab - look for tab with the code icon
-            const tabs = document.querySelectorAll('.q-tab');
-            for (const tab of tabs) {
-                const icon = tab.querySelector('i');
-                if (icon && icon.innerText === 'code') {
-                    tab.classList.add('tab-flash');
-                    setTimeout(() => tab.classList.remove('tab-flash'), 2000);
-                    break;
-                }
-            }
-        })();
-        """
-        try:
-            ui.run_javascript(js_code)
-        except RuntimeError:
-            # No client context (called from background task) - use stored client
-            if self._ui_client:
-                self._ui_client.run_javascript(js_code)
-            else:
-                logger.debug("Cannot flash editor tab: no client available")
-
-    def _is_editor_panel_visible(self) -> bool:
-        """Check if the editor panel is currently visible (not collapsed)."""
-        return ui_state.program_panel_visible
 
     def _build_command_menu(self) -> None:
         """Build command palette as a dropdown menu with nested submenus."""
@@ -570,13 +517,13 @@ print(f"Robot status: {{status}}")
             self.program_log.push(f"[SIM ERROR] {error}")
 
         # Apply diagnostics (errors + timing warnings) via CM6 lint system
-        self._apply_diagnostics(error)
+        self.decorations.apply_diagnostics(error)
 
         # Push hover tooltip metadata for move command lines
-        self._push_line_metadata()
+        self.decorations.push_line_metadata()
 
         # Register target positions in CM6 StateField for edit tracking
-        self._push_target_positions()
+        self.decorations.push_target_positions()
 
         return error
 
@@ -893,6 +840,8 @@ print(f"Robot status: {{status}}")
         widgets = self._tab_widgets.get(tab_id, {})
         self.program_textarea = widgets.get("textarea")
         self.program_filename_input = widgets.get("filename_input")
+        # Point decorations at the active tab's textarea
+        self.decorations.set_textarea(self.program_textarea)
 
     def _save_simulation_context(self, tab: EditorTab) -> None:
         """Save current simulation state to tab."""
@@ -1056,53 +1005,7 @@ print(f"Robot status: {{status}}")
         args = e.args if isinstance(e.args, dict) else {}
         anchors = args.get("anchors", {})
         # anchors is {id: line_number} — store as {id: line}
-        self._target_positions = {k: v for k, v in anchors.items()}
-
-    def _push_line_metadata(self) -> None:
-        """Push per-line metadata to CM6 for hover tooltips.
-
-        Aggregates segment data (end position, duration, warnings) per line
-        so hovering a move command shows useful info.
-        """
-        if not self.program_textarea:
-            return
-        metadata: dict[int, dict] = {}
-        for seg in simulation_state.path_segments:
-            if seg.line_number <= 0 or not seg.points:
-                continue
-            end = seg.points[-1]
-            # Position in mm for display (segments store meters)
-            pos_str = f"x: {end[0] * 1000:.1f}, y: {end[1] * 1000:.1f}, z: {end[2] * 1000:.1f} mm"
-            dur_str = f"{seg.estimated_duration:.2f}s" if seg.estimated_duration else ""
-            warnings = []
-            if not seg.is_valid:
-                warnings.append("Unreachable position")
-            if not seg.timing_feasible and seg.estimated_duration is not None:
-                warnings.append(
-                    f"Duration too short (min: {seg.estimated_duration:.2f}s)"
-                )
-
-            entry: dict = {"position": pos_str}
-            if dur_str:
-                entry["duration"] = dur_str
-            if warnings:
-                entry["warnings"] = warnings
-            metadata[seg.line_number] = entry
-
-        self.program_textarea.set_line_tooltips(metadata, set_name="simulation")
-
-    def _push_target_positions(self) -> None:
-        """Push current target positions to CM6 line anchors for edit tracking."""
-        if not self.program_textarea:
-            return
-        anchors = [
-            {"id": t.id, "line": t.line_number}
-            for t in simulation_state.targets
-            if t.line_number > 0
-        ]
-        self.program_textarea.set_line_anchors(anchors, set_name="targets")
-        # Also update Python-side mirror
-        self._target_positions = {str(a["id"]): int(a["line"]) for a in anchors}
+        self.decorations._target_positions = {k: v for k, v in anchors.items()}
 
     def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1114,105 +1017,12 @@ print(f"Robot status: {{status}}")
         if tab.id == editor_tabs_state.active_tab_id:
             self.schedule_debounced_simulation()
 
-    # ---- Line highlighting  ----
-
-    def highlight_executing_line(self, step_index: int) -> None:
-        """Highlight the source line corresponding to the current step.
-
-        Uses path_segments line_number to look up which line to highlight.
-        Uses persistent decorations (not flash animations) that update with each step.
-
-        Args:
-            step_index: The current step index (0-indexed)
-        """
-        if not self.program_textarea:
-            return
-
-        # Look up line number from path_segments if available
-        if simulation_state.path_segments and 0 <= step_index < len(
-            simulation_state.path_segments
-        ):
-            segment = simulation_state.path_segments[step_index]
-            line_number = segment.line_number
-            if line_number > 0:
-                self.program_textarea.run_method(
-                    "setDecorations",
-                    {
-                        "executing": [
-                            {
-                                "kind": "line",
-                                "line": line_number,
-                                "class": "cm-highlighted",
-                            }
-                        ]
-                    },
-                )
-                self.program_textarea.run_method("revealLine", line_number)
-                return
-
-        # Clear highlight if no valid line found
-        self.program_textarea.run_method("setDecorations", {"executing": []})
-
-    def clear_executing_line_highlight(self) -> None:
-        """Clear the executing line highlight decoration."""
-        if self.program_textarea:
-            self.program_textarea.run_method("setDecorations", {"executing": []})
-
-    _ERROR_LINE_RE = re.compile(
-        r'(?:File "simulation_script\.py", line (\d+))|(?:^Line (\d+):)',
-        re.MULTILINE,
-    )
-
-    def _apply_diagnostics(self, error: str | None = None) -> None:
-        """Apply CM6 lint diagnostics for simulation errors and timing warnings."""
-        if not self.program_textarea:
-            return
-
-        diagnostics: list[dict] = []
-
-        # Error diagnostics from simulation
-        if error:
-            error_lines: set[int] = set()
-            for m in self._ERROR_LINE_RE.finditer(error):
-                line_no = int(m.group(1) or m.group(2))
-                error_lines.add(line_no)
-            # Extract the core error message (last line of traceback)
-            error_msg = error.strip().split("\n")[-1] if error.strip() else error
-            for ln in sorted(error_lines):
-                diagnostics.append(
-                    {
-                        "line": ln,
-                        "severity": "error",
-                        "message": error_msg,
-                        "source": "simulation",
-                    }
-                )
-
-        # Timing warning diagnostics for infeasible durations
-        warned_lines: set[int] = set()
-        for seg in simulation_state.path_segments:
-            if seg.timing_feasible or seg.line_number <= 0:
-                continue
-            if seg.line_number in warned_lines:
-                continue
-            warned_lines.add(seg.line_number)
-            if seg.estimated_duration is not None:
-                diagnostics.append(
-                    {
-                        "line": seg.line_number,
-                        "severity": "warning",
-                        "message": f"Duration too short — minimum: {seg.estimated_duration:.2f}s",
-                        "source": "timing",
-                    }
-                )
-
-        self.program_textarea.set_diagnostics(diagnostics)
-
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
         # Store NiceGUI client reference for JS execution from background tasks
         try:
             self._ui_client = ui.context.client
+            self.decorations.set_ui_client(self._ui_client)
         except RuntimeError:
             pass  # No client context during build (shouldn't happen)
 
@@ -1361,6 +1171,7 @@ print(f"Robot status: {{status}}")
             widgets = self._tab_widgets.get(active_id, {})
             self.program_textarea = widgets.get("textarea")
             self.program_filename_input = widgets.get("filename_input")
+            self.decorations.set_textarea(self.program_textarea)
 
             # Restore simulation state from active tab
             active_tab = editor_tabs_state.get_active_tab()
