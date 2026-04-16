@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waldo-commander"
-version = "2.0.1"
+version = "2.0.2"
 description = "A web interface for controlling robotic arms"
 requires-python = ">=3.12"
 dependencies = [
@@ -83,7 +83,7 @@ extra-paths = ["PAROL6-python-API"]
 github_url = "https://github.com/Jepson2k/Waldo-Commander"
 
 [tool.tbump.version]
-current = "2.0.1"
+current = "2.0.2"
 regex = '''(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)'''
 
 [tool.tbump.git]
