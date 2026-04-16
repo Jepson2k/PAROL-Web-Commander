@@ -120,7 +120,7 @@ class SettingsContent:
         """Notify simulation state changed and trigger debounced re-simulation."""
         simulation_state.notify_changed()
         try:
-            ui_state.editor_panel.schedule_debounced_simulation()
+            ui_state.editor_panel.simulation.schedule_debounced_simulation()
         except RuntimeError:
             pass
 

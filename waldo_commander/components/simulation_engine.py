@@ -32,8 +32,8 @@ class SimulationEngine:
 
     Called from:
     - EditorPanel._on_tab_content_change → schedule_debounced_simulation
-    - EditorPanel build() → ui.timer(_check_position_changed)
-    - settings.py (via editor_panel.schedule_debounced_simulation forwarding)
+    - EditorPanel build() → ui.timer(check_position_changed)
+    - settings.py → editor_panel.simulation.schedule_debounced_simulation
     - EditorPanel._do_close_tab → cancel_tab_simulation
     """
 

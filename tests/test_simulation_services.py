@@ -592,7 +592,7 @@ class TestEditorAutoSimulation:
             editor_tabs_state.active_tab_id = "test-tab"
 
             panel = EditorPanel()
-            panel.schedule_debounced_simulation()
+            panel.simulation.schedule_debounced_simulation()
 
             # Verify timer was created with correct parameters
             mock_ui.timer.assert_called_once()
@@ -616,11 +616,11 @@ class TestEditorAutoSimulation:
             panel = EditorPanel()
 
             # First call creates timer1
-            panel.schedule_debounced_simulation()
+            panel.simulation.schedule_debounced_simulation()
             assert panel.simulation._simulation_debounce_timer == mock_timer1
 
             # Second call should cancel timer1 (including running callback) and create timer2
-            panel.schedule_debounced_simulation()
+            panel.simulation.schedule_debounced_simulation()
             mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
             assert panel.simulation._simulation_debounce_timer == mock_timer2
 
@@ -648,7 +648,7 @@ class TestEditorAutoSimulation:
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = "rbt.move_j([0,0,0,0,0,0])"
 
-                await panel._run_simulation()
+                await panel.simulation.run_simulation()
 
                 assert update_called is True
                 assert update_content == "rbt.move_j([0,0,0,0,0,0])"
@@ -674,7 +674,7 @@ class TestEditorAutoSimulation:
                 panel.program_textarea = MagicMock()
                 panel.program_textarea.value = ""  # Empty content
 
-                await panel._run_simulation()
+                await panel.simulation.run_simulation()
 
                 # Should NOT call update_path_visualization for empty content
                 assert update_called is False

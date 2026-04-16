@@ -33,11 +33,6 @@ from waldo_commander.components.file_operations import FileOperationsMixin
 logger = logging.getLogger(__name__)
 
 
-def _get_home_joints_rad() -> list[float]:
-    """Get home position in radians from the active robot."""
-    return ui_state.active_robot.joints.home.rad.tolist()
-
-
 class EditorPanel(FileOperationsMixin):
     """Program editor panel with script execution and command palette."""
 
@@ -422,43 +417,15 @@ print(f"Robot status: {{status}}")
         """Remove listeners registered by this panel."""
         self.playback.cleanup()
 
-    # ---- Forwarding properties for widgets owned by PlaybackController ----
-
-    @property
-    def record_btn(self) -> ui.button | None:
-        return self.playback.record_btn
-
-    @property
-    def _record_btn_tooltip(self) -> ui.tooltip | None:
-        return self.playback.record_btn_tooltip
-
-    @property
-    def log_toggle_btn(self) -> ui.button | None:
-        return self.playback.log_toggle_btn
-
-    @property
-    def _log_toggle_btn_tooltip(self) -> ui.tooltip | None:
-        return self.playback.log_toggle_btn_tooltip
-
-    # ---- Simulation engine forwarding ----
-
-    async def _run_simulation(self, tab_id: str | None = None) -> str | None:
-        """Forward to SimulationEngine.run_simulation (kept for tests/backward compat)."""
-        return await self.simulation.run_simulation(tab_id=tab_id)
-
-    def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
-        """Forward to SimulationEngine.schedule_debounced_simulation (external callers)."""
-        self.simulation.schedule_debounced_simulation(tab_id=tab_id)
-
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off."""
         motion_recorder.toggle_recording()
         # Update button visual
         if recording_state.is_recording:
-            if self.record_btn:
-                self.record_btn.props("color=warning")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Stop Recording"
+            if self.playback.record_btn:
+                self.playback.record_btn.props("color=warning")
+            if self.playback.record_btn_tooltip:
+                self.playback.record_btn_tooltip.text = "Stop Recording"
             # Disable playback controls during recording
             self.playback.set_enabled(False)
             # Show recording notification at top of screen
@@ -477,10 +444,10 @@ print(f"Robot status: {{status}}")
             except RuntimeError:
                 pass  # No client context available
         else:
-            if self.record_btn:
-                self.record_btn.props("color=negative")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Start Recording"
+            if self.playback.record_btn:
+                self.playback.record_btn.props("color=negative")
+            if self.playback.record_btn_tooltip:
+                self.playback.record_btn_tooltip.text = "Start Recording"
             # Re-enable playback controls
             self.playback.set_enabled(True)
             # Dismiss recording notification
@@ -521,11 +488,11 @@ print(f"Robot status: {{status}}")
         # Trigger simulation at tab creation (with default script optimization)
         if self._is_default_script(tab.content):
             # Default script ends at home position - set directly, skip simulation
-            tab.final_joints_rad = list(_get_home_joints_rad())
+            tab.final_joints_rad = ui_state.active_robot.joints.home.rad.tolist()
             tab.path_segments = []
             tab.targets = []
         elif tab.content.strip():
-            self.schedule_debounced_simulation(tab_id=tab.id)
+            self.simulation.schedule_debounced_simulation(tab_id=tab.id)
 
         return tab
 
@@ -841,7 +808,7 @@ print(f"Robot status: {{status}}")
 
         # Only run simulation for active tab
         if tab.id == editor_tabs_state.active_tab_id:
-            self.schedule_debounced_simulation()
+            self.simulation.schedule_debounced_simulation()
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""

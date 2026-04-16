@@ -125,7 +125,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
 
     # Initially log should be collapsed with expand_more icon (down chevron)
     assert editor.log_panel._log_expanded is False, "Log should be collapsed initially"
-    log_toggle_btn = editor.log_toggle_btn
+    log_toggle_btn = editor.playback.log_toggle_btn
     assert log_toggle_btn is not None, "Log toggle button should exist"
 
     # Check initial chevron icon is expand_more (down = "show more")
@@ -203,7 +203,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
     # Initially not recording with red color
     assert recording_state.is_recording is False
-    record_btn_ref = editor.record_btn
+    record_btn_ref = editor.playback.record_btn
     assert record_btn_ref is not None, "Record button reference should exist"
     initial_color = record_btn_ref._props.get("color", "")
     assert initial_color == "negative", (
@@ -522,7 +522,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     tab.content = test_script
 
     # Run simulation to populate steps
-    await editor._run_simulation()
+    await editor.simulation.run_simulation()
     await asyncio.sleep(0.1)
 
     # Step button should be visible after simulation
@@ -583,7 +583,7 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     editor.program_textarea.value = test_script
     tab.content = test_script
 
-    await editor._run_simulation()
+    await editor.simulation.run_simulation()
     await asyncio.sleep(0.1)
 
     # Targets should be created from literal move args
