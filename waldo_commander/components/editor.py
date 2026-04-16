@@ -7,7 +7,6 @@ import time
 import uuid
 from typing import Any, Callable
 
-import numpy as np
 from nicegui import ui, context, Client
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT, config
@@ -19,7 +18,6 @@ from waldo_commander.state import (
     editor_tabs_state,
     recording_state,
 )
-from waldo_commander.services.path_visualizer import path_visualizer
 from waldo_commander.services.motion_recorder import motion_recorder
 from waldo_commander.services.command_discovery import (
     discover_robot_commands,
@@ -29,6 +27,7 @@ from waldo_commander.components.playback import PlaybackController
 from waldo_commander.components.script_execution import ScriptExecutionController
 from waldo_commander.components.log_panel import LogPanelController
 from waldo_commander.components.editor_decorations import EditorDecorations
+from waldo_commander.components.simulation_engine import SimulationEngine
 from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
@@ -104,17 +103,20 @@ class EditorPanel(FileOperationsMixin):
             on_log_toggle_click=lambda: self.log_panel.toggle(),
         )
 
-        # Per-tab simulation tracking (for cancellation on tab close/switch)
-        self._pending_simulations: dict[str, asyncio.Task] = {}
+        # Simulation engine (path preview + debouncing)
+        self.simulation = SimulationEngine(
+            playback=self.playback,
+            decorations=self.decorations,
+            get_textarea_value=lambda: self.program_textarea.value
+            if self.program_textarea
+            else "",
+            get_program_log=lambda: self.program_log,
+            get_ui_client=lambda: self._ui_client,
+            is_default_script=self._is_default_script,
+        )
 
         # Drawer element reference
         self.drawer: ui.element | None = None
-
-        # Debounce timer for auto-simulation on code change.
-        # The timer reference is kept alive while the callback runs so that
-        # cancel(with_current_invocation=True) can abort a running simulation.
-        self._simulation_debounce_timer: ui.timer | None = None
-        self._debounce_delay: float = 1.0  # seconds of idle before running simulation
 
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
@@ -438,189 +440,15 @@ print(f"Robot status: {{status}}")
     def _log_toggle_btn_tooltip(self) -> ui.tooltip | None:
         return self.playback.log_toggle_btn_tooltip
 
+    # ---- Simulation engine forwarding ----
+
     async def _run_simulation(self, tab_id: str | None = None) -> str | None:
-        """Run the simulation for the current script.
-
-        Args:
-            tab_id: Optional tab ID to run simulation for. If None, uses active tab.
-
-        Returns:
-            Error message if simulation failed, None otherwise.
-        """
-        # Get tab_id if not provided
-        if tab_id is None:
-            tab_id = editor_tabs_state.active_tab_id
-
-        content = self.program_textarea.value if self.program_textarea else ""
-        if not content:
-            return None
-
-        # Show loading indicator during simulation
-        loading = self.playback.sim_loading_progress
-        if loading:
-            loading.visible = True
-        try:
-            error = await path_visualizer.update_path_visualization(
-                content, tab_id=tab_id
-            )
-        finally:
-            if loading:
-                loading.visible = False
-
-        # Snapshot robot position so _check_position_changed doesn't re-trigger.
-        # Also snapshot on _UNCHANGED to prevent an infinite re-trigger cycle.
-        from waldo_commander.services.path_visualizer import _UNCHANGED
-
-        tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
-        if tab and (error is None or error == _UNCHANGED):
-            n = ui_state.active_robot.joints.count
-            tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
-
-        # Skip post-processing if simulation results were unchanged
-        if error == _UNCHANGED:
-            return None
-
-        # Invalidate timeline so it gets rebuilt from new segments
-        self.playback.invalidate_timeline()
-        simulation_state.sim_playback_time = 0.0
-
-        # Update scrub bar segments to match the new paths
-        self.playback.update_scrub_segments()
-
-        # Apply initial tool selection from script to scene and controller
-        if simulation_state.tool_selections and ui_state.urdf_scene:
-            first_sel = simulation_state.tool_selections[0]
-            if first_sel.segment_index < 0:
-                tool_key = first_sel.tool_key
-                variant_key = first_sel.variant_key or None
-                ui_state.active_robot.set_active_tool(
-                    tool_key,
-                    variant_key=variant_key,
-                )
-                ui_state.urdf_scene.apply_tool(
-                    tool_key,
-                    variant_key=variant_key,
-                )
-                ui_state.urdf_scene._update_tcp_ball_position()
-                # Sync to controller so readout reflects tool TCP
-                if ui_state.control_panel and ui_state.control_panel.client:
-                    try:
-                        await ui_state.control_panel.client.select_tool(
-                            tool_key,
-                            variant_key=variant_key or "",
-                        )
-                    except Exception as e:
-                        logger.debug("select_tool sync failed: %s", e)
-
-        # Show error in program log
-        if error and self.program_log:
-            self.program_log.push(f"[SIM ERROR] {error}")
-
-        # Apply diagnostics (errors + timing warnings) via CM6 lint system
-        self.decorations.apply_diagnostics(error)
-
-        # Push hover tooltip metadata for move command lines
-        self.decorations.push_line_metadata()
-
-        # Register target positions in CM6 StateField for edit tracking
-        self.decorations.push_target_positions()
-
-        return error
+        """Forward to SimulationEngine.run_simulation (kept for tests/backward compat)."""
+        return await self.simulation.run_simulation(tab_id=tab_id)
 
     def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
-        """Schedule a debounced simulation run when code changes.
-
-        Cancels any pending *or running* simulation and schedules a new one after
-        the debounce delay.  ``cancel(with_current_invocation=True)`` aborts both the
-        debounce sleep and an in-progress simulation subprocess, so edits never
-        pile up stale simulations behind the simulation lock.
-
-        Args:
-            tab_id: The tab to run simulation for. If None, uses active tab.
-        """
-        # Use active tab if not specified
-        if tab_id is None:
-            tab_id = editor_tabs_state.active_tab_id
-        if not tab_id:
-            return
-
-        # Cancel any pending debounce wait *and* any running simulation callback
-        if self._simulation_debounce_timer is not None:
-            logger.debug("DEBOUNCE: Cancelling pending/running simulation")
-            self._simulation_debounce_timer.cancel(with_current_invocation=True)
-            self._simulation_debounce_timer = None
-
-        # Check for default script optimization
-        tab = editor_tabs_state.find_tab_by_id(tab_id)
-        if tab and self._is_default_script(tab.content):
-            # Default script ends at home position - skip simulation
-            tab.final_joints_rad = list(_get_home_joints_rad())
-            tab.path_segments = []
-            tab.targets = []
-            tab.tool_actions = []
-            # Update global state if active
-            if tab_id == editor_tabs_state.active_tab_id:
-                simulation_state.path_segments = []
-                simulation_state.targets = []
-                simulation_state.tool_actions = []
-                simulation_state.total_steps = 0
-                try:
-                    ui_client = self._ui_client or context.client
-                    with ui_client:
-                        simulation_state.notify_changed()
-                except RuntimeError:
-                    simulation_state.notify_changed()
-                self.playback.update_scrub_segments()
-            return
-
-        async def run_simulation_quietly():
-            """Run simulation without notifications (silent auto-update)."""
-            try:
-                logger.debug("DEBOUNCE: Starting simulation...")
-                await self._run_simulation(tab_id=tab_id)
-                logger.debug("DEBOUNCE: Simulation completed successfully")
-            except asyncio.CancelledError:
-                logger.debug("DEBOUNCE: Simulation cancelled by newer edit")
-            except Exception as e:
-                logger.error("Auto-simulation failed: %s", e, exc_info=True)
-                ui.notify(f"Simulation error: {e}", color="negative", timeout=3000)
-            finally:
-                # Only clear if we are still the active timer — a newer
-                # scheduling may have already replaced the reference.
-                if self._simulation_debounce_timer is my_timer:
-                    self._simulation_debounce_timer = None
-
-        # Schedule new simulation after debounce delay
-        logger.debug(
-            "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
-        )
-        my_timer = ui.timer(self._debounce_delay, run_simulation_quietly, once=True)
-        self._simulation_debounce_timer = my_timer
-
-    def _check_position_changed(self) -> None:
-        """Periodically check if robot position changed and re-run path preview."""
-        # Skip if script running, editing, scrubbing/playing, or sim already pending
-        if (
-            simulation_state.script_running
-            or robot_state.editing_mode
-            or self._simulation_debounce_timer is not None
-            or simulation_state.sim_pose_override
-            or simulation_state.sim_playback_active
-        ):
-            return
-
-        # Read from active tab's per-tab snapshot
-        active_tab = editor_tabs_state.get_active_tab()
-        if not active_tab or active_tab.last_sim_joints_deg is None:
-            return
-
-        # Skip if no active script content
-        if not self.program_textarea or not self.program_textarea.value:
-            return
-
-        current_deg = robot_state.angles.deg[: ui_state.active_robot.joints.count]
-        if np.max(np.abs(current_deg - active_tab.last_sim_joints_deg)) > 0.5:
-            self.schedule_debounced_simulation()
+        """Forward to SimulationEngine.schedule_debounced_simulation (external callers)."""
+        self.simulation.schedule_debounced_simulation(tab_id=tab_id)
 
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off."""
@@ -748,9 +576,7 @@ print(f"Robot status: {{status}}")
         tab_id = tab.id
 
         # Cancel any pending simulation for this tab
-        if tab_id in self._pending_simulations:
-            self._pending_simulations[tab_id].cancel()
-            del self._pending_simulations[tab_id]
+        self.simulation.cancel_tab_simulation(tab_id)
 
         # Determine which tab to switch to BEFORE removing
         tabs = editor_tabs_state.tabs
@@ -1027,7 +853,7 @@ print(f"Robot status: {{status}}")
             pass  # No client context during build (shouldn't happen)
 
         # Periodic check: re-run path preview when robot position changes
-        ui.timer(1.0, self._check_position_changed)
+        ui.timer(1.0, self.simulation.check_position_changed)
 
         # Main editor container
         with (
@@ -1151,7 +977,7 @@ print(f"Robot status: {{status}}")
         if editor_tabs_state.tabs:
             # Clear stale UI references from previous page load
             self._tab_widgets.clear()
-            self._pending_simulations.clear()
+            self.simulation._pending_simulations.clear()
 
             # Rebuild UI for each existing tab
             for tab in editor_tabs_state.tabs:

@@ -575,16 +575,16 @@ class TestEditorAutoSimulation:
 
         panel = EditorPanel()
 
-        assert panel._debounce_delay == 1.0
+        assert panel.simulation._debounce_delay == 1.0
         # Timer starts as None
-        assert panel._simulation_debounce_timer is None
+        assert panel.simulation._simulation_debounce_timer is None
 
     def testschedule_debounced_simulation_creates_timer(self):
         """schedule_debounced_simulation should create a timer."""
         from waldo_commander.components.editor import EditorPanel
         from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer = MagicMock()
             mock_ui.timer.return_value = mock_timer
 
@@ -605,7 +605,7 @@ class TestEditorAutoSimulation:
         from waldo_commander.components.editor import EditorPanel
         from waldo_commander.state import editor_tabs_state
 
-        with patch("waldo_commander.components.editor.ui") as mock_ui:
+        with patch("waldo_commander.components.simulation_engine.ui") as mock_ui:
             mock_timer1 = MagicMock()
             mock_timer2 = MagicMock()
             mock_ui.timer.side_effect = [mock_timer1, mock_timer2]
@@ -617,21 +617,21 @@ class TestEditorAutoSimulation:
 
             # First call creates timer1
             panel.schedule_debounced_simulation()
-            assert panel._simulation_debounce_timer == mock_timer1
+            assert panel.simulation._simulation_debounce_timer == mock_timer1
 
             # Second call should cancel timer1 (including running callback) and create timer2
             panel.schedule_debounced_simulation()
             mock_timer1.cancel.assert_called_once_with(with_current_invocation=True)
-            assert panel._simulation_debounce_timer == mock_timer2
+            assert panel.simulation._simulation_debounce_timer == mock_timer2
 
     @pytest.mark.asyncio
     async def test_run_simulation_calls_path_visualizer(self):
         """_run_simulation should call path_visualizer.update_path_visualization."""
         from waldo_commander.components.editor import EditorPanel
 
-        with patch("waldo_commander.components.editor.ui"):
+        with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
-                "waldo_commander.components.editor.path_visualizer"
+                "waldo_commander.components.simulation_engine.path_visualizer"
             ) as mock_visualizer:
                 # Track if update was called
                 update_called = False
@@ -658,9 +658,9 @@ class TestEditorAutoSimulation:
         """_run_simulation should skip visualization when content is empty."""
         from waldo_commander.components.editor import EditorPanel
 
-        with patch("waldo_commander.components.editor.ui"):
+        with patch("waldo_commander.components.simulation_engine.ui"):
             with patch(
-                "waldo_commander.components.editor.path_visualizer"
+                "waldo_commander.components.simulation_engine.path_visualizer"
             ) as mock_visualizer:
                 update_called = False
 
