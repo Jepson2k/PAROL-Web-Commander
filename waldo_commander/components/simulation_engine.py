@@ -22,11 +22,6 @@ from waldo_commander.components.playback import PlaybackController
 logger = logging.getLogger(__name__)
 
 
-def _get_home_joints_rad() -> list[float]:
-    """Get home position in radians from the active robot."""
-    return ui_state.active_robot.joints.home.rad.tolist()
-
-
 class SimulationEngine:
     """Owns path-preview simulation scheduling + debouncing.
 
@@ -153,7 +148,7 @@ class SimulationEngine:
         # Default script optimization — skip simulation, update state directly
         tab = editor_tabs_state.find_tab_by_id(tab_id)
         if tab and self._is_default_script(tab.content):
-            tab.final_joints_rad = list(_get_home_joints_rad())
+            tab.final_joints_rad = ui_state.active_robot.joints.home.rad.tolist()
             tab.path_segments = []
             tab.targets = []
             tab.tool_actions = []
