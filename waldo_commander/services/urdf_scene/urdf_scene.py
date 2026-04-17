@@ -47,7 +47,7 @@ from .loader import (
 )
 from .editing_mixin import EditingMixin
 from .tcp_controls_mixin import TCPControlsMixin
-from .envelope_mixin import EnvelopeMixin
+from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
@@ -146,7 +146,6 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
 class UrdfScene(
     EditingMixin,
     TCPControlsMixin,
-    EnvelopeMixin,
 ):
     """Load a URDF file as a NiceGUI Scene
 
@@ -279,7 +278,17 @@ class UrdfScene(
         # Initialize mixin states
         self._init_editing_state()
         self._init_tcp_controls_state()
-        self._init_envelope_state()
+
+        # Track current tool offset (shared with EditingMixin for TCP pose math)
+        self._current_tool: str = "none"
+        self._current_tool_offset_z: float = 0.0
+
+        # Envelope renderer (composition, reads scene refs lazily via getters)
+        self.envelope = EnvelopeRenderer(
+            get_scene=lambda: self.scene,
+            get_simulation_group=lambda: self.simulation_group,
+            get_tool_offset_z=lambda: self._current_tool_offset_z,
+        )
 
         # Register as listener for simulation state changes (event-driven updates)
         simulation_state.add_change_listener(self._update_simulation_view)
@@ -1365,7 +1374,7 @@ class UrdfScene(
         in main.py to ensure reliable updates without context issues.
         """
         self._update_jog_ball_from_robot_state()
-        self._update_envelope_from_robot_state()
+        self.envelope.update_from_robot_state()
         self.update_tool_animation()
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
@@ -1503,7 +1512,7 @@ class UrdfScene(
         self._current_tool_offset_z = origin[2] if len(origin) > 2 else 0.0
 
         # Update envelope sphere if it exists
-        self._update_envelope_radius()
+        self.envelope.update_radius()
 
     def swap_tool_mesh(self, tool_key: str, variant_key: str | None = None) -> None:
         """Replace tool meshes in the 3D scene for the given tool.

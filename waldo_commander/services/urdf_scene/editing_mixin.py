@@ -63,6 +63,9 @@ class EditingMixin:
     _editing_target_id: str | None
     _right_click_start_pos: tuple[float, float] | None
 
+    # Sub-controllers from main class (composition)
+    envelope: Any
+
     # Methods from other mixins / main class
     set_editing_angles: Any
     get_editing_angles: Any
@@ -71,7 +74,6 @@ class EditingMixin:
     _update_tcp_ball_position: Any
     enable_tcp_transform_controls: Any
     invalidate_fk_cache: Any
-    _update_envelope_from_robot_state: Any
     _apply_joint_angles: Any
     _ensure_ik_solver: Any
 
@@ -767,6 +769,6 @@ class EditingMixin:
                         robot_state.rx = robot_state.orientation.deg[0]
                         robot_state.ry = robot_state.orientation.deg[1]
                         robot_state.rz = robot_state.orientation.deg[2]
-                    self._update_envelope_from_robot_state()
+                    self.envelope.update_from_robot_state()
         except (TypeError, ValueError, AttributeError) as e:
             logger.debug("_sync_robot_state_from_editing failed: %s", e)

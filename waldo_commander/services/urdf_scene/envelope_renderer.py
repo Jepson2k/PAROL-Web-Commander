@@ -1,7 +1,6 @@
-"""
-Envelope Mixin for UrdfScene.
+"""Workspace envelope visualization for UrdfScene.
 
-Provides workspace envelope visualization:
+Provides:
 - Convex hull mesh rendering (cached as STL)
 - Proximity clipping planes
 - Tool offset adjustments
@@ -13,7 +12,7 @@ import logging
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from nicegui import app, ui, run
@@ -572,27 +571,39 @@ workspace_envelope = WorkspaceEnvelope()
 
 
 # -----------------------------------------------------------------------------
-# EnvelopeMixin class
+# EnvelopeRenderer class (composition, not mixin)
 # -----------------------------------------------------------------------------
 
 
-class EnvelopeMixin:
-    """Mixin providing envelope visualization functionality for UrdfScene."""
+class EnvelopeRenderer:
+    """Workspace envelope renderer owned by UrdfScene via composition.
 
-    # These attributes are defined in the main UrdfScene class
-    scene: Any
-    simulation_group: Any
+    Receives scene/simulation_group refs and a tool-offset getter at
+    construction. The getter lets the renderer read the current tool offset
+    without holding a back-reference to UrdfScene.
+    """
 
-    def _init_envelope_state(self) -> None:
-        """Initialize envelope state variables."""
+    def __init__(
+        self,
+        get_scene: Callable[[], Any],
+        get_simulation_group: Callable[[], Any],
+        get_tool_offset_z: Callable[[], float],
+    ) -> None:
+        self._get_scene = get_scene
+        self._get_simulation_group = get_simulation_group
+        self._get_tool_offset_z = get_tool_offset_z
+
         self.envelope_object: Any | None = None
-
         # Track envelope visibility state to avoid redundant visible() calls
         self._envelope_visible: bool = False
 
-        # Track current tool offset for envelope calculations
-        self._current_tool: str = "none"
-        self._current_tool_offset_z: float = 0.0
+    @property
+    def scene(self) -> Any:
+        return self._get_scene()
+
+    @property
+    def simulation_group(self) -> Any:
+        return self._get_simulation_group()
 
     @staticmethod
     def _is_near_boundary(x_m: float, y_m: float, z_m: float) -> bool:
@@ -624,7 +635,7 @@ class EnvelopeMixin:
             logger.error("Failed to create envelope hull: %s", e)
             return False
 
-    def _update_envelope_from_robot_state(self) -> None:
+    def update_from_robot_state(self) -> None:
         """Update envelope visibility based on mode and robot TCP position.
 
         For OFF/ON modes, only acts on mode transitions (not every tick).
@@ -657,7 +668,7 @@ class EnvelopeMixin:
     ) -> None:
         """Ensure envelope is created, visible, and optionally clipped."""
         if not workspace_envelope.is_ready:
-            workspace_envelope.generate(tool_offset_z=self._current_tool_offset_z)
+            workspace_envelope.generate(tool_offset_z=self._get_tool_offset_z())
         if not self.envelope_object and workspace_envelope.is_ready:
             self._create_envelope_object()
         elif self.envelope_object and not self._envelope_visible:
@@ -740,7 +751,7 @@ class EnvelopeMixin:
 
         return planes
 
-    def _update_envelope_for_tool_change(self, tool_offset_z: float) -> None:
+    def update_for_tool_change(self, tool_offset_z: float) -> None:
         """Handle tool offset change - regenerate hull if needed.
 
         Args:
@@ -764,9 +775,9 @@ class EnvelopeMixin:
             workspace_envelope.reset()
             workspace_envelope.generate(tool_offset_z=tool_offset_z)
 
-    def _update_envelope_radius(self) -> None:
+    def update_radius(self) -> None:
         """Update envelope for current tool offset.
 
         Called when tool selection changes.
         """
-        self._update_envelope_for_tool_change(self._current_tool_offset_z)
+        self.update_for_tool_change(self._get_tool_offset_z())
