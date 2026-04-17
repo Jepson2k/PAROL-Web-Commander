@@ -45,8 +45,7 @@ from .loader import (
     transl_joint,
     normalize_axis,
 )
-from .editing_mixin import EditingMixin
-from .tcp_controls_mixin import TCPControlsMixin
+from .editing_controller import EditingController
 from .envelope_renderer import EnvelopeRenderer
 from .path_renderer import PathRenderer
 
@@ -143,10 +142,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
         return sphere
 
 
-class UrdfScene(
-    EditingMixin,
-    TCPControlsMixin,
-):
+class UrdfScene(EditingController):
     """Load a URDF file as a NiceGUI Scene
 
     Core features:
@@ -279,7 +275,7 @@ class UrdfScene(
         self._init_editing_state()
         self._init_tcp_controls_state()
 
-        # Track current tool offset (shared with EditingMixin for TCP pose math)
+        # Track current tool offset (shared with EditingController for TCP pose math)
         self._current_tool: str = "none"
         self._current_tool_offset_z: float = 0.0
 

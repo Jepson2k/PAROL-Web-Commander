@@ -98,8 +98,8 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
     await asyncio.sleep(0.2)  # Let update timer run
 
     # If envelope_object exists, it should be hidden
-    if scene.envelope_object is not None:
-        assert scene.envelope_object.visible_ is False, (
+    if scene.envelope.envelope_object is not None:
+        assert scene.envelope.envelope_object.visible_ is False, (
             "Expected envelope to be hidden when mode is 'off'"
         )
 
@@ -112,7 +112,7 @@ async def test_urdf_scene_envelope_visibility_on_mode_change(
 
     # Envelope object should be created and visible
     # Note: envelope_object may be created lazily on first 'on' mode
-    if scene.envelope_object is not None:
-        assert scene.envelope_object.visible_ is True, (
+    if scene.envelope.envelope_object is not None:
+        assert scene.envelope.envelope_object.visible_ is True, (
             "Expected envelope to be visible when mode is 'on'"
         )
