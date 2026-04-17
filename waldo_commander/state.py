@@ -249,6 +249,7 @@ class SimulationState(ChangeNotifierMixin):
     sim_pose_override: bool = (
         False  # True while scrubbing/playing — suppresses status-loop URDF updates
     )
+    script_running: bool = False  # True while a user script subprocess is active
     last_teleport_ts: float = 0.0  # monotonic time of last teleport send; used by status loop to delay handback
     _change_listeners: list[Callable[[], None]] = field(
         default_factory=list, repr=False
@@ -271,6 +272,7 @@ class SimulationState(ChangeNotifierMixin):
         self.sim_total_duration = 0.0
         self.sim_playback_active = False
         self.sim_pose_override = False
+        self.script_running = False
         self.last_teleport_ts = 0.0
 
 

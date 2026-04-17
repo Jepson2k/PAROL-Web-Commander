@@ -78,7 +78,7 @@ class MotionRecorder:
     @staticmethod
     def _get_motion_cmd_names() -> frozenset[str]:
         """Get motion command names from the command palette discovery."""
-        from waldo_commander.components.editor import discover_robot_commands
+        from waldo_commander.services.command_discovery import discover_robot_commands
 
         commands = discover_robot_commands()
         return frozenset(
@@ -346,15 +346,15 @@ class MotionRecorder:
                 duration,
             )
 
-        self._flush_pending_actions()
+        self._flush_pending_actions(self._active_jog.start_time)
         self._active_jog = None
 
-    def _flush_pending_actions(self) -> None:
+    def _flush_pending_actions(self, jog_start_time: float) -> None:
         """Flush actions queued during a jog, inserting time.sleep delays."""
-        if not self._pending_actions or not self._active_jog:
+        if not self._pending_actions:
             return
 
-        last_t = self._active_jog.start_time
+        last_t = jog_start_time
         for action_type, params, queued_at in self._pending_actions:
             delay = queued_at - last_t
             if delay > 0.05:
@@ -398,7 +398,7 @@ class MotionRecorder:
 
             # Flash the newly added line
             new_line_number = lines_before + 1
-            ui_state.editor_panel.flash_editor_lines([new_line_number])
+            ui_state.editor_panel.decorations.flash_editor_lines([new_line_number])
         else:
             logger.error("Editor textarea not ready - open Program tab first")
 

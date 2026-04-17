@@ -52,7 +52,7 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     When paused:
     - Play button icon changes back to play_arrow
     """
-    from waldo_commander.state import ui_state
+    from waldo_commander.state import ui_state, simulation_state
 
     await user.open("/")
     await wait_for_app_ready()
@@ -63,7 +63,9 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
 
     editor = ui_state.editor_panel
     assert editor is not None, "Editor panel should exist"
-    assert editor.script_running is False, "Script should not be running initially"
+    assert simulation_state.script_running is False, (
+        "Script should not be running initially"
+    )
 
     # Initially: play button visible, stop button hidden
     play_btn = user.find(marker="editor-play-btn")
@@ -80,7 +82,9 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     await asyncio.sleep(0.3)
 
     # Script should now be running
-    assert editor.script_running is True, "Script should be running after clicking play"
+    assert simulation_state.script_running is True, (
+        "Script should be running after clicking play"
+    )
 
     # Stop button should now be visible
     assert stop_btn.visible is True, "Stop button should be visible when script running"
@@ -90,7 +94,9 @@ async def test_run_button_toggles(user: User, robot_state) -> None:
     await asyncio.sleep(0.2)
 
     # Script still running but paused
-    assert editor.script_running is True, "Script should still be running (paused)"
+    assert simulation_state.script_running is True, (
+        "Script should still be running (paused)"
+    )
 
     # Stop the script for cleanup
     stop_btn_element = user.find(marker="editor-stop-btn")
@@ -118,8 +124,8 @@ async def test_log_toggle_expands_log(user: User) -> None:
     assert editor is not None, "Editor panel should exist"
 
     # Initially log should be collapsed with expand_more icon (down chevron)
-    assert editor._log_expanded is False, "Log should be collapsed initially"
-    log_toggle_btn = editor.log_toggle_btn
+    assert editor.log_panel._log_expanded is False, "Log should be collapsed initially"
+    log_toggle_btn = editor.playback.log_toggle_btn
     assert log_toggle_btn is not None, "Log toggle button should exist"
 
     # Check initial chevron icon is expand_more (down = "show more")
@@ -134,7 +140,7 @@ async def test_log_toggle_expands_log(user: User) -> None:
     await asyncio.sleep(0.1)
 
     # Log should now be expanded with expand_less icon (up chevron)
-    assert editor._log_expanded is True, "Log should be expanded after click"
+    assert editor.log_panel._log_expanded is True, "Log should be expanded after click"
     expanded_props = log_toggle_btn._props.get("icon", "")
     assert expanded_props == "expand_less", (
         f"Expanded icon should be expand_less, got {expanded_props}"
@@ -145,7 +151,9 @@ async def test_log_toggle_expands_log(user: User) -> None:
     await asyncio.sleep(0.1)
 
     # Should be back to collapsed with expand_more icon
-    assert editor._log_expanded is False, "Log should be collapsed after second click"
+    assert editor.log_panel._log_expanded is False, (
+        "Log should be collapsed after second click"
+    )
     collapsed_props = log_toggle_btn._props.get("icon", "")
     assert collapsed_props == "expand_more", (
         f"Collapsed icon should be expand_more, got {collapsed_props}"
@@ -195,7 +203,7 @@ async def test_record_button_toggles(user: User, robot_state) -> None:
 
     # Initially not recording with red color
     assert recording_state.is_recording is False
-    record_btn_ref = editor.record_btn
+    record_btn_ref = editor.playback.record_btn
     assert record_btn_ref is not None, "Record button reference should exist"
     initial_color = record_btn_ref._props.get("color", "")
     assert initial_color == "negative", (
@@ -514,7 +522,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     tab.content = test_script
 
     # Run simulation to populate steps
-    await editor._run_simulation()
+    await editor.simulation.run_simulation()
     await asyncio.sleep(0.1)
 
     # Step button should be visible after simulation
@@ -532,7 +540,7 @@ rbt.move_j([95, -95, 185, -5, -5, 185], speed=1.0)
     assert simulation_state.sim_playback_active is True, (
         "Play should start simulation playback when steps exist"
     )
-    assert editor.script_running is False, (
+    assert simulation_state.script_running is False, (
         "Script should not be running during sim playback"
     )
 
@@ -575,7 +583,7 @@ rbt.move_j([85, -85, 175, 5, 5, 175], speed=1.0)
     editor.program_textarea.value = test_script
     tab.content = test_script
 
-    await editor._run_simulation()
+    await editor.simulation.run_simulation()
     await asyncio.sleep(0.1)
 
     # Targets should be created from literal move args

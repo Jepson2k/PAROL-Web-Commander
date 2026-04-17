@@ -45,10 +45,9 @@ from .loader import (
     transl_joint,
     normalize_axis,
 )
-from .editing_mixin import EditingMixin
-from .tcp_controls_mixin import TCPControlsMixin
-from .envelope_mixin import EnvelopeMixin
-from .path_renderer_mixin import PathRendererMixin
+from .editing_controller import EditingController
+from .envelope_renderer import EnvelopeRenderer
+from .path_renderer import PathRenderer
 
 logger: TraceLogger = logging.getLogger(__name__)  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
@@ -143,12 +142,7 @@ def _create_waypoint_marker(shape: str, size: float, color: str) -> Any:
         return sphere
 
 
-class UrdfScene(
-    EditingMixin,
-    TCPControlsMixin,
-    EnvelopeMixin,
-    PathRendererMixin,
-):
+class UrdfScene(EditingController):
     """Load a URDF file as a NiceGUI Scene
 
     Core features:
@@ -169,6 +163,9 @@ class UrdfScene(
         """
         path = Path(path)
         self.config = config or UrdfSceneConfig()
+
+        # Sub-controllers (composition)
+        self.path_renderer = PathRenderer()
 
         # Load URDF with package resolution
         self.urdf_model = load_urdf(path, package_map=self.config.package_map)
@@ -277,7 +274,17 @@ class UrdfScene(
         # Initialize mixin states
         self._init_editing_state()
         self._init_tcp_controls_state()
-        self._init_envelope_state()
+
+        # Track current tool offset (shared with EditingController for TCP pose math)
+        self._current_tool: str = "none"
+        self._current_tool_offset_z: float = 0.0
+
+        # Envelope renderer (composition, reads scene refs lazily via getters)
+        self.envelope = EnvelopeRenderer(
+            get_scene=lambda: self.scene,
+            get_simulation_group=lambda: self.simulation_group,
+            get_tool_offset_z=lambda: self._current_tool_offset_z,
+        )
 
         # Register as listener for simulation state changes (event-driven updates)
         simulation_state.add_change_listener(self._update_simulation_view)
@@ -798,7 +805,7 @@ class UrdfScene(
                 if self.path_group and self.scene:
                     with self.scene:
                         with self.path_group:
-                            objs = self.render_tool_action(action)
+                            objs = self.path_renderer.render_tool_action(action)
                     self._rendered_tool_actions[i] = RenderedItem(
                         objects=objs,
                         fingerprint=fp,
@@ -814,7 +821,7 @@ class UrdfScene(
                     if self.path_group and self.scene:
                         with self.scene:
                             with self.path_group:
-                                objs = self.render_tool_action(action)
+                                objs = self.path_renderer.render_tool_action(action)
                         self._rendered_tool_actions.append(
                             RenderedItem(
                                 objects=objs,
@@ -865,7 +872,7 @@ class UrdfScene(
             with self.path_group:
                 segment = all_segments[seg_index]
                 pp_colors = self._gradient_colors(all_segments, seg_index)
-                objs, obj_colors, uses_vc = self._render_path_segment(
+                objs, obj_colors, uses_vc = self.path_renderer.render_path_segment(
                     segment,
                     pp_colors,
                 )
@@ -1363,7 +1370,7 @@ class UrdfScene(
         in main.py to ensure reliable updates without context issues.
         """
         self._update_jog_ball_from_robot_state()
-        self._update_envelope_from_robot_state()
+        self.envelope.update_from_robot_state()
         self.update_tool_animation()
 
     def set_axis_value(self, joint_name: str, val: float) -> None:
@@ -1501,7 +1508,7 @@ class UrdfScene(
         self._current_tool_offset_z = origin[2] if len(origin) > 2 else 0.0
 
         # Update envelope sphere if it exists
-        self._update_envelope_radius()
+        self.envelope.update_radius()
 
     def swap_tool_mesh(self, tool_key: str, variant_key: str | None = None) -> None:
         """Replace tool meshes in the 3D scene for the given tool.

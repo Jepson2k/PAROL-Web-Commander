@@ -1,15 +1,12 @@
 """Program editor component with script execution and command palette."""
 
 import asyncio
-import contextlib
-import inspect
 import logging
 import re
 import time
 import uuid
 from typing import Any, Callable
 
-import numpy as np
 from nicegui import ui, context, Client
 from waldo_commander.common.theme import get_theme
 from waldo_commander.constants import REPO_ROOT, config
@@ -21,150 +18,19 @@ from waldo_commander.state import (
     editor_tabs_state,
     recording_state,
 )
-from waldo_commander.services.script_runner import (
-    ScriptProcessHandle,
-    run_script,
-    create_default_config,
-    stop_script,
-)
-from waldo_commander.services.path_visualizer import path_visualizer
 from waldo_commander.services.motion_recorder import motion_recorder
-from waldo_commander.services.stepping_client import GUIStepController
+from waldo_commander.services.command_discovery import (
+    discover_robot_commands,
+    generate_completions_from_commands,
+)
 from waldo_commander.components.playback import PlaybackController
+from waldo_commander.components.script_execution import ScriptExecutionController
+from waldo_commander.components.log_panel import LogPanelController
+from waldo_commander.components.editor_decorations import EditorDecorations
+from waldo_commander.components.simulation_engine import SimulationEngine
 from waldo_commander.components.file_operations import FileOperationsMixin
 
 logger = logging.getLogger(__name__)
-
-
-def _get_home_joints_rad() -> list[float]:
-    """Get home position in radians from the active robot."""
-    return ui_state.active_robot.joints.home.rad.tolist()
-
-
-# Cached robot commands (populated lazily, never invalidated — backend
-# switching requires an app restart).
-_robot_commands_cache: dict | None = None
-
-
-# ---- Command Discovery Functions ----
-
-
-_CATEGORY_RE = re.compile(r"^\s*Category:\s*(.+)", re.MULTILINE)
-_EXAMPLE_RE = re.compile(r"^\s*Examples?:\s*$", re.MULTILINE)
-
-
-def _parse_docstring_category(doc: str) -> str | None:
-    """Extract ``Category: Foo`` from a Google-style docstring."""
-    m = _CATEGORY_RE.search(doc)
-    return m.group(1).strip() if m else None
-
-
-def _parse_docstring_example(doc: str) -> str | None:
-    """Extract the first indented line after an ``Example:`` section."""
-    m = _EXAMPLE_RE.search(doc)
-    if not m:
-        return None
-    rest = doc[m.end() :]
-    for line in rest.splitlines():
-        stripped = line.strip()
-        if stripped:
-            return stripped
-    return None
-
-
-def _scan_class_commands(cls: type, prefix: str = "") -> dict:
-    """Scan a class for methods with ``Category:`` and ``Example:`` docstring sections.
-
-    Returns a dict of ``{method_name: command_info}`` where method_name
-    includes the optional prefix (e.g. ``"tool.open"``).
-    Uses ``inspect.getdoc()`` to walk the MRO for inherited docstrings.
-    """
-    commands = {}
-    for name in dir(cls):
-        if name.startswith("_"):
-            continue
-        attr = getattr(cls, name, None)
-        if not callable(attr):
-            continue
-
-        doc = (inspect.getdoc(attr) or "").strip()
-        category = _parse_docstring_category(doc)
-        snippet = _parse_docstring_example(doc)
-        if category is None or snippet is None:
-            continue
-
-        key = f"{prefix}{name}" if prefix else name
-        sig = inspect.signature(attr)
-        first_line = doc.splitlines()[0] if doc else ""
-
-        commands[key] = {
-            "title": f"rbt.{key}(...)",
-            "category": category,
-            "snippet": snippet,
-            "signature": str(sig),
-            "docstring": first_line or "No description available",
-        }
-
-    return commands
-
-
-def discover_robot_commands() -> dict:
-    """Introspect the active backend's client and tool classes for available commands (cached).
-
-    Only methods whose docstrings contain both ``Category:`` and ``Example:``
-    sections are included.  Methods without these sections are silently excluded.
-    """
-    global _robot_commands_cache
-    if _robot_commands_cache is not None:
-        return _robot_commands_cache
-
-    commands = {}
-
-    # Client methods (rbt.move_j, rbt.home, etc.)
-    try:
-        client_cls = ui_state.active_robot.async_client_class
-        commands.update(_scan_class_commands(client_cls))
-    except (AttributeError, RuntimeError, AssertionError):
-        logger.warning("Could not get async_client_class for command discovery")
-
-    # Tool methods (rbt.tool.open, rbt.tool.close, etc.)
-    # Scan all tool specs — different implementations may expose different
-    # methods or override docstrings differently.  First discovery wins.
-    try:
-        for spec in ui_state.active_robot.tools.available:
-            if spec.key == "NONE":
-                continue
-            for k, v in _scan_class_commands(type(spec), prefix="tool.").items():
-                commands.setdefault(k, v)
-    except (AttributeError, RuntimeError):
-        pass
-
-    _robot_commands_cache = commands
-    return commands
-
-
-def generate_completions_from_commands() -> list[dict]:
-    """Generate CodeMirror completion items from discovered robot commands."""
-    all_commands = discover_robot_commands()
-    completions = []
-
-    for name, cmd in all_commands.items():
-        # Parse signature to create a useful apply text
-        sig = cmd["signature"]
-        # Remove 'self' from signature if present
-        sig_clean = sig.replace("(self, ", "(").replace("(self)", "()")
-
-        # Create the completion item
-        completion = {
-            "label": f"rbt.{name}",
-            "detail": sig_clean,
-            "info": cmd["docstring"],
-            "apply": f"rbt.{name}",  # Just insert the method name, user will add args
-            "type": "function",
-        }
-        completions.append(completion)
-
-    return completions
 
 
 class EditorPanel(FileOperationsMixin):
@@ -193,55 +59,65 @@ class EditorPanel(FileOperationsMixin):
         self.program_textarea: ui.codemirror | None = None
         self.program_log: ui.log | None = None
         self.run_btn: ui.button | None = None
-        self.log_toggle_btn: ui.button | None = None
-        self.record_btn: ui.button | None = None
-        self._capture_btn: ui.button | None = None
 
-        # Playback controller (owns bottom bar UI and playback logic)
-        self.playback = PlaybackController(self)
+        # Editor decorations (line highlights, diagnostics, metadata)
+        self.decorations = EditorDecorations()
 
-        # Shared log area (below play bar)
-        self._log_expanded: bool = False
-        self.editor_splitter: ui.splitter | None = None
-        self._splitter_value_when_expanded: float = (
-            70.0  # Remember user's preferred split
+        # Log panel controller (shared log area below playback bar)
+        self.log_panel = LogPanelController()
+
+        # Script execution controller (owns subprocess lifecycle + stepping)
+        self.script_exec = ScriptExecutionController(
+            on_script_start=lambda: self.playback.on_script_start(),
+            on_script_stop=lambda c: self.playback.on_script_stop(c),
+            on_script_step_start=lambda s, c: self.playback.on_script_step_start(s, c),
+            on_script_step_complete=lambda s, c: self.playback.on_script_step_complete(
+                s, c
+            ),
+            stop_sim_playback=lambda: self.playback.stop_playback(),
+            update_play_button=lambda: self.playback._update_play_button(),
+            get_textarea_value=lambda: self.program_textarea.value
+            if self.program_textarea
+            else "",
+            get_filename=lambda: (
+                self.program_filename_input.value.strip()
+                if self.program_filename_input
+                else ""
+            ),
+            get_program_log=lambda: self.program_log,
+            expand_log=lambda: self.log_panel.expand(),
+            clear_highlight=lambda: self.decorations.clear_executing_line_highlight(),
+            program_dir=self.PROGRAM_DIR,
         )
 
-        # Script execution via subprocess
-        self.script_handle: ScriptProcessHandle | None = None
-        self.script_running: bool = False
+        # Playback controller (owns bottom bar UI and playback logic)
+        self.playback = PlaybackController(
+            self.script_exec,
+            on_highlight_line=lambda n: self.decorations.highlight_executing_line(n),
+            on_record_click=lambda: self._toggle_recording(),
+            on_log_toggle_click=lambda: self.log_panel.toggle(),
+        )
 
-        # Stepping control for GUI-controlled script execution
-        self._step_session_id: str | None = None
-        self._step_controller: GUIStepController | None = None
-        self._event_watcher_task: asyncio.Task | None = None
-
-        # Per-tab simulation tracking (for cancellation on tab close/switch)
-        self._pending_simulations: dict[str, asyncio.Task] = {}
+        # Simulation engine (path preview + debouncing)
+        self.simulation = SimulationEngine(
+            playback=self.playback,
+            decorations=self.decorations,
+            get_textarea_value=lambda: self.program_textarea.value
+            if self.program_textarea
+            else "",
+            get_program_log=lambda: self.program_log,
+            get_ui_client=lambda: self._ui_client,
+            is_default_script=self._is_default_script,
+        )
 
         # Drawer element reference
         self.drawer: ui.element | None = None
 
-        # Debounce timer for auto-simulation on code change.
-        # The timer reference is kept alive while the callback runs so that
-        # cancel(with_current_invocation=True) can abort a running simulation.
-        self._simulation_debounce_timer: ui.timer | None = None
-        self._debounce_delay: float = 1.0  # seconds of idle before running simulation
-
         # Debounce for tab-switch path rendering
         self._tab_switch_render_task: asyncio.Task | None = None
 
-        # Python-side mirror of CM6 StateField target positions.
-        # Updated via target-positions events emitted by JS on document changes.
-        # Maps target index → current 1-indexed line number.
-        self._target_positions: dict[str, int] = {}
-
         # Recording notification
         self._recording_notification: ui.notification | None = None
-
-        # Tooltip references (to update text without recreating)
-        self._record_btn_tooltip: ui.tooltip | None = None
-        self._log_toggle_btn_tooltip: ui.tooltip | None = None
 
     def _default_python_snippet(self) -> str:
         """Generate the initial pre-filled Python code with inlined controller host/port."""
@@ -353,7 +229,7 @@ print(f"Robot status: {{status}}")
             logger.debug("Sync skipped: codemirror not ready - %s", e)
             return
 
-        line_number = self._target_positions.get(target_id)
+        line_number = self.decorations._target_positions.get(target_id)
         if line_number is None:
             logger.warning("Sync failed: Target %s not found", target_id)
             return
@@ -415,7 +291,7 @@ print(f"Robot status: {{status}}")
         if not self.program_textarea:
             return
 
-        line_number = self._target_positions.get(target_id)
+        line_number = self.decorations._target_positions.get(target_id)
         if line_number is None:
             logger.warning("Target %s not found for deletion", target_id)
             return
@@ -474,7 +350,7 @@ print(f"Robot status: {{status}}")
 
         # Flash the newly added line
         new_line_number = lines_before + 1
-        self.flash_editor_lines([new_line_number])
+        self.decorations.flash_editor_lines([new_line_number])
 
         logger.info("Added target code at line %d: %s", new_line_number, code_line)
         return new_line_number
@@ -489,58 +365,6 @@ print(f"Robot status: {{status}}")
             1-indexed line number of the new line, or None on failure.
         """
         return self.add_target_code(joint_angles, move_type="joints")
-
-    def flash_editor_lines(self, line_numbers: list[int]) -> None:
-        """Flash specific lines in the CodeMirror editor to highlight newly added content.
-
-        Args:
-            line_numbers: List of 1-indexed line numbers to flash
-        """
-        if not self.program_textarea or not line_numbers:
-            return
-
-        # Check if editor panel is visible (not collapsed)
-        if self._is_editor_panel_visible():
-            # Use NiceGUI CodeMirror's highlight_lines method
-            # Auto-removal is handled by the decorations system
-            self.program_textarea.highlight_lines(
-                line_numbers,
-                css_class="cm-line-flash",
-                duration_ms=1500,
-            )
-        else:
-            # Flash the editor tab instead
-            self._flash_editor_tab()
-
-    def _flash_editor_tab(self) -> None:
-        """Flash the editor tab to indicate new content when panel is collapsed."""
-        # Find the editor tab element and add flash class
-        js_code = """
-        (function() {
-            // Find the program tab - look for tab with the code icon
-            const tabs = document.querySelectorAll('.q-tab');
-            for (const tab of tabs) {
-                const icon = tab.querySelector('i');
-                if (icon && icon.innerText === 'code') {
-                    tab.classList.add('tab-flash');
-                    setTimeout(() => tab.classList.remove('tab-flash'), 2000);
-                    break;
-                }
-            }
-        })();
-        """
-        try:
-            ui.run_javascript(js_code)
-        except RuntimeError:
-            # No client context (called from background task) - use stored client
-            if self._ui_client:
-                self._ui_client.run_javascript(js_code)
-            else:
-                logger.debug("Cannot flash editor tab: no client available")
-
-    def _is_editor_panel_visible(self) -> bool:
-        """Check if the editor panel is currently visible (not collapsed)."""
-        return ui_state.program_panel_visible
 
     def _build_command_menu(self) -> None:
         """Build command palette as a dropdown menu with nested submenus."""
@@ -589,425 +413,19 @@ print(f"Robot status: {{status}}")
                                     "max-width: 300px; white-space: pre-wrap;"
                                 )
 
-    async def _toggle_run_script(self) -> None:
-        """Toggle start/stop script."""
-        if self.script_running:
-            await self._stop_script_process()
-        else:
-            await self._start_script_process()
-
-    async def _start_script_process(self) -> None:
-        """Start the current editor content as a Python subprocess.
-
-        Writes to a scratch file under ``PROGRAM_DIR/.runtime/`` so the user's
-        named file is only modified by explicit save.
-        """
-        self.playback.stop_playback()
-
-        if self.script_running:
-            ui.notify("Script already running", color="warning")
-            return
-
-        try:
-            # Get filename, default to program.py if empty
-            filename = (
-                self.program_filename_input.value.strip()
-                if self.program_filename_input
-                else ""
-            ) or "program.py"
-
-            # Ensure .py extension
-            if not filename.endswith(".py"):
-                filename += ".py"
-
-            # Write to scratch location — do not overwrite the user's saved file
-            content = self.program_textarea.value if self.program_textarea else ""
-            runtime_dir = self.PROGRAM_DIR / ".runtime"
-            runtime_dir.mkdir(parents=True, exist_ok=True)
-            script_path = runtime_dir / filename
-            script_path.write_text(content, encoding="utf-8")
-
-            # Update filename input
-            if self.program_filename_input:
-                self.program_filename_input.value = filename
-
-            # Clear program log
-            if self.program_log:
-                self.program_log.clear()
-
-            script_config = create_default_config(str(script_path), str(REPO_ROOT))
-
-            # Capture UI client context for the callbacks
-            ui_client = context.client
-
-            # Start the script process with log callbacks directed to program_log
-            def on_stdout(line: str):
-                with ui_client:
-                    if self.program_log:
-                        self.program_log.push(line)
-
-            def on_stderr(line: str):
-                with ui_client:
-                    if self.program_log:
-                        self.program_log.push(f"[ERR] {line}")
-
-            # Initialize stepping controller with unique session ID
-            self._step_session_id = uuid.uuid4().hex[:8]
-            self._step_controller = GUIStepController(self._step_session_id)
-            self._step_controller.initialize()
-
-            self.script_handle = await run_script(
-                script_config, on_stdout, on_stderr, session_id=self._step_session_id
-            )
-            self.script_running = True
-
-            # Start in playing mode (not paused) so user doesn't need to press play twice
-            simulation_state.is_playing = True
-            self._step_controller.signal_play()
-            self.playback.on_script_start()
-
-            # Auto-expand log
-            self._expand_log()
-
-            # Capture UI client context BEFORE creating background task
-            ui_client = context.client
-
-            # Launch event watcher task to update visualization as commands complete
-            self._event_watcher_task = asyncio.create_task(
-                self._watch_script_events(ui_client)
-            )
-
-            # Launch monitor task to reset state when script finishes
-            h = self.script_handle  # capture
-            asyncio.create_task(self._monitor_script_completion(h, filename, ui_client))
-
-            ui.notify(f"Started script: {filename}", color="positive")
-            logger.info("Started script: %s", filename)
-
-        except Exception as e:
-            ui.notify(f"Failed to start script: {e}", color="negative")
-            logger.error("Failed to start script: %s", e)
-            self.script_running = False
-            self._step_session_id = None
-            if self._step_controller:
-                self._step_controller.cleanup()
-                self._step_controller = None
-            simulation_state.is_playing = False
-            self.playback._update_play_button()
-
-    async def _watch_script_events(self, ui_client: Any) -> None:
-        """Poll for script events and update visualization.
-
-        Args:
-            ui_client: The NiceGUI client context for UI updates
-        """
-        try:
-            while self.script_running and self._step_controller:
-                # Poll for new events
-                events = self._step_controller.poll_events()
-
-                for event in events:
-                    event_type = event.get("event")
-                    method = event.get("method", "")
-                    step = event.get("step", 0)
-
-                    if event_type == "start":
-                        self.playback.on_script_step_start(step, ui_client)
-
-                    elif event_type == "complete":
-                        self.playback.on_script_step_complete(step, ui_client)
-                        logger.debug(
-                            "Script event: %s completed (step %d)", method, step
-                        )
-
-                # Poll interval - 50ms for responsive updates
-                await asyncio.sleep(0.05)
-
-        except asyncio.CancelledError:
-            logger.debug("Event watcher task cancelled")
-        except Exception as e:
-            logger.error("Error in event watcher: %s", e)
-
-    async def _monitor_script_completion(
-        self, handle: ScriptProcessHandle, filename: str, ui_client: Any
-    ) -> None:
-        """Monitor script subprocess completion and reset state when it finishes.
-
-        Args:
-            handle: The script process handle to monitor
-            filename: Name of the script file for logging
-            ui_client: The NiceGUI client context (must be captured before task creation)
-        """
-
-        try:
-            rc = await handle["proc"].wait()
-            # Let stream reader tasks finish
-            for t in (handle["stdout_task"], handle["stderr_task"]):
-                with contextlib.suppress(Exception):
-                    await t
-            # Only reset state if this handle is still the active one
-            if self.script_handle is handle:
-                with ui_client:
-                    self._reset_script_state(handle, ui_client)
-                    logger.info("Script %s finished with code %s", filename, rc)
-        except Exception as e:
-            logger.error("Error monitoring script process: %s", e)
-            with ui_client:
-                if self.script_handle is handle:
-                    self._reset_script_state(handle, ui_client)
-
-    def _reset_script_state(
-        self, handle: ScriptProcessHandle, ui_client: Client
-    ) -> None:
-        """Reset all script-related state after a script finishes or errors."""
-        self.script_handle = None
-        self.script_running = False
-        simulation_state.is_playing = False
-        simulation_state.sim_pose_override = False
-        self.playback.on_script_stop(ui_client)
-        self._cleanup_stepping()
-
     def cleanup(self) -> None:
         """Remove listeners registered by this panel."""
         self.playback.cleanup()
-
-    def _cleanup_stepping(self) -> None:
-        """Clean up stepping controller and event watcher."""
-        # Cancel event watcher task
-        if self._event_watcher_task and not self._event_watcher_task.done():
-            self._event_watcher_task.cancel()
-        self._event_watcher_task = None
-
-        # Clean up IPC files
-        if self._step_controller:
-            self._step_controller.cleanup()
-            self._step_controller = None
-        self._step_session_id = None
-
-        # Clear executing line highlight
-        self.clear_executing_line_highlight()
-
-    async def _stop_script_process(self) -> None:
-        """Stop the running script process."""
-        if not self.script_running or not self.script_handle:
-            ui.notify("No script running", color="warning")
-            return
-
-        try:
-            handle = self.script_handle  # capture
-            # Clear UI state up-front; monitor will see this and stay silent
-            self.script_handle = None
-            self.script_running = False
-            simulation_state.is_playing = False
-            self.playback._update_play_button()
-
-            # Clean up stepping controller
-            self._cleanup_stepping()
-
-            if handle:
-                await stop_script(handle)
-
-            ui.notify("Script stopped", color="warning")
-            logger.info("Script stopped by user")
-
-        except Exception as e:
-            ui.notify(f"Error stopping script: {e}", color="negative")
-            logger.error("Error stopping script: %s", e)
-            # State already cleared above
-
-    async def _run_simulation(self, tab_id: str | None = None) -> str | None:
-        """Run the simulation for the current script.
-
-        Args:
-            tab_id: Optional tab ID to run simulation for. If None, uses active tab.
-
-        Returns:
-            Error message if simulation failed, None otherwise.
-        """
-        # Get tab_id if not provided
-        if tab_id is None:
-            tab_id = editor_tabs_state.active_tab_id
-
-        content = self.program_textarea.value if self.program_textarea else ""
-        if not content:
-            return None
-
-        # Show loading indicator during simulation
-        loading = self.playback.sim_loading_progress
-        if loading:
-            loading.visible = True
-        try:
-            error = await path_visualizer.update_path_visualization(
-                content, tab_id=tab_id
-            )
-        finally:
-            if loading:
-                loading.visible = False
-
-        # Snapshot robot position so _check_position_changed doesn't re-trigger.
-        # Also snapshot on _UNCHANGED to prevent an infinite re-trigger cycle.
-        from waldo_commander.services.path_visualizer import _UNCHANGED
-
-        tab = editor_tabs_state.find_tab_by_id(tab_id) if tab_id else None
-        if tab and (error is None or error == _UNCHANGED):
-            n = ui_state.active_robot.joints.count
-            tab.last_sim_joints_deg = robot_state.angles.deg[:n].copy()
-
-        # Skip post-processing if simulation results were unchanged
-        if error == _UNCHANGED:
-            return None
-
-        # Invalidate timeline so it gets rebuilt from new segments
-        self.playback.invalidate_timeline()
-        simulation_state.sim_playback_time = 0.0
-
-        # Update scrub bar segments to match the new paths
-        self.playback.update_scrub_segments()
-
-        # Apply initial tool selection from script to scene and controller
-        if simulation_state.tool_selections and ui_state.urdf_scene:
-            first_sel = simulation_state.tool_selections[0]
-            if first_sel.segment_index < 0:
-                tool_key = first_sel.tool_key
-                variant_key = first_sel.variant_key or None
-                ui_state.active_robot.set_active_tool(
-                    tool_key,
-                    variant_key=variant_key,
-                )
-                ui_state.urdf_scene.apply_tool(
-                    tool_key,
-                    variant_key=variant_key,
-                )
-                ui_state.urdf_scene._update_tcp_ball_position()
-                # Sync to controller so readout reflects tool TCP
-                if ui_state.control_panel and ui_state.control_panel.client:
-                    try:
-                        await ui_state.control_panel.client.select_tool(
-                            tool_key,
-                            variant_key=variant_key or "",
-                        )
-                    except Exception as e:
-                        logger.debug("select_tool sync failed: %s", e)
-
-        # Show error in program log
-        if error and self.program_log:
-            self.program_log.push(f"[SIM ERROR] {error}")
-
-        # Apply diagnostics (errors + timing warnings) via CM6 lint system
-        self._apply_diagnostics(error)
-
-        # Push hover tooltip metadata for move command lines
-        self._push_line_metadata()
-
-        # Register target positions in CM6 StateField for edit tracking
-        self._push_target_positions()
-
-        return error
-
-    def schedule_debounced_simulation(self, tab_id: str | None = None) -> None:
-        """Schedule a debounced simulation run when code changes.
-
-        Cancels any pending *or running* simulation and schedules a new one after
-        the debounce delay.  ``cancel(with_current_invocation=True)`` aborts both the
-        debounce sleep and an in-progress simulation subprocess, so edits never
-        pile up stale simulations behind the simulation lock.
-
-        Args:
-            tab_id: The tab to run simulation for. If None, uses active tab.
-        """
-        # Use active tab if not specified
-        if tab_id is None:
-            tab_id = editor_tabs_state.active_tab_id
-        if not tab_id:
-            return
-
-        # Cancel any pending debounce wait *and* any running simulation callback
-        if self._simulation_debounce_timer is not None:
-            logger.debug("DEBOUNCE: Cancelling pending/running simulation")
-            self._simulation_debounce_timer.cancel(with_current_invocation=True)
-            self._simulation_debounce_timer = None
-
-        # Check for default script optimization
-        tab = editor_tabs_state.find_tab_by_id(tab_id)
-        if tab and self._is_default_script(tab.content):
-            # Default script ends at home position - skip simulation
-            tab.final_joints_rad = list(_get_home_joints_rad())
-            tab.path_segments = []
-            tab.targets = []
-            tab.tool_actions = []
-            # Update global state if active
-            if tab_id == editor_tabs_state.active_tab_id:
-                simulation_state.path_segments = []
-                simulation_state.targets = []
-                simulation_state.tool_actions = []
-                simulation_state.total_steps = 0
-                try:
-                    ui_client = self._ui_client or context.client
-                    with ui_client:
-                        simulation_state.notify_changed()
-                except RuntimeError:
-                    simulation_state.notify_changed()
-                self.playback.update_scrub_segments()
-            return
-
-        async def run_simulation_quietly():
-            """Run simulation without notifications (silent auto-update)."""
-            try:
-                logger.debug("DEBOUNCE: Starting simulation...")
-                await self._run_simulation(tab_id=tab_id)
-                logger.debug("DEBOUNCE: Simulation completed successfully")
-            except asyncio.CancelledError:
-                logger.debug("DEBOUNCE: Simulation cancelled by newer edit")
-            except Exception as e:
-                logger.error("Auto-simulation failed: %s", e, exc_info=True)
-                ui.notify(f"Simulation error: {e}", color="negative", timeout=3000)
-            finally:
-                # Only clear if we are still the active timer — a newer
-                # scheduling may have already replaced the reference.
-                if self._simulation_debounce_timer is my_timer:
-                    self._simulation_debounce_timer = None
-
-        # Schedule new simulation after debounce delay
-        logger.debug(
-            "DEBOUNCE: Scheduling new timer with delay=%.3fs", self._debounce_delay
-        )
-        my_timer = ui.timer(self._debounce_delay, run_simulation_quietly, once=True)
-        self._simulation_debounce_timer = my_timer
-
-    def _check_position_changed(self) -> None:
-        """Periodically check if robot position changed and re-run path preview."""
-        # Skip if script running, editing, scrubbing/playing, or sim already pending
-        if (
-            self.script_running
-            or robot_state.editing_mode
-            or self._simulation_debounce_timer is not None
-            or simulation_state.sim_pose_override
-            or simulation_state.sim_playback_active
-        ):
-            return
-
-        # Read from active tab's per-tab snapshot
-        active_tab = editor_tabs_state.get_active_tab()
-        if not active_tab or active_tab.last_sim_joints_deg is None:
-            return
-
-        # Skip if no active script content
-        if not self.program_textarea or not self.program_textarea.value:
-            return
-
-        current_deg = robot_state.angles.deg[: ui_state.active_robot.joints.count]
-        if np.max(np.abs(current_deg - active_tab.last_sim_joints_deg)) > 0.5:
-            self.schedule_debounced_simulation()
 
     def _toggle_recording(self) -> None:
         """Toggle motion recording on/off."""
         motion_recorder.toggle_recording()
         # Update button visual
         if recording_state.is_recording:
-            if self.record_btn:
-                self.record_btn.props("color=warning")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Stop Recording"
+            if self.playback.record_btn:
+                self.playback.record_btn.props("color=warning")
+            if self.playback.record_btn_tooltip:
+                self.playback.record_btn_tooltip.text = "Stop Recording"
             # Disable playback controls during recording
             self.playback.set_enabled(False)
             # Show recording notification at top of screen
@@ -1026,10 +444,10 @@ print(f"Robot status: {{status}}")
             except RuntimeError:
                 pass  # No client context available
         else:
-            if self.record_btn:
-                self.record_btn.props("color=negative")
-            if self._record_btn_tooltip:
-                self._record_btn_tooltip.text = "Start Recording"
+            if self.playback.record_btn:
+                self.playback.record_btn.props("color=negative")
+            if self.playback.record_btn_tooltip:
+                self.playback.record_btn_tooltip.text = "Start Recording"
             # Re-enable playback controls
             self.playback.set_enabled(True)
             # Dismiss recording notification
@@ -1041,54 +459,6 @@ print(f"Robot status: {{status}}")
                 except RuntimeError:
                     pass  # No client context available
                 self._recording_notification = None
-
-    def _toggle_log(self) -> None:
-        """Toggle shared log panel visibility via splitter position."""
-        if self._log_expanded:
-            self._collapse_log()
-        else:
-            self._expand_log()
-
-    def _expand_log(self) -> None:
-        """Expand the shared log panel by adjusting splitter."""
-        self._log_expanded = True
-        if self.editor_splitter:
-            self.editor_splitter.set_value(self._splitter_value_when_expanded)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_less")
-            if self._log_toggle_btn_tooltip:
-                self._log_toggle_btn_tooltip.text = "Hide Output"
-
-    def _collapse_log(self) -> None:
-        """Collapse the shared log panel by adjusting splitter."""
-        self._log_expanded = False
-        if self.editor_splitter:
-            self.editor_splitter.set_value(94)  # 94% to editor (collapsed)
-        if self.log_toggle_btn:
-            self.log_toggle_btn.props("icon=expand_more")
-            if self._log_toggle_btn_tooltip:
-                self._log_toggle_btn_tooltip.text = "Show Output"
-
-    def _on_splitter_change(self, e) -> None:
-        """Handle splitter drag changes to update log expanded state."""
-        value = e.value
-        if value is None:
-            return
-
-        # If user drags to near-bottom (>90%), treat as collapsed
-        if value > 90:
-            self._log_expanded = False
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_more")
-                if self._log_toggle_btn_tooltip:
-                    self._log_toggle_btn_tooltip.text = "Show Output"
-        else:
-            self._log_expanded = True
-            self._splitter_value_when_expanded = value  # Remember user's preference
-            if self.log_toggle_btn:
-                self.log_toggle_btn.props("icon=expand_less")
-                if self._log_toggle_btn_tooltip:
-                    self._log_toggle_btn_tooltip.text = "Hide Output"
 
     # ---- Tab Management Methods ----
 
@@ -1118,11 +488,11 @@ print(f"Robot status: {{status}}")
         # Trigger simulation at tab creation (with default script optimization)
         if self._is_default_script(tab.content):
             # Default script ends at home position - set directly, skip simulation
-            tab.final_joints_rad = list(_get_home_joints_rad())
+            tab.final_joints_rad = ui_state.active_robot.joints.home.rad.tolist()
             tab.path_segments = []
             tab.targets = []
         elif tab.content.strip():
-            self.schedule_debounced_simulation(tab_id=tab.id)
+            self.simulation.schedule_debounced_simulation(tab_id=tab.id)
 
         return tab
 
@@ -1173,9 +543,7 @@ print(f"Robot status: {{status}}")
         tab_id = tab.id
 
         # Cancel any pending simulation for this tab
-        if tab_id in self._pending_simulations:
-            self._pending_simulations[tab_id].cancel()
-            del self._pending_simulations[tab_id]
+        self.simulation.cancel_tab_simulation(tab_id)
 
         # Determine which tab to switch to BEFORE removing
         tabs = editor_tabs_state.tabs
@@ -1219,7 +587,7 @@ print(f"Robot status: {{status}}")
             if self.tabs_container and editor_tabs_state.active_tab_id:
                 self.tabs_container.set_value(editor_tabs_state.active_tab_id)
             return
-        if self.script_running and simulation_state.is_playing:
+        if simulation_state.script_running and simulation_state.is_playing:
             ui.notify("Cannot switch tabs during script playback", color="warning")
             if self.tabs_container and editor_tabs_state.active_tab_id:
                 self.tabs_container.set_value(editor_tabs_state.active_tab_id)
@@ -1265,6 +633,8 @@ print(f"Robot status: {{status}}")
         widgets = self._tab_widgets.get(tab_id, {})
         self.program_textarea = widgets.get("textarea")
         self.program_filename_input = widgets.get("filename_input")
+        # Point decorations at the active tab's textarea
+        self.decorations.set_textarea(self.program_textarea)
 
     def _save_simulation_context(self, tab: EditorTab) -> None:
         """Save current simulation state to tab."""
@@ -1428,53 +798,7 @@ print(f"Robot status: {{status}}")
         args = e.args if isinstance(e.args, dict) else {}
         anchors = args.get("anchors", {})
         # anchors is {id: line_number} — store as {id: line}
-        self._target_positions = {k: v for k, v in anchors.items()}
-
-    def _push_line_metadata(self) -> None:
-        """Push per-line metadata to CM6 for hover tooltips.
-
-        Aggregates segment data (end position, duration, warnings) per line
-        so hovering a move command shows useful info.
-        """
-        if not self.program_textarea:
-            return
-        metadata: dict[int, dict] = {}
-        for seg in simulation_state.path_segments:
-            if seg.line_number <= 0 or not seg.points:
-                continue
-            end = seg.points[-1]
-            # Position in mm for display (segments store meters)
-            pos_str = f"x: {end[0] * 1000:.1f}, y: {end[1] * 1000:.1f}, z: {end[2] * 1000:.1f} mm"
-            dur_str = f"{seg.estimated_duration:.2f}s" if seg.estimated_duration else ""
-            warnings = []
-            if not seg.is_valid:
-                warnings.append("Unreachable position")
-            if not seg.timing_feasible and seg.estimated_duration is not None:
-                warnings.append(
-                    f"Duration too short (min: {seg.estimated_duration:.2f}s)"
-                )
-
-            entry: dict = {"position": pos_str}
-            if dur_str:
-                entry["duration"] = dur_str
-            if warnings:
-                entry["warnings"] = warnings
-            metadata[seg.line_number] = entry
-
-        self.program_textarea.set_line_tooltips(metadata, set_name="simulation")
-
-    def _push_target_positions(self) -> None:
-        """Push current target positions to CM6 line anchors for edit tracking."""
-        if not self.program_textarea:
-            return
-        anchors = [
-            {"id": t.id, "line": t.line_number}
-            for t in simulation_state.targets
-            if t.line_number > 0
-        ]
-        self.program_textarea.set_line_anchors(anchors, set_name="targets")
-        # Also update Python-side mirror
-        self._target_positions = {str(a["id"]): int(a["line"]) for a in anchors}
+        self.decorations._target_positions = {k: v for k, v in anchors.items()}
 
     def _on_tab_content_change(self, tab: EditorTab, new_value: str) -> None:
         """Handle content change for a tab."""
@@ -1484,112 +808,19 @@ print(f"Robot status: {{status}}")
 
         # Only run simulation for active tab
         if tab.id == editor_tabs_state.active_tab_id:
-            self.schedule_debounced_simulation()
-
-    # ---- Line highlighting  ----
-
-    def highlight_executing_line(self, step_index: int) -> None:
-        """Highlight the source line corresponding to the current step.
-
-        Uses path_segments line_number to look up which line to highlight.
-        Uses persistent decorations (not flash animations) that update with each step.
-
-        Args:
-            step_index: The current step index (0-indexed)
-        """
-        if not self.program_textarea:
-            return
-
-        # Look up line number from path_segments if available
-        if simulation_state.path_segments and 0 <= step_index < len(
-            simulation_state.path_segments
-        ):
-            segment = simulation_state.path_segments[step_index]
-            line_number = segment.line_number
-            if line_number > 0:
-                self.program_textarea.run_method(
-                    "setDecorations",
-                    {
-                        "executing": [
-                            {
-                                "kind": "line",
-                                "line": line_number,
-                                "class": "cm-highlighted",
-                            }
-                        ]
-                    },
-                )
-                self.program_textarea.run_method("revealLine", line_number)
-                return
-
-        # Clear highlight if no valid line found
-        self.program_textarea.run_method("setDecorations", {"executing": []})
-
-    def clear_executing_line_highlight(self) -> None:
-        """Clear the executing line highlight decoration."""
-        if self.program_textarea:
-            self.program_textarea.run_method("setDecorations", {"executing": []})
-
-    _ERROR_LINE_RE = re.compile(
-        r'(?:File "simulation_script\.py", line (\d+))|(?:^Line (\d+):)',
-        re.MULTILINE,
-    )
-
-    def _apply_diagnostics(self, error: str | None = None) -> None:
-        """Apply CM6 lint diagnostics for simulation errors and timing warnings."""
-        if not self.program_textarea:
-            return
-
-        diagnostics: list[dict] = []
-
-        # Error diagnostics from simulation
-        if error:
-            error_lines: set[int] = set()
-            for m in self._ERROR_LINE_RE.finditer(error):
-                line_no = int(m.group(1) or m.group(2))
-                error_lines.add(line_no)
-            # Extract the core error message (last line of traceback)
-            error_msg = error.strip().split("\n")[-1] if error.strip() else error
-            for ln in sorted(error_lines):
-                diagnostics.append(
-                    {
-                        "line": ln,
-                        "severity": "error",
-                        "message": error_msg,
-                        "source": "simulation",
-                    }
-                )
-
-        # Timing warning diagnostics for infeasible durations
-        warned_lines: set[int] = set()
-        for seg in simulation_state.path_segments:
-            if seg.timing_feasible or seg.line_number <= 0:
-                continue
-            if seg.line_number in warned_lines:
-                continue
-            warned_lines.add(seg.line_number)
-            if seg.estimated_duration is not None:
-                diagnostics.append(
-                    {
-                        "line": seg.line_number,
-                        "severity": "warning",
-                        "message": f"Duration too short — minimum: {seg.estimated_duration:.2f}s",
-                        "source": "timing",
-                    }
-                )
-
-        self.program_textarea.set_diagnostics(diagnostics)
+            self.simulation.schedule_debounced_simulation()
 
     def build(self, close_callback: Callable | None = None) -> None:
         """Build the program editor content with multi-tab support."""
         # Store NiceGUI client reference for JS execution from background tasks
         try:
             self._ui_client = ui.context.client
+            self.decorations.set_ui_client(self._ui_client)
         except RuntimeError:
             pass  # No client context during build (shouldn't happen)
 
         # Periodic check: re-run path preview when robot position changes
-        ui.timer(1.0, self._check_position_changed)
+        ui.timer(1.0, self.simulation.check_position_changed)
 
         # Main editor container
         with (
@@ -1672,12 +903,12 @@ print(f"Robot status: {{status}}")
                     horizontal=True,
                     value=94,  # Start collapsed (94% to editor, leaves room for playbar)
                     limits=(50, 94),
-                    on_change=self._on_splitter_change,
+                    on_change=self.log_panel.on_splitter_change,
                 )
                 .classes("w-full flex-1 editor-splitter")
                 .style("overflow: hidden;") as splitter
             ):
-                self.editor_splitter = splitter
+                self.log_panel.editor_splitter = splitter
 
                 # ---- Tab Panels Area (CodeMirror) in splitter.before ----
                 with splitter.before:
@@ -1692,6 +923,11 @@ print(f"Robot status: {{status}}")
                 with splitter.separator:
                     self.playback.build_bar()
                     self.run_btn = self.playback._play_btn
+                    # Wire log toggle button + tooltip through to log_panel
+                    self.log_panel.log_toggle_btn = self.playback.log_toggle_btn
+                    self.log_panel.log_toggle_btn_tooltip = (
+                        self.playback.log_toggle_btn_tooltip
+                    )
 
                 # ---- Shared Log Area in splitter.after ----
                 with splitter.after:
@@ -1708,7 +944,7 @@ print(f"Robot status: {{status}}")
         if editor_tabs_state.tabs:
             # Clear stale UI references from previous page load
             self._tab_widgets.clear()
-            self._pending_simulations.clear()
+            self.simulation._pending_simulations.clear()
 
             # Rebuild UI for each existing tab
             for tab in editor_tabs_state.tabs:
@@ -1728,6 +964,7 @@ print(f"Robot status: {{status}}")
             widgets = self._tab_widgets.get(active_id, {})
             self.program_textarea = widgets.get("textarea")
             self.program_filename_input = widgets.get("filename_input")
+            self.decorations.set_textarea(self.program_textarea)
 
             # Restore simulation state from active tab
             active_tab = editor_tabs_state.get_active_tab()
