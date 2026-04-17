@@ -106,22 +106,25 @@ rbt.tool.open(speed=1.0)
 # Approach pencil: move_j to 100mm above, descend linearly, grab, retract
 PENCIL_ABOVE = [-90, -81.6, 161.8, 0, -69.4, 180]
 rbt.move_j(angles=PENCIL_ABOVE, speed=0.8)
-rbt.move_l([0, 0, -95, 0, 0, 0], rel=True, speed=0.4)
+rbt.move_l([0, 0, -93, 0, 0, 0], rel=True, speed=0.4)
 rbt.tool.close(wait=True)
-rbt.move_l([0, 0, 95, 0, 0, 0], rel=True, speed=0.4)
+rbt.move_l([0, 0, 93, 0, 0, 0], rel=True, speed=0.4)
 rbt.move_j(pose=PRECISION_POSE, speed=0.8)
 
-# Offset TCP to pencil tip (~100mm exposed below gripper)
-rbt.set_tcp_offset(0, 0, -100)
+# Offset TCP to pencil tip (~100mm exposed below gripper). The pencil is
+# clamped perpendicular to the gripper's jaw-closing direction, hanging
+# along tool -X — that's the axis the offset goes on, not Z.
+rbt.set_tcp_offset(-100, 0, 0)
 
 # Pencil tip traces straight lines (linear precision demo)
-# Forward/back (tool Z = world -Y at this pose)
 rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
 rbt.move_l([0, 0, -200, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
 rbt.move_l([0, 0, 100, 0, 0, 0], speed=0.8, frame="TRF", rel=True)
 
-# Precision TRF rotations — pencil tip stays stationary while wrist rotates
-SWEEP = 20
+# Precision TRF rotations — pencil tip stays stationary while wrist rotates.
+# 40° is the largest sweep that keeps every axis IK-reachable from this pose
+# with the 100mm pencil offset.
+SWEEP = 40
 for axis in range(3):
     delta = [0, 0, 0, 0, 0, 0]
     delta[3 + axis] = -SWEEP
@@ -135,9 +138,9 @@ for axis in range(3):
 # Place pencil back: descend linearly, release, retract
 rbt.set_tcp_offset(0, 0, 0)
 rbt.move_j(angles=PENCIL_ABOVE, speed=0.8)
-rbt.move_l([0, 0, -95, 0, 0, 0], rel=True, speed=0.4)
+rbt.move_l([0, 0, -93, 0, 0, 0], rel=True, speed=0.4)
 rbt.tool.open(wait=True)
-rbt.move_l([0, 0, 95, 0, 0, 0], rel=True, speed=0.4)
+rbt.move_l([0, 0, 93, 0, 0, 0], rel=True, speed=0.4)
 
 # Return to home position (joint move, not the full homing sequence)
 rbt.move_j(pose=PRECISION_POSE, speed=0.8)
