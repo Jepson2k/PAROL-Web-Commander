@@ -12,7 +12,6 @@ from tests.helpers.wait import (
     poll_until,
     wait_for_app_ready,
     wait_for_tool_key,
-    wait_until,
 )
 
 # Access storage via getattr to satisfy static type checkers (NiceGUI has no typed attr)
@@ -225,16 +224,20 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     select_el.set_value("PNEUMATIC")
     await wait_for_tool_key("PNEUMATIC", timeout_s=5.0)
     await user.should_see("TCP Offset")
-    assert await wait_until(lambda: not offset_x_disabled()), (
-        "a fitted tool's offset is editable"
+    await poll_until(
+        offset_x_disabled,
+        lambda disabled: not disabled,
+        what="a fitted tool's offset editable",
     )
 
     # NONE — offset inputs should still be visible, and refuse edits: there
     # is no tool to offset from.
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5.0)
-    assert await wait_until(offset_x_disabled), (
-        "with no tool fitted the offset must not be editable"
+    await poll_until(
+        offset_x_disabled,
+        bool,
+        what="the offset locked with no tool fitted",
     )
 
 

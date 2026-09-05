@@ -17,7 +17,7 @@ import pytest
 import waldoctl
 from nicegui.testing import User
 
-from tests.helpers.wait import poll_until, wait_for_app_ready, wait_until
+from tests.helpers.wait import poll_until, wait_for_app_ready
 from waldo_commander.state import robot_events, ui_state
 
 
@@ -80,8 +80,12 @@ async def test_drive_faults_appear_without_analog_readings(user: User) -> None:
     await _open_diagnostics(user)
 
     health = waldoctl.commander.status.drive_health
-    await wait_until(lambda: bool(health.faults), timeout_s=8.0)
-    assert health.faults, "the backend reports per-drive faults"
+    await poll_until(
+        lambda: health.faults,
+        bool,
+        timeout_s=8.0,
+        what="per-drive faults from the backend",
+    )
     assert not health.temperatures_c, "and no analog registers"
     assert not health.currents_ma
     assert health.bus_voltage_v is None
@@ -134,8 +138,10 @@ async def test_the_event_log_announces_itself_and_keeps_the_whole_error(
         "check the bus wiring",
     ):
         await user.should_see(part)
-    assert await wait_until(lambda: robot_events.unread == 0), (
-        "rendering the log to an open tab is what marks it read"
+    await poll_until(
+        lambda: robot_events.unread,
+        lambda unread: unread == 0,
+        what="the log marked read by rendering it to an open tab",
     )
 
     user.find(marker="diag-clear-events").click()

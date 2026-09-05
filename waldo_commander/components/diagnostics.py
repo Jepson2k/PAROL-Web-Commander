@@ -120,7 +120,7 @@ class DiagnosticsPage:
         )
 
     def _has_torques(self) -> bool:
-        return bool(getattr(ui_state.active_robot, "has_force_torque", False))
+        return ui_state.active_robot.has_force_torque
 
     def _has_homing(self) -> bool:
         return bool(waldoctl.commander.status.homing.joints)
@@ -542,5 +542,4 @@ class DiagnosticsPage:
 
     def _clear_events(self) -> None:
         robot_events.clear()
-        self._events_version = -1
         self._update_events()

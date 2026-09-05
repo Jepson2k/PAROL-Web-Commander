@@ -118,7 +118,6 @@ class _PageState:
     page_client: Client
     connection_notification: ui.notification | None = None
     warning_notification: ui.notification | None = None
-    warning_banner_text: str = ""
     ping_timer: ui.timer | None = None
     last_ping_ok: bool = False
 
@@ -147,57 +146,32 @@ _ui_metrics = LoopMetrics()
 _startup_complete: asyncio.Event = asyncio.Event()
 
 
-def _update_connection_notification() -> None:
-    """Show or dismiss persistent notification based on robot connection state."""
-    ps = _page_state
-    if ps is None:
-        return
-
-    # Gate on scene-ready (not app_ready) so the banner still works when the
-    # backend never streams a STATUS frame; the scene signal also guarantees
-    # the page is past serialization, so elements are safe to modify.
-    if not readiness_state.urdf_scene_ready.is_set():
-        return
-
-    needs_warning = (
-        not waldoctl.commander.status.simulator_active
-        and not waldoctl.commander.status.connected
-    )
-
-    if needs_warning and ps.connection_notification is None:
-        ps.connection_notification = ui.notification(
-            message="Robot mode requires a hardware connection. Connect robot or switch to Simulator mode.",
-            type="negative",
-            close_button=True,
-            timeout=0,
-        )
-    elif not needs_warning and ps.connection_notification is not None:
-        ps.connection_notification.dismiss()
-        ps.connection_notification = None
+_NO_CONNECTION_MSG = (
+    "Robot mode requires a hardware connection. "
+    "Connect robot or switch to Simulator mode."
+)
 
 
-def _update_warning_notification() -> None:
-    """Persistent banner while warning-class conditions stand.
+def _sticky_banner(
+    banner: ui.notification | None, msg: str, type_: str
+) -> ui.notification | None:
+    """Keep a dismissable, non-expiring banner in step with ``msg``.
 
-    Same mechanism as the hard-error connection banner, colored as a
-    warning; it leaves when the conditions self-clear. History lives in
-    the Diagnostics tab's event log, which keeps what the banner drops."""
-    ps = _page_state
-    if ps is None or not readiness_state.urdf_scene_ready.is_set():
-        return
-    entries = waldoctl.commander.status.warnings.entries
-    msg = "; ".join(str(e[2]) for e in entries)
-    if msg == ps.warning_banner_text:
-        return
-    ps.warning_banner_text = msg
-    banner = ps.warning_notification
+    An empty ``msg`` retires the banner. Returns the banner to hold on to,
+    so the caller owns where it is stored.
+
+    Gated on scene-ready (not app_ready) so a banner still works when the
+    backend never streams a STATUS frame; the scene signal also guarantees
+    the page is past serialization, so elements are safe to modify.
+    """
+    if _page_state is None or not readiness_state.urdf_scene_ready.is_set():
+        return banner
     if banner is not None and banner.is_deleted:
-        banner = ps.warning_notification = None
+        banner = None
     if not msg:
         if banner is not None:
             stale = banner
             stale.dismiss()
-            ps.warning_notification = None
             # The client's dismiss event is what deletes the element; a
             # client that never sends one (the user fixture) needs the
             # fallback, and it has to wait for the dismiss to flush because
@@ -207,16 +181,40 @@ def _update_warning_notification() -> None:
                 lambda: None if stale.is_deleted else stale.delete(),
                 once=True,
             )
-        return
+        return None
     if banner is None:
-        ps.warning_notification = ui.notification(
-            message=msg,
-            type="warning",
-            close_button=True,
-            timeout=0,
-        )
-    else:
+        return ui.notification(message=msg, type=type_, close_button=True, timeout=0)
+    if banner.message != msg:
         banner.message = msg
+    return banner
+
+
+def _update_connection_notification() -> None:
+    """Show or dismiss persistent notification based on robot connection state."""
+    ps = _page_state
+    if ps is None:
+        return
+    offline = (
+        not waldoctl.commander.status.simulator_active
+        and not waldoctl.commander.status.connected
+    )
+    ps.connection_notification = _sticky_banner(
+        ps.connection_notification, _NO_CONNECTION_MSG if offline else "", "negative"
+    )
+
+
+def _update_warning_notification() -> None:
+    """Persistent banner while warning-class conditions stand.
+
+    Same mechanism as the hard-error connection banner, colored as a
+    warning; it leaves when the conditions self-clear. History lives in
+    the Diagnostics tab's event log, which keeps what the banner drops."""
+    ps = _page_state
+    if ps is None:
+        return
+    entries = waldoctl.commander.status.warnings.entries
+    msg = "; ".join(str(e[2]) for e in entries)
+    ps.warning_notification = _sticky_banner(ps.warning_notification, msg, "warning")
 
 
 async def initialize_urdf_scene() -> None:
@@ -1825,6 +1823,17 @@ def _home_output_tick() -> None:
         )
 
 
+def _readings_equal(a: list[float], b: list[float]) -> bool:
+    """NaN-tolerant compare for a per-drive reading list.
+
+    A drive that has not answered a register reads NaN every tick, and
+    ``NaN != NaN`` would call that a change and re-fire every binding at the
+    status rate. ``arrays_equal_n`` is not usable here for the same reason,
+    and ``np.array_equal(..., equal_nan=True)`` pays a numpy round-trip on
+    six-element lists at 50 Hz."""
+    return len(a) == len(b) and all(x == y or (x != x and y != y) for x, y in zip(a, b))
+
+
 async def _status_consumer() -> None:
     """Consume multicast status and populate ``commander.status``."""
     # Shadows of the last-applied jog-enable wire arrays, kept local so each
@@ -1979,17 +1988,16 @@ async def _status_consumer() -> None:
                         prev = {tuple(e) for e in st.warnings.entries}
                         for e in entries:
                             if tuple(e) not in prev:
-                                # The wire tuple is
-                                # (command_index, code, title, cause,
-                                #  effect, remedy) — the log keeps all of
-                                # it, since the remedy is the half that
+                                # The log keeps the whole error, not a
+                                # summary line: the remedy is the half that
                                 # says what to do about the condition.
+                                err = waldoctl.RobotError.from_wire(e)
                                 robot_events.add(
-                                    code=int(e[1]) if len(e) > 1 else 0,
-                                    title=str(e[2]) if len(e) > 2 else str(e),
-                                    cause=str(e[3]) if len(e) > 3 else "",
-                                    effect=str(e[4]) if len(e) > 4 else "",
-                                    remedy=str(e[5]) if len(e) > 5 else "",
+                                    code=err.code,
+                                    title=err.title,
+                                    cause=err.cause,
+                                    effect=err.effect,
+                                    remedy=err.remedy,
                                 )
                         st.warnings.entries = list(entries)
 
@@ -1998,12 +2006,9 @@ async def _status_consumer() -> None:
                         dh = st.drive_health
                         temps = [float(v) for v in drives.get("temperatures_c", ())]
                         currents = [float(v) for v in drives.get("currents_ma", ())]
-                        # equal_nan: a drive that has not answered a register
-                        # reads NaN every tick, and NaN != NaN would call that
-                        # a change and re-fire every binding at the status rate.
-                        if not np.array_equal(dh.temperatures_c, temps, equal_nan=True):
+                        if not _readings_equal(dh.temperatures_c, temps):
                             dh.temperatures_c = temps
-                        if not np.array_equal(dh.currents_ma, currents, equal_nan=True):
+                        if not _readings_equal(dh.currents_ma, currents):
                             dh.currents_ma = currents
                         volts = drives.get("bus_voltage_v")
                         volts = None if volts is None else float(volts)

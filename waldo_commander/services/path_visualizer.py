@@ -240,9 +240,9 @@ def _run_simulation_isolated(
 
     try:
         # Swap RobotClient/AsyncRobotClient for preview clients while the
-        # script runs. A pool worker is thrown away afterwards, but this
-        # function is also called directly, in-process, so the swap is undone
-        # below rather than left to the worker's exit.
+        # script runs. A pool worker is thrown away afterwards, but tests
+        # call this directly, in-process, so the swap is undone below rather
+        # than left to the worker's exit.
         backend = importlib.import_module(backend_package)
         assert dry_run_client_cls is not None
 
@@ -431,10 +431,10 @@ def _run_simulation_isolated(
         error_message = f"Simulation setup failed: {type(e).__name__}: {e}"
 
     finally:
-        # A pool worker is discarded with these swaps in place, but a direct
-        # in-process call shares the app's interpreter, where a client built
-        # from the backend's name after this point has to be the real one
-        # again. In a ``finally`` because a script ending in ``sys.exit()``
+        # A pool worker is discarded with these swaps in place, but a test
+        # calling this directly shares the app's interpreter, where a client
+        # built from the backend's name after this point has to be the real
+        # one again. In a ``finally`` because a script ending in ``sys.exit()``
         # raises SystemExit, which passes both excepts and would otherwise
         # leave the preview class installed for the rest of the app's life.
         for module, name, original in reversed(swapped_names):
