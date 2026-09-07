@@ -4,6 +4,7 @@ from nicegui import Client
 import pytest
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import ElementClickInterceptedException
 from waldoctl.setup import SetupSnapshot
 from waldoctl.signals import DigitalSignal
 
@@ -35,7 +36,15 @@ def test_named_signal_controls_remain_readable(screen, tmp_path, monkeypatch):
 
     def click(marker):
         id = run_in_app(lambda: marked(marker).id)
-        screen.selenium.find_element(By.ID, f"c{id}").click()
+
+        def try_click(driver):
+            try:
+                driver.find_element(By.ID, f"c{id}").click()
+                return True
+            except ElementClickInterceptedException:
+                return False
+
+        WebDriverWait(screen.selenium, 10).until(try_click)
 
     click("tab-setup")
     click("setup-load")
