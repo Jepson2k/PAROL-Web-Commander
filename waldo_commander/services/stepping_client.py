@@ -377,7 +377,6 @@ class SteppingClientWrapper:
         """Create a wrapper function for a motion method."""
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            self._step_io.wait_until_resumed(self._check_health)
             kwargs, timeout = _nonblocking(method, kwargs)
             if name == "tool_action" and timeout is None:
                 timeout = 10.0
@@ -385,6 +384,7 @@ class SteppingClientWrapper:
             budget.bind(self._wrapped, self._step_io.active_time)
             token = current_budget.set(budget)
             try:
+                self._step_io.wait_until_resumed(self._check_health)
                 return execute(*args, **kwargs)
             finally:
                 current_budget.reset(token)
@@ -569,7 +569,6 @@ class AsyncSteppingClientWrapper:
 
     def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            await self._step_io.wait_until_resumed_async(self._check_health)
             kwargs, timeout = _nonblocking(method, kwargs)
             if name == "tool_action" and timeout is None:
                 timeout = 10.0
@@ -577,6 +576,7 @@ class AsyncSteppingClientWrapper:
             budget.bind(self._wrapped, self._step_io.active_time)
             token = current_budget.set(budget)
             try:
+                await self._step_io.wait_until_resumed_async(self._check_health)
                 return await execute(*args, **kwargs)
             finally:
                 current_budget.reset(token)

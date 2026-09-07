@@ -989,7 +989,13 @@ class PlaybackController:
                 self._speed_tooltip.text = (
                     f"Execution: {state.resume_scale:.0%} selected · {prefix}"
                 )
-        except (TimeoutError, ConnectionError, waldoctl.RobotError):
+        except (
+            TimeoutError,
+            ConnectionError,
+            RuntimeError,
+            waldoctl.RobotError,
+        ) as exc:
+            logger.debug("Execution speed readback unavailable: %s", exc)
             self._execution_speed = None
             if self._speed_tooltip:
                 self._speed_tooltip.text = "Execution speed readback unavailable"

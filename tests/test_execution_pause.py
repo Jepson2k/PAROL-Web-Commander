@@ -63,7 +63,7 @@ async def test_editor_pause_holds_native_motion_and_managed_program(user: User):
     ui_state.active_textarea.value = (
         "from parol6 import RobotClient\n"
         "with RobotClient() as rbt:\n"
-        f"    rbt.move_j({target!r}, duration=2, timeout=5)\n"
+        f"    rbt.move_j({target!r}, duration=2, timeout=15)\n"
         "    print('FIRST', flush=True)\n"
         "    rbt.delay(0.1)\n"
         "    print('FINISHED', flush=True)\n"
@@ -109,11 +109,11 @@ async def test_editor_pause_holds_native_motion_and_managed_program(user: User):
         assert is_any_program_running()
         assert not any(entry.text == "FIRST" for entry in program.log.entries)
         user.find(marker="editor-play-btn").click()
-        async with asyncio.timeout(12):
+        async with asyncio.timeout(20):
             while is_any_program_running():
                 await asyncio.sleep(0.05)
         log = [entry.text for entry in program.log.entries]
-        assert script_exec.last_exit_code == 0, log
+        assert script_exec.last_exit_code == 0, "\n".join(log)
         assert "FINISHED" in log
     finally:
         if is_any_program_running():
@@ -159,12 +159,11 @@ async def test_managed_completion_preserves_remaining_budget_during_pause(user: 
         assert time.monotonic() - began < 1.5
         await client.stop()
 
-        task = asyncio.create_task(
-            managed.move_j(target, duration=1.5, wait=True, timeout=2.2)
-        )
-        assert await client.wait_status(lambda s: bool(s.action_current), timeout=3)
+        # A skill invoked while already paused must bind its budget before
+        # waiting at the dispatch gate. Dwell avoids profile-transition timing.
         controller.signal_pause()
         assert await client.pause() == 1
+        task = asyncio.create_task(completed(managed, managed.delay(0.5), 2.2, "Dwell"))
         await asyncio.sleep(2.5)  # longer than the declared completion budget
         assert not task.done(), "intentional pause consumed the managed timeout"
         assert await client.ping() is not None

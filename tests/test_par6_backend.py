@@ -117,6 +117,33 @@ async def test_commander_runs_on_the_par6_runtime(
         assert status.simulator_active, "par6d --sim should report simulator_active"
         assert len(status.joints.angles.deg) == robot.joints.count == 6
 
+        from par6.client import AsyncRobotClient
+        from waldo_commander.components.playback import playback
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            async with AsyncRobotClient(
+                host="127.0.0.1",
+                port=_free_udp_port(),
+                timeout=0.1,
+                status_transport="unicast",
+                status_port=occupied.getsockname()[1],
+            ) as unavailable:
+                with monkeypatch.context() as patch:
+                    patch.setattr(waldoctl.commander, "client", unavailable)
+                    patch.setattr(playback, "_uses_live_speed", lambda: True)
+                    await playback._refresh_execution_speed()
+                    assert playback._execution_speed is None
+                    assert (
+                        playback._speed_tooltip.text
+                        == "Execution speed readback unavailable"
+                    )
+        with monkeypatch.context() as patch:
+            patch.setattr(playback, "_uses_live_speed", lambda: True)
+            await playback._refresh_execution_speed()
+            assert playback._execution_speed is not None
+            assert "selected" in playback._speed_tooltip.text
+
         # The app sizes its IO buffer from the backend's pin counts and then
         # writes decoded frames straight in, so agreement here is what keeps
         # the status pipeline from throwing on every frame.
@@ -503,6 +530,7 @@ async def test_commander_runs_on_the_par6_runtime(
         finally:
             if script_exec.script_handle is not None:
                 await script_exec.stop()
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

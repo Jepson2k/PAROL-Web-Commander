@@ -201,12 +201,12 @@ class ScriptExecutionController:
             self._step_controller = GUIStepController(self._step_session_id)
             self._step_controller.initialize()
 
+            if launching_tab is not None:
+                launching_tab.execution.is_running = True
             if "execution.speed" in waldoctl.commander.client.skill_capabilities:
                 if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
                     raise TimeoutError("Controller resume was not confirmed")
 
-            if launching_tab is not None:
-                launching_tab.execution.is_running = True
             self.script_handle = await run_script(
                 script_config, on_stdout, on_stderr, session_id=self._step_session_id
             )
