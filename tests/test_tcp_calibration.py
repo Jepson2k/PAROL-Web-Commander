@@ -76,7 +76,7 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
             target = Pose.from_matrix(nominal @ old.matrix())
             await completed(await client.move_j(pose=target.as_list(), speed=0.7))
             user.find(marker="tcp-calibration-capture").click()
-            await user.should_see(f"{i + 1} samples")
+            await user.should_see(f"{i + 1} samples", retries=50)
         user.find(marker="tcp-calibration-solve").click()
         await user.should_see("Orientation is unchanged.")
         for key, wanted in zip(("x", "y", "z"), tip):
@@ -85,7 +85,9 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
             )
         element("tcp-calibration-reference").set_value("axes")
         user.find(marker="tcp-calibration-orientation").click()
-        await user.should_see("Orientation taught against axes; position is unchanged.")
+        await user.should_see(
+            "Orientation taught against axes; position is unchanged.", retries=50
+        )
         user.find(marker="tcp-calibration-set").click()
         await user.should_see("Calibration added to the setup; Save to persist it.")
         user.find(marker="setup-save").click()
@@ -101,7 +103,9 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
         )
 
         user.find(marker="tcp-calibration-apply").click()
-        await user.should_see("Controller confirmed the displayed TCP transform.")
+        await user.should_see(
+            "Controller confirmed the displayed TCP transform.", retries=50
+        )
         assert await client.tcp_transform() == pytest.approx(saved.values)
         actual = await client.pose()
         assert actual is not None
@@ -160,7 +164,9 @@ with RobotClient() as rbt:
             lambda: waldoctl.commander.status.tool.variant_key == "horizontal"
         ), "public tool status lost the controller variant"
         user.find(marker="tcp-calibration-apply").click()
-        await user.should_see("This calibration belongs to a different tool or variant")
+        await user.should_see(
+            "This calibration belongs to a different tool or variant", retries=50
+        )
         assert await client.tcp_transform() == pytest.approx([0] * 6)
     finally:
         await client.stop()

@@ -1,5 +1,6 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
+import asyncio
 import logging
 import math
 from typing import cast
@@ -116,6 +117,7 @@ class SettingsContent:
         self._cam_refresh_timer: ui.timer | None = None
         self._variant_container: ui.column | None = None
         self._tcp_offset_container: ui.column | None = None
+        self._tool_lock = asyncio.Lock()
         self._tcp_pushing = False
         self._tcp_push_next: tuple[str, dict, OffsetInputs, Client, int] | None = None
         # Bumped by every tool change. A push carries the epoch it was
@@ -244,26 +246,31 @@ class SettingsContent:
         )
 
         async def _on_variant_change(e):
-            vk = e.value
-            self._tool_epoch += 1
-            self._tcp_push_next = None
-            try:
-                index = await self.client.select_tool(tool_key, variant_key=vk or "")
-                if index < 0 or not await self.client.wait_command(index, timeout=5.0):
-                    raise TimeoutError("Tool variant change was not confirmed")
-            except Exception as exc:
-                logger.warning("Tool variant change failed: %s", exc)
-                ui.notify(f"Tool variant change failed: {exc}", color="negative")
-                return
-            ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
-            ng_app.storage.general[f"tcp_offset_{tool_key}"] = {
-                **dict.fromkeys(TCP_AXES, 0.0),
-                "variant_key": vk or "",
-            }
-            waldoctl.commander.status.tool.variant_key = vk or ""
-            self._apply_tool_scene(tool_key, variant_key=vk)
-            self._rebuild_tcp_offset(tool_key)
-            self._notify_and_resimulate()
+            async with self._tool_lock:
+                vk = e.value
+                self._tool_epoch += 1
+                self._tcp_push_next = None
+                try:
+                    index = await self.client.select_tool(
+                        tool_key, variant_key=vk or ""
+                    )
+                    if index < 0 or not await self.client.wait_command(
+                        index, timeout=5.0
+                    ):
+                        raise TimeoutError("Tool variant change was not confirmed")
+                except Exception as exc:
+                    logger.warning("Tool variant change failed: %s", exc)
+                    ui.notify(f"Tool variant change failed: {exc}", color="negative")
+                    return
+                ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
+                ng_app.storage.general[f"tcp_offset_{tool_key}"] = {
+                    **dict.fromkeys(TCP_AXES, 0.0),
+                    "variant_key": vk or "",
+                }
+                waldoctl.commander.status.tool.variant_key = vk or ""
+                self._apply_tool_scene(tool_key, variant_key=vk)
+                self._rebuild_tcp_offset(tool_key)
+                self._notify_and_resimulate()
 
         with self._variant_container:
             with _setting_row("Variant", "Tool configuration variant"):
@@ -322,7 +329,11 @@ class SettingsContent:
         if not disabled:
             background_tasks.create(
                 self._reconcile_tcp_offset(
-                    tool_key, inputs, page_client, tool_changed=tool_changed
+                    tool_key,
+                    inputs,
+                    page_client,
+                    tool_changed=tool_changed,
+                    epoch=self._tool_epoch,
                 ),
                 name="tcp-offset-reconcile",
             )
@@ -374,6 +385,19 @@ class SettingsContent:
         page_client: Client,
         epoch: int,
     ) -> None:
+        async with self._tool_lock:
+            await self._send_tcp_offset_locked(
+                tool_key, vals, inputs, page_client, epoch
+            )
+
+    async def _send_tcp_offset_locked(
+        self,
+        tool_key: str,
+        vals: dict,
+        inputs: OffsetInputs,
+        page_client: Client,
+        epoch: int,
+    ) -> None:
         if epoch != self._tool_epoch:
             return
         try:
@@ -406,6 +430,7 @@ class SettingsContent:
         page_client: Client,
         *,
         tool_changed: bool,
+        epoch: int,
     ) -> None:
         """Line the browser's remembered offset up with the controller's.
 
@@ -414,22 +439,27 @@ class SettingsContent:
         counts. The remembered offset is pushed only where the controller's
         cannot be: right after a tool change, which resets it, and on a
         controller reporting nothing that this app has never told."""
-        try:
-            back = await self._read_tcp()
-        except Exception as exc:
-            logger.debug("tcp_offset readback failed: %s", exc)
-            return
-        stored = self._get_tcp_offset(tool_key)
-        mine = [float(stored.get(k, 0) or 0) for k in TCP_AXES]
-        if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
-            return
-        never_told = tool_key not in _pushed_offset_tools and not any(
-            abs(b) > 1e-3 for b in back
-        )
-        if tool_changed or never_told:
-            await self._push_tcp_offset(tool_key, stored, inputs, page_client)
-        else:
-            await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+        async with self._tool_lock:
+            if epoch != self._tool_epoch:
+                return
+            try:
+                back = await self._read_tcp()
+            except Exception as exc:
+                logger.debug("tcp_offset readback failed: %s", exc)
+                return
+            stored = self._get_tcp_offset(tool_key)
+            mine = [float(stored.get(k, 0) or 0) for k in TCP_AXES]
+            if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
+                return
+            never_told = tool_key not in _pushed_offset_tools and not any(
+                abs(b) > 1e-3 for b in back
+            )
+            if tool_changed or never_told:
+                await self._send_tcp_offset_locked(
+                    tool_key, stored, inputs, page_client, epoch
+                )
+            else:
+                await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
 
     async def _adopt_tcp_offset(
         self,
@@ -579,26 +609,29 @@ class SettingsContent:
 
     def _build_tool_section(self) -> None:
         async def _on_tool_change(e):
-            tool = e.value
-            self._tool_epoch += 1
-            self._tcp_push_next = None
-            vk = self._get_variant_key(tool)
-            try:
-                index = await self.client.select_tool(tool, variant_key=vk or "")
-                if index < 0 or not await self.client.wait_command(index, timeout=5.0):
-                    raise TimeoutError("Tool change was not confirmed")
-            except Exception as exc:
-                logger.warning("select_tool(%s) failed: %s", tool, exc)
-                ui.notify(f"Tool change failed: {exc}", color="negative")
-                return
+            async with self._tool_lock:
+                tool = e.value
+                self._tool_epoch += 1
+                self._tcp_push_next = None
+                vk = self._get_variant_key(tool)
+                try:
+                    index = await self.client.select_tool(tool, variant_key=vk or "")
+                    if index < 0 or not await self.client.wait_command(
+                        index, timeout=5.0
+                    ):
+                        raise TimeoutError("Tool change was not confirmed")
+                except Exception as exc:
+                    logger.warning("select_tool(%s) failed: %s", tool, exc)
+                    ui.notify(f"Tool change failed: {exc}", color="negative")
+                    return
 
-            ng_app.storage.general["selected_tool"] = tool
-            waldoctl.commander.status.tool.variant_key = vk or ""
-            self._apply_tool_scene(tool, variant_key=vk)
-            self._apply_tool_camera(tool)
-            self._rebuild_variant_selector(tool)
-            self._rebuild_tcp_offset(tool, tool_changed=True)
-            self._notify_and_resimulate()
+                ng_app.storage.general["selected_tool"] = tool
+                waldoctl.commander.status.tool.variant_key = vk or ""
+                self._apply_tool_scene(tool, variant_key=vk)
+                self._apply_tool_camera(tool)
+                self._rebuild_variant_selector(tool)
+                self._rebuild_tcp_offset(tool, tool_changed=True)
+                self._notify_and_resimulate()
 
         tool_options = {}
         for tool in ui_state.active_robot.tools.available:
