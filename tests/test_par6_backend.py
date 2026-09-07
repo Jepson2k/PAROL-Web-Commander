@@ -427,19 +427,30 @@ async def test_commander_runs_on_the_par6_runtime(
         pick = Pose(tuple(await client.pose()))
         places = grid_poses(pick, rows=1, columns=2, pitch_x_mm=1, pitch_y_mm=0)
         progress = PatternProgress.for_poses(places)
+        expected_place = places[1].matrix()
+        expected_place[:3, 3] += 2 * expected_place[:3, 2]
+        expected_pose = np.asarray(Pose.from_matrix(expected_place).values)
+        expected_pose[:3] /= 1000
+        expected_pose[3:] = np.radians(expected_pose[3:])
+        expected_joints = robot.ik(expected_pose, np.radians(await client.angles()))
+        assert expected_joints.success, expected_joints
+        config_info = await client.config_info()
+        assert config_info is not None
+        tolerance = config_info["motion"]["settle_tolerance_rad"]
         await transfer.async_call(
             client, pick=pick, place=places[1], clearance_mm=2, speed=0.3
         )
-        expected_place = places[1].matrix()
-        expected_place[:3, 3] += 2 * expected_place[:3, 2]
+        # Native completion is a joint-space tolerance; a fixed sub-mm TCP
+        # assertion would promise accuracy the controller does not require.
+        # The preview workflow separately checks the exact planned clearance.
         await poll_until(
-            client.pose,
-            lambda pose: pose is not None
+            client.angles,
+            lambda angles: angles is not None
             and np.allclose(
-                Pose(tuple(pose)).matrix(), expected_place, atol=0.2, rtol=0
+                np.radians(angles), expected_joints.q, atol=tolerance, rtol=0
             ),
             timeout_s=5,
-            what=f"the simulated transfer TCP to settle at {Pose.from_matrix(expected_place).values}",
+            what=f"the final transfer joints to settle within {tolerance} rad of {expected_joints.q}",
         )
         assert await client.wait_status(
             lambda s: bool(s.tool_status.positions)
