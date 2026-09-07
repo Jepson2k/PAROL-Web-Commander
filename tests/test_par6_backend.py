@@ -241,6 +241,15 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         import numpy as np
         from par6 import config as par6_config
         from waldo_commander.skills import gripper_open, gripper_close, retract
+        from waldoctl.setup import Pose
+        from par6._par6 import pose_matrix
+
+        mixed = Pose((0, 0, 0, 37, 25, -28))
+        assert mixed.matrix() == pytest.approx(
+            np.asarray(
+                pose_matrix([0, 0, 0], np.radians(mixed.values[3:]).tolist())
+            ).reshape(4, 4)
+        ), "shared setup rotation must match PAR6's native pose conversion"
 
         client = waldoctl.commander.client
         park = np.degrees(par6_config.config().park_pose_rad()).tolist()
@@ -255,6 +264,11 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
                     break
         before = await client.pose()
         assert before is not None
+        native = await client.status()
+        assert native is not None
+        assert Pose(tuple(before)).matrix()[:3, :3] == pytest.approx(
+            np.asarray(native.pose).reshape(4, 4)[:3, :3], abs=0.01
+        ), "setup pose rotations must agree with the native PAR6 transform"
         await retract.async_call(client, distance_mm=10, speed=0.2)
         after = await client.pose()
         assert after is not None

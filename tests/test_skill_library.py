@@ -14,6 +14,7 @@ from nicegui import run
 from nicegui.testing import User
 from parol6.client.dry_run_client import DryRunRobotClient
 from parol6 import Robot
+from pinokin import se3_from_rpy
 from waldoctl.setup import Frame, Pose, PoseValues, SetupSnapshot
 from waldoctl.skills import MissingCapability
 
@@ -60,6 +61,13 @@ def test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions():
     assert not diagnostics
     approach(client, target=start, clearance_mm=2, speed=0.5)
     assert len(client.segment_collector) == 2
+    native_transform = np.empty((4, 4))
+    se3_from_rpy(*start.values[:3], *np.radians(start.values[3:]), native_transform)
+    assert np.asarray(
+        client.segment_collector[0]["points"][-1]
+    ) * 1000 == pytest.approx(
+        native_transform[:3, 3] + 2 * native_transform[:3, 2], abs=0.1
+    ), "approach clearance must follow native tool Z, including mixed rotations"
     assert pose_of(client).matrix() == pytest.approx(start.matrix(), abs=0.1)
 
     setup = SetupSnapshot(
