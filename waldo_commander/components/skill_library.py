@@ -13,6 +13,7 @@ from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.tools import ToolType
+from waldoctl.signals import DigitalSignal
 
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
 from waldo_commander.setup import SetupStore
@@ -228,7 +229,7 @@ class SkillLibraryPanel(Panel):
                         if parameter.default is not inspect.Parameter.empty
                         else None
                     )
-                    if annotation in (Pose, SetupSnapshot):
+                    if annotation in (Pose, SetupSnapshot, DigitalSignal):
                         store = SetupStore()
                         names = store.names()
                         setup = (
@@ -248,21 +249,27 @@ class SkillLibraryPanel(Panel):
                             )
                             setup.on_value_change(refresh_source)
                         else:
+                            resource = "pose" if annotation is Pose else "signal"
                             pose = (
-                                ui.select([], label=f"{name}: pose")
+                                ui.select([], label=f"{name}: {resource}")
                                 .props("dense")
                                 .classes("w-full")
-                                .mark(f"skill-{name}-pose")
+                                .mark(f"skill-{name}-{resource}")
                             )
 
                             def set_poses(
                                 setup_widget=setup,
                                 pose_widget=pose,
                                 selected_store=store,
+                                kind=annotation,
                             ):
                                 try:
                                     snapshot = selected_store.load(setup_widget.value)
-                                    options = list(snapshot.poses)
+                                    options = list(
+                                        snapshot.poses
+                                        if kind is Pose
+                                        else snapshot.signals
+                                    )
                                     pose_widget.set_options(
                                         options, value=options[0] if options else None
                                     )
@@ -275,9 +282,12 @@ class SkillLibraryPanel(Panel):
                             readers[name] = (
                                 lambda s=setup,
                                 p=pose,
-                                selected_store=store: selected_store.load(
-                                    s.value
-                                ).resolve(p.value)
+                                selected_store=store,
+                                kind=annotation: selected_store.load(s.value).resolve(
+                                    p.value
+                                )
+                                if kind is Pose
+                                else selected_store.load(s.value).signals[p.value]
                             )
                             set_poses()
                     elif annotation is bool or isinstance(default, bool):
