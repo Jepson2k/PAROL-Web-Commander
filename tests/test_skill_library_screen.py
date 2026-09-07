@@ -2,6 +2,7 @@
 
 from nicegui import Client
 import pytest
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.action_chains import ActionChains
@@ -77,7 +78,9 @@ def test_skill_library_form_keeps_actions_visible(screen, tmp_path, monkeypatch)
     ActionChains(screen.selenium).move_to_element(
         screen.selenium.find_element(By.TAG_NAME, "body")
     ).perform()
-    WebDriverWait(screen.selenium, 10).until(
+    WebDriverWait(
+        screen.selenium, 10, ignored_exceptions=(StaleElementReferenceException,)
+    ).until(
         lambda driver: not any(
             e.is_displayed()
             for e in driver.find_elements(By.CSS_SELECTOR, ".q-tooltip")
