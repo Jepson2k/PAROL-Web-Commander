@@ -1412,17 +1412,19 @@ class TestScriptExecutionLifecycle:
         se.script_exec.set_program_dir(tmp_path)
         captured = {}
         run_script = se.run_script
+        expand = se.log_panel.expand
 
         async def capture(*args, **kwargs):
             handle = await run_script(*args, **kwargs)
             captured["handle"] = handle
+            monkeypatch.setattr(se.log_panel, "expand", fail_expand)
             return handle
 
         def fail_expand():
+            monkeypatch.setattr(se.log_panel, "expand", expand)
             raise RuntimeError("test: UI failed after subprocess started")
 
         monkeypatch.setattr(se, "run_script", capture)
-        monkeypatch.setattr(se.log_panel, "expand", fail_expand)
         try:
             await se.script_exec.start()
             assert "handle" in captured, "subprocess never started"
