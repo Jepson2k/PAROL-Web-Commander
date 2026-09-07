@@ -67,6 +67,11 @@ async def test_teach_saved_fixture_preview_and_execute_same_named_pose(
     assert index >= 0 and await client.wait_command(index, timeout=20)
     current = await client.pose()
     assert current is not None
+    native = await client.status()
+    assert native is not None
+    assert Pose(cast(PoseValues, tuple(current))).matrix() == pytest.approx(
+        np.asarray(native.pose).reshape(4, 4), abs=0.01
+    ), "setup poses must use the native robot's orientation convention"
 
     def element(marker):
         return next(iter(user.find(marker=marker).elements))

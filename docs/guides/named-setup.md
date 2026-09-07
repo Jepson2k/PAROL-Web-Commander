@@ -6,8 +6,9 @@ or use **Use current TCP** to capture the current tool pose. In the Poses tab,
 choose a frame and capture or enter a pose in that frame. Use **Set** to update
 the working snapshot and **Save** to persist it under a name.
 
-Translations use millimetres; angles use degrees, with extrinsic XYZ
-(`Rz(yaw) · Ry(pitch) · Rx(roll)`). A frame's parent can be WRF or another saved
+Translations use millimetres; angles use degrees, with intrinsic XYZ
+(`Rx(roll) · Ry(pitch) · Rz(yaw)`), matching the robot clients' numeric poses.
+Shape definitions have their own documented rotation convention. A frame's parent can be WRF or another saved
 frame. Cycles, missing parents and non-finite values are rejected. TRF remains
 the existing native relative-motion frame and cannot be a static setup frame.
 
