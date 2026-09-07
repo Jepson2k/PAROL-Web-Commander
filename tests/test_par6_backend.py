@@ -424,13 +424,30 @@ async def test_commander_runs_on_the_par6_runtime(
         )
         try:
             await script_exec.start()
-            assert await client.wait_status(
-                lambda s: s.executing_index > 0
-                and s.action_state == waldoctl.ActionState.EXECUTING,
-                timeout=15,
+            program = waldoctl.commander.programs.active
+            handle = script_exec.script_handle
+            assert program is not None and handle is not None
+            await poll_until(
+                client.queue_state,
+                lambda q: q is not None and q.executing_index >= 0,
+                timeout_s=25,
+                what=lambda: "native program start; log="
+                + "\n".join(entry.text for entry in program.log.entries),
             )
+            # The command lasts longer than one wait_command polling window.
+            # A timeout must not emit a completed step or advance the program.
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(12):
+                    while not program.dry_run.playback.executing_step_at_end:
+                        await asyncio.sleep(0.05)
+            assert handle["proc"].returncode is None
             await script_exec.stop()
-            assert await client.wait_status(lambda s: s.executing_index < 0, timeout=3)
+            await poll_until(
+                client.queue_state,
+                lambda q: q is not None and q.executing_index < 0,
+                timeout_s=3,
+                what="the stopped native queue",
+            )
             index = await client.delay(0.01)
             assert await client.wait_command(index, timeout=3), (
                 "Stop must clear the previous program's native queue"
