@@ -10,6 +10,7 @@ import asyncio
 import builtins
 import linecache
 import logging
+import multiprocessing
 import os
 import sys
 import threading
@@ -565,23 +566,27 @@ class _PhysicsPool:
 
     def _ensure(self) -> ProcessPoolExecutor:
         if self._pool is None:
-            self._pool = ProcessPoolExecutor(max_workers=1)
+            self._pool = ProcessPoolExecutor(
+                max_workers=1,
+                mp_context=multiprocessing.get_context("spawn"),
+                max_tasks_per_child=1,
+            )
         return self._pool
 
     async def run(self, fn: Callable, args: tuple) -> Any:
         """Run *fn*, abandoning whatever was running before it."""
         self.cancel()
         loop = asyncio.get_running_loop()
-        if _is_test_environment():
-            # A spawn worker cannot beat a test's timeout from cold, and
-            # a test's pool is rebuilt per test anyway. Still tracked, so
-            # `cancel` is not a silent no-op here.
-            future = asyncio.ensure_future(asyncio.to_thread(fn, args))
-        else:
-            future = loop.run_in_executor(self._ensure(), fn, args)
+        future = loop.run_in_executor(self._ensure(), fn, args)
         self._current = future
         try:
             return await future
+        except asyncio.CancelledError:
+            # wait_for() cancels the caller before its timeout handler can
+            # run; the worker must be terminated while we still own it.
+            if self._current is future:
+                self.cancel()
+            raise
         finally:
             if self._current is future:
                 self._current = None
@@ -594,7 +599,7 @@ class _PhysicsPool:
         with it.
         """
         current, self._current = self._current, None
-        if current is None or current.done():
+        if current is None:
             return
         current.cancel()
         pool, self._pool = self._pool, None
