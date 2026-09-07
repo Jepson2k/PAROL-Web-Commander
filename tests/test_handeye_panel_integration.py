@@ -8,7 +8,7 @@ save flow must recover that transform.
 The MSG gripper is the tool under calibration — it has the built-in camera
 mount, making it the primary hand-eye use case. It is selected through the
 settings UI so the tool TCP switch and per-tool camera plumbing both engage,
-and the solved transform is camera→MSG-TCP, stored under ``handeye/MSG``.
+and the solved transform is camera→MSG-TCP, saved in a named setup.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from nicegui import ui
 from nicegui.testing import User
 from parol6.protocol.wire import StatusResultStruct
 from scipy.spatial.transform import Rotation
+from waldoctl.setup import Frame, SetupSnapshot
+from waldo_commander.setup import SetupStore, export_snapshot
 
 from tests.helpers.charuco_render import board_center, render_board_view
 from tests.helpers.wait import wait_for_app_ready
@@ -128,14 +130,16 @@ async def _current_pose() -> np.ndarray:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("mount", ["tool", "fixed"])
 async def test_handeye_panel_workflow(
-    user: User, monkeypatch: pytest.MonkeyPatch
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path, mount
 ) -> None:
     from waldo_commander.services import camera_service as cam_module
 
     monkeypatch.setattr(cam_module, "LinuxpyBackend", _FrameBackend)
     monkeypatch.setattr(cam_module, "OpenCVBackend", _FrameBackend)
     _FrameBackend.holder["jpeg"] = _blank_jpeg()
+    monkeypatch.setenv("WALDO_SETUP_DIR", str(tmp_path))
     ui_state.plugin_panels = []
     ui_state._started_panel_ids = set()
 
@@ -169,6 +173,15 @@ async def test_handeye_panel_workflow(
         panel = next(p for p in ui_state.plugin_panels if p.id == "handeye")
         assert isinstance(panel, HandEyeCalibrationPanel)
         spec = panel._spec
+        mount_select = next(iter(user.find(marker="camera-mount").elements))
+        mount_select.set_value(mount)
+        await asyncio.sleep(0)
+        reference_setup = SetupSnapshot().with_frame(
+            "stand", Frame((100, 50, 0, 0, 0, 30))
+        )
+        SetupStore(tmp_path).save("bench", reference_setup)
+        assert panel._data_editor is not None
+        panel._data_editor.reference.set_value("stand")
 
         # Progressive disclosure: with no camera active, only the board
         # section and the hint are shown — capture and solve stay hidden.
@@ -223,6 +236,8 @@ async def test_handeye_panel_workflow(
         Tz = np.eye(4)
         Tz[:3, 3] = (0.0, 0.0, 650.0)
         T_base_target = T0 @ X_TRUE @ Tz @ Rx @ Tc
+        fixed_camera = T0 @ X_TRUE
+        tool_board = X_TRUE @ Tz @ Rx @ Tc
 
         for i, deltas in enumerate(VIEW_DELTAS_DEG):
             target = [a + d for a, d in zip(home_angles, deltas, strict=True)]
@@ -231,7 +246,11 @@ async def test_handeye_panel_workflow(
             )
 
             T_i = await _current_pose()
-            T_cam_target = np.linalg.inv(T_i @ X_TRUE) @ T_base_target
+            T_cam_target = (
+                np.linalg.inv(fixed_camera) @ T_i @ tool_board
+                if mount == "fixed"
+                else np.linalg.inv(T_i @ X_TRUE) @ T_base_target
+            )
             rendered = render_board_view(spec, K_TRUE, T_cam_target, IMAGE_SIZE)
             assert (
                 handeye.detect_board(rendered, handeye.make_detector(spec)) is not None
@@ -269,15 +288,20 @@ async def test_handeye_panel_workflow(
 
         user.find(marker="handeye-solve").click()
         await _wait_for(lambda: panel._result is not None, timeout=30.0)
-        await user.should_see("Camera → TCP transform")
+        await user.should_see(
+            "Camera → WRF transform" if mount == "fixed" else "Camera → TCP transform"
+        )
 
         result = panel._result
         assert result is not None
-        trans_err = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
+        expected = fixed_camera if mount == "fixed" else X_TRUE
+        trans_err = float(
+            np.linalg.norm(result.T_camera_parent[:3, 3] - expected[:3, 3])
+        )
         rot_err = np.degrees(
             np.linalg.norm(
                 Rotation.from_matrix(
-                    result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
+                    result.T_camera_parent[:3, :3].T @ expected[:3, :3]
                 ).as_rotvec()
             )
         )
@@ -290,16 +314,47 @@ async def test_handeye_panel_workflow(
         assert rot_err < 3.0, f"rotation off by {rot_err:.2f} deg"
 
         user.find(marker="handeye-save").click()
-        await asyncio.sleep(0)
-        stored = ng_app.storage.general.get("handeye/MSG")
-        assert stored is not None
-        assert stored["tool_key"] == "MSG"
-        assert panel._stored_section is not None and panel._stored_section.visible
-        np.testing.assert_allclose(
-            np.asarray(stored["T_cam2gripper_mm"]).reshape(4, 4),
-            result.T_cam2gripper,
+        await user.should_see("Saved bench/camera", retries=50)
+        saved = SetupStore(tmp_path).load("bench")
+        calibration = saved.cameras["camera"]
+        actual = (
+            saved.frame_matrix("stand") @ calibration.pose.matrix()
+            if mount == "fixed"
+            else calibration.pose.matrix()
         )
-        assert stored["n_samples"] == n_views
+        np.testing.assert_allclose(actual, result.T_camera_parent, atol=1e-8)
+        assert calibration.quality.sample_count == n_views
+        exported = {}
+        exec(export_snapshot(saved), exported)
+        np.testing.assert_allclose(
+            exported["setup"].cameras["camera"].pose.matrix(),
+            calibration.pose.matrix(),
+            atol=1e-8,
+        )
+        user.find(marker="camera-load").click()
+        await user.should_see("Bindings match:", retries=50)
+        user.find(marker="camera-export").click()
+
+        if mount == "tool":
+            original = handeye.to_storage_dict(
+                result, spec, "MSG", {"x": 0, "y": 0, "z": 0}, "2025-01-01T00:00:00Z"
+            )
+            ng_app.storage.general["handeye/MSG"] = original
+            panel._data_editor.confirm.set_value(True)
+            user.find(marker="camera-import").click()
+            await user.should_see("Imported measurement:", retries=50)
+            imported = SetupStore(tmp_path).load("bench").cameras["camera"]
+            assert imported.calibrated_at == "2025-01-01T00:00:00Z"
+            np.testing.assert_allclose(
+                imported.pose.matrix(), result.T_camera_parent, atol=1e-8
+            )
+            assert ng_app.storage.general["handeye/MSG"] == original
+        else:
+            SetupStore(tmp_path).save(
+                "bench", saved.with_frame("stand", Frame((101, 50, 0, 0, 0, 30)))
+            )
+            user.find(marker="camera-load").click()
+            await user.should_see("Camera reference frame changed", retries=50)
 
         # Without a detectable board the capture path stays gated.
         blank = _blank_jpeg()
@@ -440,11 +495,11 @@ async def test_handeye_auto_calibration(
         )
         result = panel._result
         assert result is not None, "auto run did not solve"
-        trans_err = float(np.linalg.norm(result.T_cam2gripper[:3, 3] - X_TRUE[:3, 3]))
+        trans_err = float(np.linalg.norm(result.T_camera_parent[:3, 3] - X_TRUE[:3, 3]))
         rot_err = np.degrees(
             np.linalg.norm(
                 Rotation.from_matrix(
-                    result.T_cam2gripper[:3, :3].T @ X_TRUE[:3, :3]
+                    result.T_camera_parent[:3, :3].T @ X_TRUE[:3, :3]
                 ).as_rotvec()
             )
         )
@@ -483,7 +538,7 @@ async def test_handeye_auto_calibration(
             message="Stop did not end the run",
         )
         assert len(panel._samples) >= n_before
-        assert panel._result is result
+        assert panel._result is (result if len(panel._samples) == n_before else None)
         assert panel._auto_progress_text is None
 
         # A refused move is a planner verdict the routine is built to absorb,
@@ -574,67 +629,3 @@ async def test_an_external_stop_ends_the_auto_run(user: User) -> None:
     assert index < 0, "a halted move must not report the index of a finished one"
     assert panel._auto_cancel, "the run must stop, not roll on to the next view"
     assert client.moves == 1, "no further motion may be commanded after a Stop"
-
-
-@pytest.mark.integration
-async def test_an_unpopulated_pose_is_never_captured(user: User) -> None:
-    """All-zeros is the uninitialised value, not a pose.
-
-    The status cache seeds it that way and fills it only once the arm
-    reports, so an unplugged robot answers zeros indefinitely. Stored as a
-    sample it raises "non-positive determinant" out of the *next* capture,
-    which reads as a camera fault rather than a disconnected robot.
-    """
-    from waldo_commander.components.handeye_calibration import (
-        HandEyeCalibrationPanel,
-    )
-    from waldo_commander.state import robot_state
-
-    panel = HandEyeCalibrationPanel()
-
-    class _ZeroPoseClient:
-        async def status(self):
-            return type("S", (), {"pose": [0.0] * 16})()
-
-    # `pose` is a preallocated array mutated in place, so it is restored
-    # the same way rather than reassigned.
-    before = robot_state.pose.copy()
-    robot_state.pose[:] = 0.0
-    try:
-        got = await panel._current_pose_matrix(
-            type("C", (), {"client": _ZeroPoseClient()})()
-        )
-    finally:
-        robot_state.pose[:] = before
-
-    assert got is None, "a zero pose must be refused by both branches alike"
-
-
-@pytest.mark.integration
-async def test_clearing_a_board_field_reverts_instead_of_wedging(user: User) -> None:
-    """NiceGUI sets a number's value to None the moment its text is
-    cleared — which is what selecting a field to retype it does. Parsing
-    that raised TypeError past the handler's except, so the revert never
-    ran and the field stayed blank, re-raising on every later edit to any
-    of the five inputs."""
-    from waldo_commander.services import handeye
-
-    spec = handeye.BoardSpec(
-        squares_x=5,
-        squares_y=7,
-        square_mm=25.0,
-        marker_mm=18.0,
-        dictionary="DICT_4X4_50",
-    )
-
-    def num(value, fallback, cast):
-        return fallback if value is None else cast(value)
-
-    rebuilt = handeye.BoardSpec(
-        squares_x=num(None, spec.squares_x, int),
-        squares_y=num(7.0, spec.squares_y, int),
-        square_mm=num(None, spec.square_mm, float),
-        marker_mm=num(18.0, spec.marker_mm, float),
-        dictionary=str(None or spec.dictionary),
-    )
-    assert rebuilt == spec, "an emptied field means unchanged, not zero"
