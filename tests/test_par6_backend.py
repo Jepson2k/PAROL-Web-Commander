@@ -86,7 +86,9 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @requires_par6
 @pytest.mark.integration
-async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) -> None:
+async def test_commander_runs_on_the_par6_runtime(
+    par6_env: None, user: User, monkeypatch
+) -> None:
     """The app boots on par6 and its status pipeline carries live runtime data.
 
     ``start_controller`` finds nothing at the target port, so par6's Robot
@@ -360,6 +362,82 @@ async def test_commander_runs_on_the_par6_runtime(par6_env: None, user: User) ->
         applied = Pose(tuple(pose)).matrix()
         assert local[:3, 3] == pytest.approx(applied[:3, 3], abs=0.1)
         assert local[:3, :3] == pytest.approx(applied[:3, :3], abs=0.003)
+
+        from dataclasses import replace
+        from tests.test_vision import localization_scene
+        from tests.test_handeye_panel_integration import _FrameBackend, _jpeg
+        from waldo_commander.services import camera_service as camera_module
+        from waldo_commander.camera_sources import CommanderCameraSource
+        from waldo_commander.services.camera_session import CameraSession
+        from waldo_commander.services.tcp_calibration import observe_tcp
+        from waldo_commander.skills import locate_board
+        from waldoctl.setup import TcpCalibration
+
+        monkeypatch.setattr(camera_module, "LinuxpyBackend", _FrameBackend)
+        monkeypatch.setattr(camera_module, "OpenCVBackend", _FrameBackend)
+        camera = camera_module.camera_service
+        calibration, setup, image, expected = localization_scene()
+        _FrameBackend.holder["jpeg"] = _jpeg(image)
+        session = CameraSession(camera.next_snapshot)
+        try:
+            camera.start(0)
+            observation = await observe_tcp(client)
+            tool = TcpCalibration(
+                observation.applied,
+                observation.binding.tool_key,
+                observation.binding.variant_key,
+            )
+            tcp_wrf = observation.nominal_tool.matrix() @ tool.matrix()
+            calibration = replace(
+                calibration,
+                camera_id=camera.camera_id,
+                backend="par6",
+                mount="tool",
+                pose=Pose.from_matrix(
+                    np.linalg.inv(tcp_wrf) @ calibration.pose.matrix(), frame="TCP"
+                ),
+                tool=tool,
+                reference_wrf=None,
+            )
+            env = await session.start()
+            source = CommanderCameraSource(
+                env["WALDO_CAMERA_ENDPOINT"], env["WALDO_CAMERA_TOKEN"]
+            )
+            localized = await locate_board.async_call(
+                client, calibration, source, setup, timeout_s=3
+            )
+            assert localized.outcome == "found", localized
+            assert localized.pose.matrix()[:3, 3] == pytest.approx(
+                expected[:3, 3], abs=2
+            )
+        finally:
+            await session.close()
+            camera.stop()
+
+        from waldo_commander.components.script_execution import script_exec
+
+        user.find(marker="tab-program").click()
+        await asyncio.sleep(0)
+        ui_state.active_textarea.value = (
+            "from par6 import RobotClient\nwith RobotClient() as rbt:\n"
+            "    index = rbt.delay(60)\n    rbt.wait_command(index, timeout=90)\n"
+        )
+        try:
+            await script_exec.start()
+            assert await client.wait_status(
+                lambda s: s.executing_index > 0
+                and s.action_state == waldoctl.ActionState.EXECUTING,
+                timeout=15,
+            )
+            await script_exec.stop()
+            assert await client.wait_status(lambda s: s.executing_index < 0, timeout=3)
+            index = await client.delay(0.01)
+            assert await client.wait_command(index, timeout=3), (
+                "Stop must clear the previous program's native queue"
+            )
+        finally:
+            if script_exec.script_handle is not None:
+                await script_exec.stop()
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)
