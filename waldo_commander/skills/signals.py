@@ -113,10 +113,15 @@ async def wait_signal(
             now = time.monotonic()
             if (
                 observation is not None
-                and now >= deadline
+                and remaining < observation_timeout
                 and now - last_receipt < observation_timeout
             ):
-                return SignalWaitResult("timeout", observation, now - start)
+                # Event-loop timers can expire a clock tick early (notably
+                # on Windows). Classify by the requested final read budget.
+                await asyncio.sleep(max(0.0, deadline - now))
+                return SignalWaitResult(
+                    "timeout", observation, time.monotonic() - start
+                )
             raise
         last_receipt = time.monotonic()
         if observation.value == value:
