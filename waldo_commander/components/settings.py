@@ -1,7 +1,8 @@
 """Settings component for serial port, theme, and visualization preferences."""
 
-import asyncio
 import logging
+import math
+from typing import cast
 from collections.abc import Callable
 from contextlib import contextmanager
 
@@ -11,6 +12,7 @@ from nicegui.client import ClientConnectionTimeout
 
 import waldoctl
 from waldoctl import EnvelopeMode, Panel, RobotClient, iter_plugin_panels
+from waldoctl.setup import PoseValues, TcpCalibration
 
 from waldo_commander.components.simulation_engine import simulation
 from waldo_commander.constants import RESERVED_TAB_IDS
@@ -36,7 +38,44 @@ ADOPT_CONNECT_TIMEOUT_S = 5.0
 _pushed_offset_tools: set[str] = set()
 
 # The X/Y/Z inputs of one tool's TCP offset row.
-OffsetInputs = tuple[ui.number, ui.number, ui.number]
+OffsetInputs = tuple[ui.number, ...]
+TCP_AXES = ("x", "y", "z", "roll", "pitch", "yaw")
+
+
+def adopt_applied_tcp(calibration: TcpCalibration) -> None:
+    """Publish a confirmed controller transform to storage and local kinematics."""
+    values = dict(zip(TCP_AXES, calibration.values))
+    ng_app.storage.general[f"tcp_offset_{calibration.tool_key}"] = {
+        **values,
+        "variant_key": calibration.variant_key,
+    }
+    ng_app.storage.general["selected_tool"] = calibration.tool_key
+    ng_app.storage.general[f"tool_variant_{calibration.tool_key}"] = (
+        calibration.variant_key
+    )
+    _pushed_offset_tools.add(calibration.tool_key)
+    robot = ui_state.active_robot
+    kwargs = (
+        {"tcp_rotation_rad": tuple(math.radians(v) for v in calibration.values[3:])}
+        if robot.has_tcp_transform
+        else {}
+    )
+    robot.set_active_tool(
+        calibration.tool_key,
+        tcp_offset_m=tuple(v / 1000 for v in calibration.values[:3]),
+        variant_key=calibration.variant_key or None,
+        **kwargs,
+    )
+    if ui_state.urdf_scene:
+        ui_state.urdf_scene.apply_tool(
+            calibration.tool_key, variant_key=calibration.variant_key or None
+        )
+        ui_state.urdf_scene.refresh_tcp_ball()
+    simulation_state.notify_changed()
+    try:
+        simulation.schedule_debounced_simulation()
+    except RuntimeError:
+        pass
 
 
 def get_available_serial_ports() -> list[str]:
@@ -141,9 +180,11 @@ class SettingsContent:
 
     def _get_tcp_offset(self, tool_key: str) -> dict:
         """Get stored TCP offset for a tool (mm)."""
-        return ng_app.storage.general.get(
-            f"tcp_offset_{tool_key}", {"x": 0, "y": 0, "z": 0}
-        )
+        stored = ng_app.storage.general.get(f"tcp_offset_{tool_key}", {})
+        variant = self._get_variant_key(tool_key) or ""
+        if stored.get("variant_key", variant) != variant:
+            return {axis: 0.0 for axis in TCP_AXES}
+        return {axis: stored.get(axis, 0.0) for axis in TCP_AXES}
 
     def _tcp_offset_m(self, tool_key: str) -> tuple[float, float, float] | None:
         """Get stored TCP offset in meters, or None if zero."""
@@ -167,6 +208,16 @@ class SettingsContent:
             tool_key,
             tcp_offset_m=self._tcp_offset_m(tool_key),
             variant_key=variant_key,
+            **(
+                {
+                    "tcp_rotation_rad": tuple(
+                        math.radians(float(self._get_tcp_offset(tool_key).get(k, 0)))
+                        for k in TCP_AXES[3:]
+                    )
+                }
+                if ui_state.active_robot.has_tcp_transform
+                else {}
+            ),
         )
         if ui_state.urdf_scene:
             ui_state.urdf_scene.apply_tool(tool_key, variant_key=variant_key)
@@ -194,9 +245,24 @@ class SettingsContent:
 
         async def _on_variant_change(e):
             vk = e.value
+            self._tool_epoch += 1
+            self._tcp_push_next = None
+            try:
+                index = await self.client.select_tool(tool_key, variant_key=vk or "")
+                if index < 0 or not await self.client.wait_command(index, timeout=5.0):
+                    raise TimeoutError("Tool variant change was not confirmed")
+            except Exception as exc:
+                logger.warning("Tool variant change failed: %s", exc)
+                ui.notify(f"Tool variant change failed: {exc}", color="negative")
+                return
             ng_app.storage.general[f"tool_variant_{tool_key}"] = vk
+            ng_app.storage.general[f"tcp_offset_{tool_key}"] = {
+                **dict.fromkeys(TCP_AXES, 0.0),
+                "variant_key": vk or "",
+            }
             waldoctl.commander.status.tool.variant_key = vk or ""
             self._apply_tool_scene(tool_key, variant_key=vk)
+            self._rebuild_tcp_offset(tool_key)
             self._notify_and_resimulate()
 
         with self._variant_container:
@@ -215,58 +281,48 @@ class SettingsContent:
                     sel.props("disable")
 
     def _rebuild_tcp_offset(self, tool_key: str, *, tool_changed: bool = False) -> None:
-        """Rebuild per-tool TCP offset inputs."""
         assert self._tcp_offset_container is not None
         self._tcp_offset_container.clear()
-        is_none = tool_key == "NONE"
-        offset = (
-            self._get_tcp_offset(tool_key) if not is_none else {"x": 0, "y": 0, "z": 0}
-        )
+        full = ui_state.active_robot.has_tcp_transform
+        disabled = tool_key == "NONE" and not full
+        offset = self._get_tcp_offset(tool_key)
+        axes = TCP_AXES if full else TCP_AXES[:3]
         page_client = context.client
+        inputs: OffsetInputs = ()
 
         async def _on_offset_change(_e=None):
-            vals = {
-                "x": x_input.value or 0,
-                "y": y_input.value or 0,
-                "z": z_input.value or 0,
-            }
-            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
-            vk = self._get_variant_key(tool_key)
-            self._apply_tool_scene(tool_key, variant_key=vk)
-            self._notify_and_resimulate()
-            await self._push_tcp_offset(
-                tool_key, vals, (x_input, y_input, z_input), page_client
-            )
-
-        def _axis_input(axis: str) -> ui.number:
-            return (
-                ui.number(label=axis.upper(), value=offset.get(axis, 0), step=0.5)
-                .style("width: 48px;")
-                .props("dense borderless" + (" disable" if is_none else ""))
-                # Trailing edge only: typing "125" is three edits, and each
-                # one on its own would reach the controller.
-                .on(
-                    "update:model-value",
-                    _on_offset_change,
-                    throttle=TCP_EDIT_THROTTLE_S,
-                    leading_events=False,
-                )
-                .mark(f"tcp-offset-{axis}")
-            )
+            if any(item.value is None for item in inputs):
+                return
+            vals = {axis: item.value for axis, item in zip(axes, inputs)}
+            await self._push_tcp_offset(tool_key, vals, inputs, page_client)
 
         with self._tcp_offset_container:
-            with _setting_row("TCP Offset", "Offset from default TCP (mm)"):
-                with ui.row().classes("gap-1"):
-                    x_input = _axis_input("x")
-                    y_input = _axis_input("y")
-                    z_input = _axis_input("z")
-        if not is_none:
+            with _setting_row(
+                "TCP Offset",
+                "Tool-local mm / intrinsic XYZ degrees"
+                if full
+                else "Offset from default TCP (mm)",
+            ):
+                with ui.grid(columns=3).classes("gap-1"):
+                    inputs = tuple(
+                        ui.number(
+                            label=axis.upper(), value=offset.get(axis, 0), step=0.5
+                        )
+                        .classes("w-16")
+                        .props("dense borderless" + (" disable" if disabled else ""))
+                        .on(
+                            "update:model-value",
+                            _on_offset_change,
+                            throttle=TCP_EDIT_THROTTLE_S,
+                            leading_events=False,
+                        )
+                        .mark(f"tcp-offset-{axis}")
+                        for axis in axes
+                    )
+        if not disabled:
             background_tasks.create(
                 self._reconcile_tcp_offset(
-                    tool_key,
-                    (x_input, y_input, z_input),
-                    page_client,
-                    tool_changed=tool_changed,
+                    tool_key, inputs, page_client, tool_changed=tool_changed
                 ),
                 name="tcp-offset-reconcile",
             )
@@ -303,6 +359,13 @@ class SettingsContent:
         finally:
             self._tcp_pushing = False
 
+    async def _read_tcp(self) -> list[float]:
+        if ui_state.active_robot.has_tcp_transform:
+            values = await self.client.tcp_transform()
+        else:
+            values = [*(await self.client.tcp_offset()), 0.0, 0.0, 0.0]
+        return list(TcpCalibration(cast(PoseValues, tuple(values)), "readback").values)
+
     async def _send_tcp_offset(
         self,
         tool_key: str,
@@ -311,37 +374,30 @@ class SettingsContent:
         page_client: Client,
         epoch: int,
     ) -> None:
-        """Set the offset and adopt what the controller reports back, so the
-        GUI's TCP is the one the controller plans with."""
         if epoch != self._tool_epoch:
-            # The tool changed while this edit was queued. The controller
-            # zeroed its offset for the new tool; sending the old tool's
-            # number now would silently restore it.
             return
-        x, y, z = (float(vals.get(k, 0) or 0) for k in ("x", "y", "z"))
-        back: list[float] = []
         try:
-            # The return is a bare confirmation on both backends (1 applied,
-            # 0 unconfirmed), not a queue slot to wait on, so the readback is
-            # what says the controller took the value. A backend may answer
-            # the query a tick behind the set, hence the poll.
-            await self.client.set_tcp_offset(x, y, z)
-            _pushed_offset_tools.add(tool_key)
-            for _ in range(10):
-                back = [float(b) for b in await self.client.tcp_offset()]
-                if all(abs(b - v) <= 1e-3 for b, v in zip(back, (x, y, z))):
-                    return
-                await asyncio.sleep(0.1)
+            values = cast(PoseValues, tuple(float(vals.get(k, 0)) for k in TCP_AXES))
+            calibration = TcpCalibration(
+                values, tool_key, self._get_variant_key(tool_key) or ""
+            )
+            if ui_state.active_robot.has_tcp_transform:
+                from waldo_commander.services.tcp_calibration import (
+                    apply_tcp_calibration,
+                )
+
+                await apply_tcp_calibration(self.client, calibration)
+            else:
+                index = await self.client.set_tcp_offset(*values[:3])
+                if index < 0 or not await self.client.wait_command(index, timeout=15.0):
+                    raise TimeoutError("TCP offset application was not confirmed")
+            back = await self._read_tcp()
+            if epoch != self._tool_epoch:
+                return
+            await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
         except Exception as exc:
-            logger.warning("set_tcp_offset(%s, %s, %s) failed: %s", x, y, z, exc)
-            self._notify(page_client, f"TCP offset not applied: {exc}", "negative")
-            return
-        self._notify(
-            page_client,
-            f"Controller reports TCP offset {[round(float(b), 2) for b in back]}",
-            "warning",
-        )
-        await self._adopt_tcp_offset(tool_key, back, inputs, page_client)
+            logger.warning("TCP transform was not applied: %s", exc)
+            self._notify(page_client, f"TCP transform not applied: {exc}", "negative")
 
     async def _reconcile_tcp_offset(
         self,
@@ -359,12 +415,12 @@ class SettingsContent:
         cannot be: right after a tool change, which resets it, and on a
         controller reporting nothing that this app has never told."""
         try:
-            back = [float(v) for v in await self.client.tcp_offset()]
+            back = await self._read_tcp()
         except Exception as exc:
             logger.debug("tcp_offset readback failed: %s", exc)
             return
         stored = self._get_tcp_offset(tool_key)
-        mine = [float(stored.get(k, 0) or 0) for k in ("x", "y", "z")]
+        mine = [float(stored.get(k, 0) or 0) for k in TCP_AXES]
         if all(abs(b - m) <= 1e-3 for b, m in zip(back, mine)):
             return
         never_told = tool_key not in _pushed_offset_tools and not any(
@@ -382,12 +438,11 @@ class SettingsContent:
         inputs: OffsetInputs,
         page_client: Client,
     ) -> None:
-        vals = {
-            "x": float(offset_mm[0]),
-            "y": float(offset_mm[1]),
-            "z": float(offset_mm[2]),
-        }
-        ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
+        values = cast(PoseValues, tuple(float(v) for v in offset_mm))
+        calibration = TcpCalibration(
+            values, tool_key, self._get_variant_key(tool_key) or ""
+        )
+        adopt_applied_tcp(calibration)
         if not page_client.has_socket_connection:
             # The reconcile that adopts an out-of-band offset is started
             # while the page is still being built, so its socket is often
@@ -399,7 +454,7 @@ class SettingsContent:
             except ClientConnectionTimeout:
                 return
         with page_client:
-            for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
+            for inp, v in zip(inputs, values):
                 if inp.value != v:
                     inp.set_value(v)
             self._apply_tool_scene(
@@ -530,8 +585,8 @@ class SettingsContent:
             vk = self._get_variant_key(tool)
             try:
                 index = await self.client.select_tool(tool, variant_key=vk or "")
-                if isinstance(index, int) and index >= 0:
-                    await self.client.wait_command(index, timeout=5.0)
+                if index < 0 or not await self.client.wait_command(index, timeout=5.0):
+                    raise TimeoutError("Tool change was not confirmed")
             except Exception as exc:
                 logger.warning("select_tool(%s) failed: %s", tool, exc)
                 ui.notify(f"Tool change failed: {exc}", color="negative")

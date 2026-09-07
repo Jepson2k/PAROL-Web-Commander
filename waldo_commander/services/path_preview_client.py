@@ -789,7 +789,7 @@ class PathPreviewClient:
             return set_tool_wrapper
 
         # Intercept set_tcp_offset — flush blend since it changes kinematics
-        if name == "set_tcp_offset":
+        if name in {"set_tcp_offset", "set_tcp_transform"}:
             self._flush_blend()
             return getattr(self._client, name)
 

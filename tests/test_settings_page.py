@@ -205,7 +205,7 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
 
 @pytest.mark.integration
 async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
-    """Test that TCP offset inputs appear for non-NONE tools and hide for NONE."""
+    """TCP correction is available for fitted tools and the bare flange."""
     await user.open("/")
     await wait_for_app_ready()
 
@@ -229,12 +229,11 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
         "a fitted tool's offset is editable"
     )
 
-    # NONE — offset inputs should still be visible, and refuse edits: there
-    # is no tool to offset from.
+    # The bare flange can also carry a user-defined TCP.
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5.0)
-    assert await wait_until(offset_x_disabled), (
-        "with no tool fitted the offset must not be editable"
+    assert await wait_until(lambda: not offset_x_disabled()), (
+        "the bare flange must support a TCP correction"
     )
 
 

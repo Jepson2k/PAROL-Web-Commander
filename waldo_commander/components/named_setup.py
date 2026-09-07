@@ -10,6 +10,7 @@ from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 
 from waldo_commander.setup import SetupStore, export_snapshot
+from waldo_commander.components.tcp_calibration import TcpCalibrationEditor
 from waldo_commander.services.python_source import insert_prelude
 
 
@@ -44,6 +45,12 @@ class NamedSetupPanel(Panel):
             pose_existing.set_options(list(snapshot.poses), value=None)
             parameter_existing.set_options(list(snapshot.parameters), value=None)
             summary.refresh()
+            tcp_editor.refresh()
+
+        def set_snapshot(updated: SetupSnapshot) -> None:
+            nonlocal snapshot
+            snapshot = updated
+            refresh()
 
         def load() -> None:
             nonlocal snapshot
@@ -101,7 +108,7 @@ class NamedSetupPanel(Panel):
             ui.download(export_snapshot(snapshot).encode("utf-8"), "setup_snapshot.py")
             inform("Exported the current fixed snapshot")
 
-        with ui.column().classes("w-full"):
+        with ui.column().classes("w-full h-full min-h-0 flex-nowrap"):
             with ui.row().classes("w-full items-center"):
                 setup_name = (
                     ui.input("Setup name", value="bench")
@@ -138,10 +145,11 @@ class NamedSetupPanel(Panel):
                 .mark("setup-status")
             )
 
-            with ui.tabs().classes("w-full") as tabs:
+            with ui.tabs().classes("w-full shrink-0") as tabs:
                 frames_tab = ui.tab("Frames")
                 poses_tab = ui.tab("Poses")
                 params_tab = ui.tab("Parameters")
+                tcp_tab = ui.tab("TCP")
 
             def coordinates(prefix: str) -> list[ui.number]:
                 with ui.grid(columns=3).classes("w-full"):
@@ -273,7 +281,9 @@ class NamedSetupPanel(Panel):
                 )
                 parameter_unit.set_value(entry.unit)
 
-            with ui.tab_panels(tabs, value=frames_tab).classes("w-full"):
+            with ui.tab_panels(tabs, value=frames_tab).classes(
+                "w-full flex-1 min-h-0 overflow-y-auto"
+            ):
                 with ui.tab_panel(frames_tab).classes("p-0"):
                     frame_existing = (
                         ui.select(
@@ -391,6 +401,11 @@ class NamedSetupPanel(Panel):
                             icon="delete",
                             on_click=lambda: remove("parameters", parameter_name.value),
                         ).props("dense flat").tooltip("Remove parameter")
+
+                with ui.tab_panel(tcp_tab).classes("p-0"):
+                    tcp_editor = TcpCalibrationEditor(
+                        commander, lambda: snapshot, set_snapshot
+                    )
 
             @ui.refreshable
             def summary() -> None:
