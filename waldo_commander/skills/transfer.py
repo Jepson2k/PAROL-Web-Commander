@@ -10,9 +10,9 @@ from waldoctl.setup import Pose
 from waldoctl.signals import DigitalSignal
 from waldoctl.skills import report_progress, skill
 
-from waldo_commander.skills._motion import validate_motion
+from waldo_commander.skills._motion import completed, validate_motion
 from waldo_commander.skills.gripper import _gripper, gripper_close, gripper_open
-from waldo_commander.skills.motion import approach, retract
+from waldo_commander.skills.motion import approach
 from waldo_commander.skills.signals import SignalFixture, read_signal, write_signal
 
 
@@ -40,22 +40,32 @@ async def _transfer(
     speed: float,
     timeout: float,
 ) -> int:
+    async def withdraw(target: Pose) -> int:
+        # Anchor withdrawal to the declared target; a completion policy's
+        # remaining tracking error must not shift the next tray clearance.
+        clearance = target.matrix()
+        clearance[:3, 3] += clearance[:3, 2] * clearance_mm
+        return await completed(
+            rbt,
+            await rbt.move_l(
+                Pose.from_matrix(clearance).as_list(), speed=speed, wait=False
+            ),
+            timeout,
+            "Transfer withdrawal",
+        )
+
     report_progress("Approaching pickup", fraction=0.0)
     await approach.async_call(
         rbt, target=pick, clearance_mm=clearance_mm, speed=speed, timeout=timeout
     )
     await acquire()
-    await retract.async_call(
-        rbt, distance_mm=clearance_mm, speed=speed, timeout=timeout
-    )
+    await withdraw(pick)
     report_progress("Transferring to placement", fraction=0.5)
     await approach.async_call(
         rbt, target=place, clearance_mm=clearance_mm, speed=speed, timeout=timeout
     )
     await release()
-    index = await retract.async_call(
-        rbt, distance_mm=clearance_mm, speed=speed, timeout=timeout
-    )
+    index = await withdraw(place)
     report_progress(
         "Transfer commands completed; no grasp or placement observation inferred",
         fraction=1.0,
@@ -80,8 +90,9 @@ async def transfer(
     """Approach, close, retract, approach, open, retract with the selected gripper.
 
     Begin with an empty, open tool. Clearance is positive tool Z at each
-    target. Every leg uses native planning/collision checks. The returned
-    index confirms the final command, not a sensed grasp or successful place.
+    declared target, including withdrawal. Every leg uses native
+    planning/collision checks. The returned index confirms the final command,
+    not a sensed grasp or successful place.
     A failed or cancelled sequence makes no automatic recovery move.
     """
     _validate(pick, place, clearance_mm, speed, timeout)

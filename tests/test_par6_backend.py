@@ -439,7 +439,7 @@ async def test_commander_runs_on_the_par6_runtime(
                 Pose(tuple(pose)).matrix(), expected_place, atol=0.2, rtol=0
             ),
             timeout_s=5,
-            what="the simulated transfer TCP to settle at its final clearance",
+            what=f"the simulated transfer TCP to settle at {Pose.from_matrix(expected_place).values}",
         )
         assert await client.wait_status(
             lambda s: bool(s.tool_status.positions)
