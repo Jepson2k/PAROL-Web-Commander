@@ -131,4 +131,20 @@ def generate_completions_from_commands() -> list[CompletionItem]:
         }
         completions.append(completion)
 
+    from waldoctl.skills import discover_skills
+
+    for candidate in discover_skills().values():
+        name = getattr(candidate.function, "__name__", None)
+        if not isinstance(name, str):
+            continue
+        completions.append(
+            {
+                "label": name,
+                "detail": str(inspect.signature(candidate.function)),
+                "info": f"{candidate.spec.id} · Import from {candidate.function.__module__}. {inspect.getdoc(candidate.function) or ''}",
+                "apply": name,
+                "type": "function",
+            }
+        )
+
     return completions
