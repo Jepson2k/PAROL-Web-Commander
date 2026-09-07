@@ -87,7 +87,7 @@ def par6_env(monkeypatch: pytest.MonkeyPatch) -> None:
 @requires_par6
 @pytest.mark.integration
 async def test_commander_runs_on_the_par6_runtime(
-    par6_env: None, user: User, monkeypatch
+    par6_env: None, user: User, monkeypatch, tmp_path
 ) -> None:
     """The app boots on par6 and its status pipeline carries live runtime data.
 
@@ -413,6 +413,43 @@ async def test_commander_runs_on_the_par6_runtime(
         finally:
             await session.close()
             camera.stop()
+
+        from waldo_commander.patterns import (
+            PatternProgress,
+            grid_poses,
+            load_progress,
+            save_progress,
+        )
+        from waldo_commander.skills import transfer
+
+        index = await client.move_j([0, -60, 150, 0, 45, 180], speed=0.3)
+        assert await client.wait_command(index, timeout=15)
+        pick = Pose(tuple(await client.pose()))
+        places = grid_poses(pick, rows=1, columns=2, pitch_x_mm=1, pitch_y_mm=0)
+        progress = PatternProgress.for_poses(places)
+        await transfer.async_call(
+            client, pick=pick, place=places[1], clearance_mm=2, speed=0.3
+        )
+        expected_place = places[1].matrix()
+        expected_place[:3, 3] += 2 * expected_place[:3, 2]
+        await poll_until(
+            client.pose,
+            lambda pose: pose is not None
+            and np.allclose(
+                Pose(tuple(pose)).matrix(), expected_place, atol=0.2, rtol=0
+            ),
+            timeout_s=5,
+            what="the simulated transfer TCP to settle at its final clearance",
+        )
+        assert await client.wait_status(
+            lambda s: bool(s.tool_status.positions)
+            and s.tool_status.positions[0] < 0.1,
+            timeout=3,
+        )
+        progress = progress.mark(1)
+        path = tmp_path / "tray-progress.json"
+        assert save_progress(path, progress, client=client)
+        assert load_progress(path, places).pending() == (0,)
 
         from waldo_commander.components.script_execution import script_exec
 
