@@ -277,8 +277,8 @@ class TestSteppingClientWrapper:
 
         result = wrapper.move_j([0, 0, 0, 0, 0, 0])
 
-        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0])
-        mock_client.wait_command.assert_called_once_with(42)
+        mock_client.move_j.assert_called_once_with([0, 0, 0, 0, 0, 0], wait=False)
+        mock_client.wait_command.assert_called_once_with(42, timeout=0.1)
         assert result == 42
 
         # Verify events were emitted
@@ -339,7 +339,7 @@ class TestSteppingClientWrapper:
         result = wrapper.move_j([0, 0, 0, 0, 0, 0], r=15, wait=False)
         assert result == 7
         assert mock_client.move_j.call_args.kwargs["r"] == 0.0
-        mock_client.wait_command.assert_called_with(7)
+        mock_client.wait_command.assert_called_with(7, timeout=0.1)
 
         controller.signal_step()
         wrapper.move_j([1, 1, 1, 1, 1, 1], r=15, wait=False)

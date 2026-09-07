@@ -1,0 +1,250 @@
+"""Managed completion waits use active time; backend transport stays live."""
+
+import asyncio
+import time
+from typing import cast
+from uuid import uuid4
+
+import pytest
+import waldoctl
+from nicegui.testing import User
+from waldoctl.skills import SkillError
+
+from tests.helpers.wait import (
+    enable_sim,
+    ensure_robot_ready_for_motion,
+    wait_for_app_ready,
+)
+from waldo_commander.services.stepping_client import (
+    AsyncSteppingClientWrapper,
+    GUIStepController,
+    StepIO,
+)
+from waldo_commander.skills._motion import completed
+
+
+def test_step_ack_cannot_erase_a_newer_pause(monkeypatch):
+    controller = GUIStepController(uuid4().hex)
+    controller.initialize()
+    step_io = StepIO(controller.session_id)
+    acknowledge = step_io._ack_step
+
+    def concurrent_pause(control, signal):
+        controller.signal_pause()
+        acknowledge(control, signal)
+
+    monkeypatch.setattr(step_io, "_ack_step", concurrent_pause)
+    try:
+        controller.signal_step()
+        step_io.wait_for_step_or_play()
+        assert step_io.hold_requested(), "step acknowledgement overwrote the GUI pause"
+    finally:
+        controller.cleanup()
+
+
+@pytest.mark.integration
+async def test_editor_pause_holds_native_motion_and_managed_program(user: User):
+    from waldo_commander.components.playback import playback
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.components.simulation_engine import simulation
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 8
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        f"    rbt.move_j({target!r}, duration=2, timeout=5)\n"
+        "    print('FIRST', flush=True)\n"
+        "    rbt.delay(0.1)\n"
+        "    print('FINISHED', flush=True)\n"
+    )
+    program = waldoctl.commander.programs.active
+    assert program is not None
+    program.source = ui_state.active_textarea.value
+    await simulation.run_simulation()
+    assert program.dry_run.path_segments
+    assert playback._ensure_timeline() is not None
+    slider = next(iter(user.find(marker="editor-scrub-slider").elements))
+    try:
+        user.find(marker="editor-speed-double").click()
+        await asyncio.sleep(0)
+        assert program.dry_run.playback.playback_speed == 2
+        assert (await client.execution_speed()).resume_scale == 1
+        await script_exec.start()
+        assert await client.wait_status(
+            lambda s: s.angles[0] > start[0] + 0.5, timeout=10
+        )
+        user.find(marker="editor-play-btn").click()
+        async with asyncio.timeout(3):
+            while program.dry_run.playback.is_playing:
+                await asyncio.sleep(0.02)
+        assert (await client.execution_speed()).target_scale == 0, (
+            "editor Pause did not reach the controller"
+        )
+        user.find(marker="editor-speed-half").click()
+        async with asyncio.timeout(3):
+            while (await client.execution_speed()).resume_scale != 0.5:
+                await asyncio.sleep(0.02)
+        assert (await client.execution_speed()).target_scale == 0
+        assert program.dry_run.playback.playback_speed == 2
+        async with asyncio.timeout(3):
+            while not (await client.execution_speed()).paused:
+                await asyncio.sleep(0.02)
+        await playback._refresh_execution_speed()
+        held_progress = slider.value
+        await asyncio.sleep(2.5)
+        assert slider.value == pytest.approx(held_progress, abs=0.03), (
+            "editor progress continued through a paused motion"
+        )
+        assert is_any_program_running()
+        assert not any(entry.text == "FIRST" for entry in program.log.entries)
+        user.find(marker="editor-play-btn").click()
+        async with asyncio.timeout(12):
+            while is_any_program_running():
+                await asyncio.sleep(0.05)
+        log = [entry.text for entry in program.log.entries]
+        assert script_exec.last_exit_code == 0, log
+        assert "FINISHED" in log
+    finally:
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.resume()
+        await client.set_execution_speed(1)
+
+
+@pytest.mark.integration
+async def test_managed_completion_preserves_remaining_budget_during_pause(user: User):
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    controller = GUIStepController(uuid4().hex)
+    controller.initialize()
+    controller.signal_play()
+    managed = cast(
+        waldoctl.RobotClient,
+        AsyncSteppingClientWrapper(client, StepIO(controller.session_id)),
+    )
+    task = None
+    try:
+        # An explicit command deadline must cover the wrapper's completion
+        # barrier, including when the native call uses wait=False.
+        start = await client.angles()
+        assert start is not None
+        target = list(start)
+        target[0] += 4
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            await managed.move_j(target, duration=2, wait=False, timeout=0.2)
+        assert time.monotonic() - began < 1.5
+        await client.stop()
+
+        # A blend's final barrier must retain each queued command's budget.
+        wrapper = cast(AsyncSteppingClientWrapper, managed)
+        began = time.monotonic()
+        await managed.move_j(target, duration=2, r=1, timeout=0.2)
+        with pytest.raises(TimeoutError):
+            await wrapper.finalize()
+        assert time.monotonic() - began < 1.5
+        await client.stop()
+
+        task = asyncio.create_task(
+            managed.move_j(target, duration=1.5, wait=True, timeout=2.2)
+        )
+        assert await client.wait_status(lambda s: bool(s.action_current), timeout=3)
+        controller.signal_pause()
+        assert await client.pause() == 1
+        await asyncio.sleep(2.5)  # longer than the declared completion budget
+        assert not task.done(), "intentional pause consumed the managed timeout"
+        assert await client.ping() is not None
+        assert await client.resume() == 1
+        controller.signal_play()
+        assert await asyncio.wait_for(task, 5) >= 0
+
+        # The skill budget includes dispatch through the stepping wrapper.
+        began = time.monotonic()
+        with pytest.raises(SkillError, match="completion"):
+            await completed(managed, managed.delay(2), 0.2, "Dwell")
+        assert time.monotonic() - began < 1.5
+
+        # A paused completion wait must still notice a controller fault.
+        task = asyncio.create_task(managed.delay(10))
+        assert await client.wait_status(lambda s: bool(s.action_current), timeout=3)
+        controller.signal_pause()
+        assert await client.pause() == 1
+        await client.estop()
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(task, 3)
+    finally:
+        controller.signal_play()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await client.stop()
+        await client.reset()
+        await client.resume()
+        controller.cleanup()
+
+
+@pytest.mark.integration
+async def test_step_watcher_failure_stops_the_program_and_native_queue(
+    user: User, monkeypatch, caplog
+):
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "from parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        "    rbt.delay(20)\n"
+        "    print('UNEXPECTED CONTINUATION', flush=True)\n"
+    )
+    handle = None
+    try:
+        await script_exec.start()
+        handle = script_exec.script_handle
+        assert handle is not None
+        assert await waldoctl.commander.client.wait_status(
+            lambda s: bool(s.action_current), timeout=10
+        )
+
+        def unreadable_events(_client):
+            raise OSError("test: event channel became unreadable")
+
+        monkeypatch.setattr(script_exec, "_consume_script_events", unreadable_events)
+        async with asyncio.timeout(5):
+            while is_any_program_running():
+                await asyncio.sleep(0.02)
+        assert handle["proc"].returncode is not None, "watcher left the program running"
+        assert await waldoctl.commander.client.queue() == []
+        assert await waldoctl.commander.client.wait_status(
+            lambda s: not s.action_current, timeout=3
+        )
+        expected = "Error in event watcher: test: event channel became unreadable"
+        records = caplog.get_records("call")
+        assert any(r.getMessage() == expected for r in records)
+        records[:] = [r for r in records if r.getMessage() != expected]
+    finally:
+        if handle is not None and handle["proc"].returncode is None:
+            from waldo_commander.services.script_runner import stop_script
+
+            await stop_script(handle)
+        await waldoctl.commander.client.stop()
+        script_exec._reset_state()

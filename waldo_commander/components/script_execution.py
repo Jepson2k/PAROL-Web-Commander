@@ -63,6 +63,7 @@ class ScriptExecutionController:
         # Exit code of the most recently finished run (None while running or
         # before any run) — lets execution.wait_active report success/crash.
         self.last_exit_code: int | None = None
+        self._execution_control_lock = asyncio.Lock()
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher bound to this page.
@@ -200,6 +201,10 @@ class ScriptExecutionController:
             self._step_controller = GUIStepController(self._step_session_id)
             self._step_controller.initialize()
 
+            if "execution.speed" in waldoctl.commander.client.skill_capabilities:
+                if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                    raise TimeoutError("Controller resume was not confirmed")
+
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
             self.script_handle = await run_script(
@@ -279,20 +284,34 @@ class ScriptExecutionController:
 
     # ---- Public step-controller actions (called from playback UI handlers) ----
 
-    def signal_play(self) -> None:
+    async def signal_play(self) -> None:
         """Resume a paused script subprocess (no-op if no script is stepping)."""
-        if self._step_controller:
-            self._step_controller.signal_play()
+        async with self._execution_control_lock:
+            if self._step_controller:
+                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
+                    if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                        raise TimeoutError("Controller resume was not confirmed")
+                self._step_controller.signal_play()
 
-    def signal_pause(self) -> None:
+    async def signal_pause(self) -> None:
         """Pause a running script subprocess (no-op if no script is stepping)."""
-        if self._step_controller:
-            self._step_controller.signal_pause()
+        async with self._execution_control_lock:
+            if self._step_controller:
+                self._step_controller.signal_pause()
+                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
+                    if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
+                        raise TimeoutError(
+                            "Script held, but controller pause was not confirmed"
+                        )
 
-    def signal_step(self) -> None:
+    async def signal_step(self) -> None:
         """Step a paused script forward by one command (no-op if not stepping)."""
-        if self._step_controller:
-            self._step_controller.signal_step()
+        async with self._execution_control_lock:
+            if self._step_controller:
+                if "execution.speed" in waldoctl.commander.client.skill_capabilities:
+                    if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
+                        raise TimeoutError("Controller resume was not confirmed")
+                self._step_controller.signal_step()
 
     # ---- Internals ----
 
@@ -336,6 +355,20 @@ class ScriptExecutionController:
         try:
             while is_any_program_running() and self._step_controller:
                 self._consume_script_events(ui_client)
+                async with self._execution_control_lock:
+                    if (
+                        self._step_controller
+                        and self._step_controller.waiting_for_step()
+                    ):
+                        self._step_controller.signal_pause()
+                        if (
+                            "execution.speed"
+                            in waldoctl.commander.client.skill_capabilities
+                        ):
+                            if await waldoctl.commander.client.pause(timeout=3.0) <= 0:
+                                raise TimeoutError(
+                                    "Step completed, but controller pause was not confirmed"
+                                )
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             logger.debug("Event watcher task cancelled")
@@ -344,16 +377,16 @@ class ScriptExecutionController:
             logger.error("Error in event watcher: %s", e)
             watcher_crashed = True
         finally:
-            # If the watcher died unexpectedly while the script is still flagged
-            # as running, fire a stop edge so playback unstalls instead of waiting
-            # for the subprocess-completion monitor to notice.
             if watcher_crashed and is_any_program_running():
                 with ui_client:
-                    running_tab = self._launching_program()
-                    if running_tab is not None:
-                        running_tab.execution.is_running = False
-                        running_tab.dry_run.playback.is_playing = False
-                    simulation_state.notify_changed()
+                    # Losing managed control cannot leave an untracked process
+                    # feeding the motion queue. stop() reaps it before clearing state.
+                    try:
+                        await self.stop()
+                    except Exception:
+                        logger.exception(
+                            "Controller stop after event watcher failure was unconfirmed"
+                        )
 
     async def _monitor_script_completion(
         self,
@@ -397,7 +430,11 @@ class ScriptExecutionController:
         """Cancel the event watcher task without touching step IPC state.
         Used by per-page cleanup so the subprocess can keep stepping while
         no page is connected."""
-        if self._event_watcher_task and not self._event_watcher_task.done():
+        if (
+            self._event_watcher_task
+            and not self._event_watcher_task.done()
+            and self._event_watcher_task is not asyncio.current_task()
+        ):
             self._event_watcher_task.cancel()
         self._event_watcher_task = None
 
