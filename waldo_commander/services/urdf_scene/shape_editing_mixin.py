@@ -228,10 +228,7 @@ class ShapeEditingMixin:
                     dialog.close()
                     return
                 try:
-                    params = {}
-                    for p in param_names:
-                        v = float(dim_in[p].value)
-                        params[p] = v / 1000
+                    params = {p: float(dim_in[p].value) / 1000 for p in param_names}
                     margin_v = margin_in.value
                     new = cls(
                         name=str(name_in.value).strip() or name0,

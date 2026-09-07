@@ -66,7 +66,7 @@ _Y_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 def _shape_render_pose(s) -> tuple[tuple[float, float, float], list[list[float]]]:
     """World position + rotation matrix for a shape's scene object.
 
-    Corrects the Y-up axis for cylinder/capsule/cone, so what is drawn is
+    Corrects the Y-up axis for cylinder/capsule/cone so what is drawn is
     what the checker enforces.
     """
     R_pose = np.array(
