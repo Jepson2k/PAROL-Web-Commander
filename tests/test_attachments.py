@@ -90,7 +90,10 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
 
     try:
         assert await client.set_shapes([marker, part]) == 1
-        await handle.refresh_from_backend()
+        async with asyncio.timeout(5):
+            while "shape:part" not in scene._shape_objects:
+                await handle.refresh_from_backend()
+                await asyncio.sleep(0)
         with scene.scene:
             scene._show_attachment_dialog("part")
         for axis, value in zip(("x", "y", "z"), (0, 0, 250), strict=True):
