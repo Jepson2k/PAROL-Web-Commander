@@ -274,6 +274,9 @@ def debugging_export(path: Path) -> bytes:
             "pause",
             "resume",
             "step",
+            "restart_selected",
+            "entry_started",
+            "entry_returned",
         } and not re.fullmatch(
             r"(?:skill|command)_(?:started|progress|completed|returned|failed|cancelled|unconfirmed|wait_failed)",
             kind,
