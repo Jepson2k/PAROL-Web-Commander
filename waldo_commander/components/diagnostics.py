@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 _JOINT_COLORS = ["#4fc3f7", "#81c784", "#ffb74d", "#e57373", "#ba68c8", "#fff176"]
 
+#: Back-off bounds for the boot-constants query \[s\]. A backend that is
+#: reachable but not yet answering is the normal case this waits out; the
+#: ceiling is what stops a permanently mute one being asked forever at the
+#: status rate.
+_CONSTANTS_RETRY_MIN_S = 2.0
+_CONSTANTS_RETRY_MAX_S = 30.0
+
 
 def _ms(seconds: float) -> str:
     return f"{seconds * 1000.0:.2f} ms"
@@ -47,6 +54,8 @@ class DiagnosticsPage:
         self._chart: ui.echart | None = None
         self._target_hz = 0.0
         self._constants_asked = False
+        self._constants_retry_at = 0.0
+        self._constants_backoff_s = _CONSTANTS_RETRY_MIN_S
         self._chart_pushed_at = 0.0
 
     # ---- build ----
@@ -218,9 +227,15 @@ class DiagnosticsPage:
         rather than awaited under that context."""
         if not self._is_open():
             return
-        if not self._constants_asked:
+        if not self._constants_asked and time.monotonic() >= self._constants_retry_at:
             self._constants_asked = True
-            background_tasks.create(self._ask_constants(), name="diagnostics-constants")
+            # Lazy, so a slow query cannot be started a second time beside
+            # itself; the back-off below is what keeps the retry rate sane,
+            # because a lazily queued coroutine fires the moment the running
+            # one finishes.
+            background_tasks.create_lazy(
+                self._ask_constants(), name="diagnostics-constants"
+            )
         self._update_loop()
         self._update_drives()
         self.update_chart()
@@ -231,14 +246,17 @@ class DiagnosticsPage:
         try:
             stats = await self.client.loop_stats()
         except NotImplementedError:
+            # A backend that does not implement it never will; asking again
+            # is asking the same question of the same code.
             return
         except Exception as exc:
             logger.debug("loop_stats failed: %s", exc)
-            self._constants_asked = False
+            self._retry_constants_later()
             return
         if stats is None:
-            self._constants_asked = False
+            self._retry_constants_later()
             return
+        self._constants_backoff_s = _CONSTANTS_RETRY_MIN_S
         self._target_hz = stats.target_hz
         fifo = stats.rt_fifo
         pinned = stats.rt_pinned
@@ -248,6 +266,19 @@ class DiagnosticsPage:
         if self._rt_pinned is not None:
             self._rt_pinned.text = "pinned" if pinned else "not pinned"
             self._rt_pinned.props(f"color={'green-7' if pinned else 'grey-7'}")
+
+    def _retry_constants_later(self) -> None:
+        """Re-arm the boot-constants query, backing off as it keeps failing.
+
+        Clearing the latch alone re-fired the query on the very next status
+        tick, so a backend that answered nothing was queried at the status
+        rate for as long as the tab stayed open.
+        """
+        self._constants_asked = False
+        self._constants_retry_at = time.monotonic() + self._constants_backoff_s
+        self._constants_backoff_s = min(
+            self._constants_backoff_s * 2, _CONSTANTS_RETRY_MAX_S
+        )
 
     def _set(self, marker: str, text: str) -> None:
         label = self._values.get(marker)
