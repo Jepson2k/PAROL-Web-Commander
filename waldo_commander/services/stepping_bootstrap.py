@@ -147,19 +147,32 @@ def main() -> None:
         sys.exit(1)
 
     # Drop our bootstrap script from argv so the user script sees correct args.
-    sys.argv = [str(script_path)] + sys.argv[2:]
+    origin = os.environ.get("WALDO_PROGRAM_ORIGIN") or str(script_path)
+    project = os.environ.get("WALDO_PROJECT_ROOT")
+    if project:
+        sys.path.insert(0, str(Path(project) / "programs"))
+        sys.path.insert(0, str(Path(origin).parent))
+    sys.argv = [origin] + sys.argv[2:]
 
     script_globals = {
         "__name__": "__main__",
-        "__file__": str(script_path),
+        "__file__": origin,
         "__builtins__": __builtins__,
     }
 
     script_code = script_path.read_text(encoding="utf-8")
+    import linecache
+
+    linecache.cache[origin] = (
+        len(script_code),
+        None,
+        script_code.splitlines(keepends=True),
+        origin,
+    )
 
     try:
         # Compile with the script's filename for proper tracebacks.
-        code = compile(script_code, str(script_path), "exec")
+        code = compile(script_code, origin, "exec")
         from waldo_commander.setup import observe_setup_loads
 
         def record_setup(name, snapshot):
@@ -182,7 +195,7 @@ def main() -> None:
                 from waldo_commander.services.supervised_restart import execute_entry
 
                 step_io.emit_event("entry_started", entry)
-                execute_entry(script_code, str(script_path), entry)
+                execute_entry(script_code, origin, entry)
                 step_io.emit_event("entry_returned", entry)
             else:
                 exec(code, script_globals)

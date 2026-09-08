@@ -205,10 +205,15 @@ def load_demonstration(path: str | Path) -> Demonstration:
         data = source.read(MAX_RECORDING_BYTES + 1)
     if len(data) > MAX_RECORDING_BYTES:
         raise ValueError("Recording exceeds the portable file size limit")
+    return demonstration_from_dict(json.loads(data))
+
+
+def demonstration_from_dict(document: dict) -> Demonstration:
+    """Validate observations from a decoded portable recording document."""
     try:
-        raw = json.loads(data)
-        if not isinstance(raw, dict):
+        if not isinstance(document, dict):
             raise ValueError("Missing recording schema")
+        raw = dict(document)
         schema = raw.pop("schema", None)
         if type(schema) is not int or schema != 1:
             raise ValueError("Unsupported recording schema")
@@ -217,6 +222,7 @@ def load_demonstration(path: str | Path) -> Demonstration:
             raise ValueError("Invalid recording sample list")
         samples = []
         for row in rows:
+            row = dict(row)
             tool = row.pop("tool")
             samples.append(
                 RecordedSample(

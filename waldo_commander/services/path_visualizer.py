@@ -245,6 +245,7 @@ def _run_simulation_isolated(
     simulate_seconds: float | None = None,
     attachment_epoch: int = 0,
     scenario: dict[str, Any] | None = None,
+    program_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Run dry-run simulation in isolated subprocess.
@@ -468,7 +469,7 @@ def _run_simulation_isolated(
 
         sim_globals = {
             "__name__": "__main__",
-            "__file__": "simulation_script.py",
+            "__file__": program_path or "simulation_script.py",
             "__builtins__": builtins.__dict__.copy(),
             "print": lambda *args, **kwargs: None,
             "time": mock_time,  # Scripts may use time.sleep() without importing it.
@@ -493,8 +494,12 @@ def _run_simulation_isolated(
             code = compile(program_text, "simulation_script.py", "exec")
 
             from waldo_commander.setup import using_setup_directory
+            from waldo_commander.project import find_project, isolated_project
 
-            with using_setup_directory(setup_directory):
+            with (
+                using_setup_directory(setup_directory),
+                isolated_project(find_project(program_path), program_path),
+            ):
                 exec(code, sim_globals)
 
         except UnresolvedPreview as e:
@@ -751,6 +756,8 @@ class PathVisualizer:
         program_text: str,
         robot: Any,
         simulate_seconds: float | None = None,
+        *,
+        program_path: str | None = None,
     ) -> tuple | None:
         """Everything a preview worker needs, or None when this backend
         cannot preview at all.
@@ -801,6 +808,9 @@ class PathVisualizer:
         initial_homed = robot_state.homed
 
         from waldo_commander.setup import SetupStore
+        from waldo_commander.project import find_project
+
+        project = find_project(program_path)
 
         return (
             program_text,
@@ -812,9 +822,11 @@ class PathVisualizer:
             shapes_wire,
             initial_tool,
             initial_homed,
-            str(SetupStore().directory),
+            str(SetupStore(project / "setups" if project else None).directory),
             simulate_seconds,
             scene_handle.attachment_epoch if scene_handle is not None else 0,
+            None,
+            program_path,
         )
 
     async def update_path_visualization(
@@ -859,7 +871,16 @@ class PathVisualizer:
                     targets_before,
                 )
 
-            sim_args = self._simulation_args(program_text, ui_state.active_robot)
+            origin = (
+                waldoctl.commander.programs.get(tab_id)
+                if tab_id
+                else waldoctl.commander.programs.active
+            )
+            sim_args = self._simulation_args(
+                program_text,
+                ui_state.active_robot,
+                program_path=origin.file_path if origin else None,
+            )
             if sim_args is None:
                 simulation_state.notify_changed()
                 return None

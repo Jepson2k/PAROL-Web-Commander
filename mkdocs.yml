@@ -29,6 +29,7 @@ nav:
   - Tray Patterns: guides/tray-patterns.md
   - Run Records: run-records.md
   - Supervised Restart: guides/supervised-restart.md
+  - Portable Projects: guides/portable-projects.md
   - AI Control (MCP): guides/mcp.md
   - API Reference: guides/api-reference.md
   - Backend Development: guides/backend-development.md

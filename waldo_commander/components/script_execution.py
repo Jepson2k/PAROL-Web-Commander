@@ -225,6 +225,18 @@ class ScriptExecutionController:
             log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
+            from waldo_commander.project import find_project
+
+            project = find_project(launching_tab.file_path if launching_tab else None)
+            script_config["env"]["WALDO_PROJECT_ROOT"] = str(project) if project else ""
+            script_config["env"]["WALDO_PROGRAM_ORIGIN"] = (
+                str(Path(launching_tab.file_path).resolve())
+                if project and launching_tab and launching_tab.file_path
+                else ""
+            )
+            if project:
+                script_config["cwd"] = str(project)
+                script_config["env"]["WALDO_SETUP_DIR"] = str(project / "setups")
             script_config["env"]["WALDO_RECORD_VALUES"] = "0"
             script_config["env"]["WALDO_RESTART_ENTRY"] = restart_entry or ""
             self.last_run_source_digest = source_digest(content)
