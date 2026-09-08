@@ -205,7 +205,7 @@ async def test_variant_selector_appears_for_tools_with_variants(user: User) -> N
 
 @pytest.mark.integration
 async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
-    """Test that TCP offset inputs appear for non-NONE tools and hide for NONE."""
+    """TCP correction is available for fitted tools and the bare flange."""
     await user.open("/")
     await wait_for_app_ready()
 
@@ -229,18 +229,18 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
         "a fitted tool's offset is editable"
     )
 
-    # NONE — offset inputs should still be visible, and refuse edits: there
-    # is no tool to offset from.
+    # The bare flange can also carry a user-defined TCP.
     select_el.set_value("NONE")
     await wait_for_tool_key("NONE", timeout_s=5.0)
-    assert await wait_until(offset_x_disabled), (
-        "with no tool fitted the offset must not be editable"
+    assert await wait_until(lambda: not offset_x_disabled()), (
+        "the bare flange must support a TCP correction"
     )
 
 
 @pytest.mark.integration
 async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     user: User,
+    monkeypatch,
 ) -> None:
     """An offset typed into Settings is the offset the controller plans
     with, not a browser-local number: it lands via ``set_tcp_offset`` and
@@ -248,6 +248,20 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
     the remembered offset pushed again; and an offset another client set
     is adopted when the page opens instead of being clobbered."""
     from waldo_commander.state import ui_state
+    from waldo_commander.services import tcp_calibration
+
+    confirmed = asyncio.Event()
+    release_readback = asyncio.Event()
+    apply = tcp_calibration.apply_tcp_calibration
+
+    async def held_readback(client, calibration, **kwargs):
+        result = await apply(client, calibration, **kwargs)
+        if calibration.values[0] == 12.5 and not confirmed.is_set():
+            confirmed.set()
+            await release_readback.wait()
+        return result
+
+    monkeypatch.setattr(tcp_calibration, "apply_tcp_calibration", held_readback)
 
     await user.open("/")
     await wait_for_app_ready()
@@ -293,7 +307,11 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
 
         # NONE and back: select_tool zeroes the controller's offset, the page
         # re-applies the remembered one for the re-selected tool.
-        await select_tool("NONE")
+        await asyncio.wait_for(confirmed.wait(), timeout=5)
+        next(iter(tool_select.elements)).set_value("NONE")
+        await asyncio.sleep(0)
+        release_readback.set()
+        await wait_for_tool_key("NONE", timeout_s=5)
         await expect_controller_offset([0.0, 0.0, 0.0])
         await select_tool("PNEUMATIC")
         await expect_controller_offset([12.5, 0.0, 0.0])
@@ -317,6 +335,7 @@ async def test_tcp_offset_reaches_the_controller_and_survives_a_tool_change(
         )
         await expect_controller_offset([1.0, 2.0, 3.0])
     finally:
+        release_readback.set()
         # The fake-serial controller is shared with every later test, and
         # nothing resets it between them: a tool fitted and a shifted TCP
         # would move their robot too.
