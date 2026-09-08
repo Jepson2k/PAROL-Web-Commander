@@ -274,6 +274,21 @@ class SettingsContent:
             with page_client:
                 ui.notify(message, color=color)
 
+    async def _read_tcp_offset(self) -> list[float]:
+        """The controller's offset as exactly three floats.
+
+        Both backends answer an unreachable controller with a sentinel
+        rather than an error, and a short or malformed answer would only
+        be noticed later, indexing `offset_mm[0..2]` in
+        `_adopt_tcp_offset` -- outside every `try` here, so the caller's
+        handler never sees it. Validating at the read makes a bad answer a
+        raise that the existing handlers already deal with.
+        """
+        back = [float(b) for b in await self.client.tcp_offset()]
+        if len(back) != 3:
+            raise ValueError(f"tcp_offset() answered {len(back)} values, want 3")
+        return back
+
     async def _push_tcp_offset(
         self,
         tool_key: str,
@@ -323,7 +338,7 @@ class SettingsContent:
             await self.client.set_tcp_offset(x, y, z)
             _pushed_offset_tools.add(tool_key)
             for _ in range(10):
-                back = [float(b) for b in await self.client.tcp_offset()]
+                back = await self._read_tcp_offset()
                 if all(abs(b - v) <= 1e-3 for b, v in zip(back, (x, y, z))):
                     return
                 await asyncio.sleep(0.1)
@@ -354,7 +369,7 @@ class SettingsContent:
         cannot be: right after a tool change, which resets it, and on a
         controller reporting nothing that this app has never told."""
         try:
-            back = [float(v) for v in await self.client.tcp_offset()]
+            back = await self._read_tcp_offset()
         except Exception as exc:
             logger.debug("tcp_offset readback failed: %s", exc)
             return
@@ -382,7 +397,6 @@ class SettingsContent:
             "y": float(offset_mm[1]),
             "z": float(offset_mm[2]),
         }
-        ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
         if not page_client.has_socket_connection:
             # The reconcile that adopts an out-of-band offset is started
             # while the page is still being built, so its socket is often
@@ -394,6 +408,11 @@ class SettingsContent:
             except ClientConnectionTimeout:
                 return
         with page_client:
+            # Written here, beside the inputs it must agree with: ahead of
+            # the connection guard above, a page that went away left the
+            # remembered offset changed and the inputs still showing the old
+            # one, and the next rebuild read back the discrepancy as truth.
+            ng_app.storage.general[f"tcp_offset_{tool_key}"] = vals
             for inp, v in zip(inputs, (vals["x"], vals["y"], vals["z"])):
                 if inp.value != v:
                     inp.set_value(v)
