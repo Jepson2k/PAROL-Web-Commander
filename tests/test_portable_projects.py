@@ -155,8 +155,10 @@ async def test_imported_program_uses_its_own_data_in_preview_execution_and_save(
     before = await client.angles()
     tcp = await client.tcp_transform()
     world = await client.shapes()
-    recording = await record_demonstration(client, duration_s=0.2)
-    assert len(recording.samples) >= 2
+    # This archive needs two observed samples, independent of runner cadence.
+    recording = await record_demonstration(client, duration_s=5, max_samples=2)
+    assert recording.ended == "sample_limit"
+    assert len(recording.samples) == 2
     SetupStore().save(
         "bench", SetupSnapshot(parameters={"j1": Parameter(before[0] - 4, "deg")})
     )
