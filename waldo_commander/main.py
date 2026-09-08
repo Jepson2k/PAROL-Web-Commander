@@ -62,7 +62,10 @@ from waldo_commander.numba_pipelines import (
     warmup_pipelines,
 )
 from waldo_commander.profiles import get_robot
-from waldo_commander.services.camera_service import camera_service
+from waldo_commander.services.camera_service import (
+    camera_service,
+    register_camera_routes,
+)
 from waldo_commander.services.path_visualizer import warm_process_pool
 from waldo_commander.services.urdf_scene import (
     UrdfScene,
@@ -1274,6 +1277,7 @@ def _register_handlers() -> None:
     Skip registration if NiceGUI is already started (e.g., during test reruns
     when NiceGUI didn't fully reset between tests).
     """
+    register_camera_routes()
     if ng_app.is_started:
         return
 
