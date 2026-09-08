@@ -174,7 +174,16 @@ async def warm_process_pool(backend_package: str = "parol6") -> None:
         await asyncio.gather(*futures)
         logger.info("Process pool workers warmed successfully")
     except Exception as e:
-        logger.warning("Failed to warm process pool workers: %s", e)
+        # Not a warning: every preview runs in a pool worker and there is no
+        # in-process fallback, so workers that never warmed mean each preview
+        # pays the backend import itself, and a pool that is broken rather
+        # than cold (BrokenProcessPool, the plausible one on a small box)
+        # means previews fail outright.
+        logger.error(
+            "Failed to warm process pool workers: %s; previews will import the "
+            "backend per run, and fail entirely if the pool itself is broken",
+            e,
+        )
 
 
 def _run_simulation_isolated(
@@ -418,6 +427,19 @@ def _run_simulation_isolated(
                 elif callable(main_func):
                     cast(Callable[[], None], main_func)()
 
+        except SystemExit as e:
+            # `sys.exit()`, and the `exit()`/`quit()` builtins, all raise
+            # this -- and it is not an `Exception`, so it passed both handlers
+            # here and left the whole preview through the `finally` below,
+            # abandoning every segment collected up to that point. A script
+            # that ends by exiting cleanly has ENDED, not failed, so a zero
+            # (or absent) code keeps what it drew; a non-zero one is the
+            # script reporting its own failure and is shown as one.
+            if e.code not in (None, 0):
+                error_message = f"SystemExit: {e.code}"
+        except KeyboardInterrupt:
+            # Same escape, same consequence.
+            error_message = "KeyboardInterrupt: the preview was interrupted"
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
