@@ -600,6 +600,28 @@ async def test_commander_runs_on_the_par6_runtime(
         )
         assert await client.set_shapes(list(original_world.program)) == 1
 
+        from waldo_commander.services.path_visualizer import PathVisualizer
+
+        await waldoctl.commander.scene.refresh_from_backend()
+        visualizer = PathVisualizer()
+        physics_source = (
+            "from par6 import RobotClient\n"
+            "with RobotClient() as rbt:\n"
+            "    rbt.delay(0.2)\n"
+        )
+        try:
+            assert await visualizer.update_path_visualization(physics_source) is None
+            program = waldoctl.commander.programs.active
+            assert program is not None
+            program.dry_run.ticks = None
+            assert await visualizer.update_physics_simulation() is None
+            ticks = program.dry_run.ticks
+            assert ticks is not None, "the editor must produce a physics record"
+            assert ticks.rows > 1 and ticks.duration_s >= 0.2
+            assert str(ticks.stop) == "completed"
+        finally:
+            visualizer.cancel_physics()
+
     finally:
         # main.py never owns the spawned runtime's lifetime; the test does.
         robot = getattr(ui_state, "robot", None)

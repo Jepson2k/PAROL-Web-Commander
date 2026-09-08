@@ -8,10 +8,12 @@ dry-run in the main process.
 
 import asyncio
 import builtins
+import inspect
 import linecache
 import logging
 import multiprocessing
 import os
+import pickle
 import sys
 import threading
 import traceback
@@ -527,12 +529,14 @@ def _run_simulation_isolated(
     # it kept the commands, so nothing is re-executed and no script runs
     # twice. A failure here costs the physics, not the plan.
     ticks = None
+    physics_error = None
     if simulate_seconds is not None and created_clients:
         client = created_clients[-1]
         try:
             ticks = client._client.simulate(simulate_seconds)
             ticks = _label_blocks(ticks, client.command_lines)
         except Exception as e:
+            physics_error = f"{type(e).__name__}: {e}"
             logger.warning("Physics simulation failed: %s", e)
 
     return {
@@ -546,6 +550,7 @@ def _run_simulation_isolated(
         "total_steps": len(local_segments),
         "final_joints_rad": final_state.get("joints_rad"),
         "ticks": ticks,
+        "physics_error": physics_error,
     }
 
 
@@ -901,6 +906,9 @@ class PathVisualizer:
                 target_tab = waldoctl.commander.programs.active
 
             if target_tab:
+                previous_args = self._planned_args.get(target_tab.id)
+                same_inputs = pickle.dumps(previous_args) == pickle.dumps(sim_args)
+                self._planned_args[target_tab.id] = sim_args
                 new_segments = [PathSegment.from_dict(d) for d in result["segments"]]
                 new_targets = [ProgramTarget.from_dict(d) for d in result["targets"]]
                 new_tool_actions = result.get("tool_actions", [])
@@ -914,9 +922,11 @@ class PathVisualizer:
                 # to avoid unnecessary scrub bar rebuilds and visual flash.
                 # Don't skip when there's an error: the caller needs the error
                 # string to apply diagnostics even if segments are the same.
-                if self._segments_match(
-                    target_tab.dry_run.path_segments, new_segments
-                ) and not result.get("error"):
+                if (
+                    self._segments_match(target_tab.dry_run.path_segments, new_segments)
+                    and not result.get("error")
+                    and same_inputs
+                ):
                     logger.info(
                         "Simulation results unchanged (sim_id=%d), skipping update",
                         sim_id,
@@ -980,7 +990,9 @@ class PathVisualizer:
         planned = self._planned_args.get(tab.id)
         if planned is None:
             return None  # nothing planned to refine
-        args = (*planned[:-1], MAX_SIMULATED_SECONDS)
+        bound = inspect.signature(_run_simulation_isolated).bind(*planned)
+        bound.arguments["simulate_seconds"] = MAX_SIMULATED_SECONDS
+        args = bound.args
 
         tab.dry_run.ticks_pending = True
         try:
@@ -1006,7 +1018,7 @@ class PathVisualizer:
         tab.dry_run.ticks_pending = False
         ticks = (result or {}).get("ticks")
         if ticks is None:
-            return (result or {}).get("error")
+            return (result or {}).get("error") or (result or {}).get("physics_error")
         # The backend guarantees the same program gives a bit-identical
         # record, so an equal digest means an identical picture and the
         # scene keeps what it has. This is the flash guard.

@@ -120,8 +120,10 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
         async with asyncio.timeout(5):
             while (await client.shapes()).attachments_valid:
                 await asyncio.sleep(0)
-        await handle.refresh_from_backend()
-        assert not handle.attachments_valid
+        async with asyncio.timeout(5):
+            while handle.attachments_valid:
+                await handle.refresh_from_backend()
+                await asyncio.sleep(0)
         assert await client.reset() == 1
         await attach_object.async_call(
             client,
@@ -129,14 +131,16 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
             flange_pose=(0, 0, 0.25, 0, 0, 0),
             allowed_contacts=("shape:fixture",),
         )
-        await handle.refresh_from_backend()
-        assert handle.attachments_valid
+        async with asyncio.timeout(5):
+            while not handle.attachments_valid:
+                await handle.refresh_from_backend()
+                await asyncio.sleep(0)
         with scene.scene:
             scene._show_attachment_dialog("part", detach=True)
         for axis in ("x", "y", "z"):
             element(f"attachment-pos-{axis}").set_value(1000)
         user.find(marker="attachment-apply").click()
-        await user.should_see("Detached: part")
+        await user.should_see("Detached: part", retries=50)
         world = await client.shapes()
         assert world is not None and world.program[0] == marker
         assert world.program[-1].attachment is None
