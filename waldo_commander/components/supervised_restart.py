@@ -5,6 +5,7 @@ import waldoctl
 
 from waldo_commander.components.script_execution import script_exec
 from waldo_commander.services.programs import is_any_program_running
+from waldo_commander.services.control_lease import require_browser_control
 from waldo_commander.services.run_records import load_record
 from waldo_commander.services.supervised_restart import (
     discover_entries,
@@ -117,6 +118,8 @@ async def show_supervised_restart() -> None:
         async def start():
             nonlocal reference
             if not confirmation.value or reference is None:
+                return
+            if not require_browser_control(ui_state.active_client_id):
                 return
             start_button.disable()
             if await script_exec.start(
