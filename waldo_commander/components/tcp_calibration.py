@@ -14,6 +14,9 @@ from waldoctl.calibration import (
 )
 from waldoctl.setup import Pose, PoseValues, SetupSnapshot, TcpCalibration
 
+from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.state import ui_state
+
 from waldo_commander.services.tcp_calibration import (
     ToolBinding,
     apply_tcp_calibration,
@@ -339,6 +342,8 @@ class TcpCalibrationEditor:
     async def apply(self) -> None:
         try:
             calibration = self.calibration()
+            if not require_browser_control(ui_state.active_client_id):
+                return
             await apply_tcp_calibration(self.commander.client, calibration)
             from waldo_commander.components.settings import adopt_applied_tcp
 
