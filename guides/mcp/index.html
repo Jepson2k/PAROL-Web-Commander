@@ -417,6 +417,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#world-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        World tools
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -549,6 +560,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#world-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        World tools
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -648,6 +670,59 @@ move of an AI session always asks for a one-time confirmation, even in Autopilot
 <p>At any time the amber <strong>Take control</strong> button (top-right, shown while an AI
 holds control) seizes control back for you and halts any motion the AI started.
 <code>motion.halt</code> and status reads are never gated.</p>
+<h2 id="world-tools">World tools<a class="headerlink" href="#world-tools" title="Permanent link">&para;</a></h2>
+<p>The <code>world.*</code> tools edit the same collision world the 3D scene shows and the
+backend enforces. Every mutation reassigns the scene's program layer, so the
+backend push, the amber "not yet confirmed" styling, program recording and the
+local collision checker all apply exactly as they do to a human's edit.
+Mutations need the control lease (changing the enforced world is not
+actuation, so no hardware consent is asked); reads never do. Shapes travel as
+their 7-item wire rows — <code>[kind, params, pose, collision, margin, name,
+physics]</code> in metres and radians — or as dicts with the same fields.</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>world.get</code> / <code>world.export</code></td>
+<td>the world document: installation layer (the floor is one of its shapes), program layer, whether the program layer is confirmed by readback, and the installation proposal</td>
+</tr>
+<tr>
+<td><code>world.set_shapes</code>, <code>world.add_shape</code>, <code>world.update_shape</code>, <code>world.remove_shape</code></td>
+<td>edit the program layer (the installation layer is the robot config's and read-only here)</td>
+</tr>
+<tr>
+<td><code>world.import_world</code></td>
+<td>apply a world document's program layer; reports whether its installation entries match the live one</td>
+</tr>
+<tr>
+<td><code>world.library_list</code> / <code>library_save</code> / <code>library_load</code> / <code>library_delete</code></td>
+<td>the object library — world documents saved beside the programs</td>
+</tr>
+<tr>
+<td><code>world.place_object</code></td>
+<td>drop a one-shape library entry into the layer under a new name and pose, physics intact</td>
+</tr>
+<tr>
+<td><code>world.propose_installation</code> / <code>world.discard_installation_draft</code></td>
+<td>move program shapes into the installation proposal, or drop them from it</td>
+</tr>
+<tr>
+<td><code>world.export_installation_toml</code></td>
+<td>the proposal (or the program layer) as the robot config's <code>[[installation_shapes]]</code> TOML</td>
+</tr>
+</tbody>
+</table>
+<p>Installation authoring is config authoring: a proposed shape is drawn in
+violet and checked locally, but the backend enforces it only once its robot
+config declares it. Export the TOML, put it in the config, and the proposal
+clears itself when readback shows the backend enforcing it. A backend without
+contact simulation refuses a shape carrying <code>physics</code>, and the refusal reaches
+the LLM as the tool error.</p>
 
 
 

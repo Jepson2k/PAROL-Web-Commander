@@ -633,6 +633,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.Robot.has_physics_simulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        has_physics_simulation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.Robot.fk" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1105,6 +1116,28 @@
     <span class="md-ellipsis">
       
         loop_stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.set_status_rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_status_rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.status_rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        status_rate
       
     </span>
   </a>
@@ -3975,6 +4008,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#waldoctl.Robot.has_physics_simulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        has_physics_simulation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#waldoctl.Robot.fk" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -4447,6 +4491,28 @@
     <span class="md-ellipsis">
       
         loop_stats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.set_status_rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        set_status_rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#waldoctl.RobotClient.status_rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        status_rate
       
     </span>
   </a>
@@ -7531,6 +7597,37 @@ Convention: backends export this class at their package level.</p>
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="waldoctl.Robot.has_physics_simulation" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">has_physics_simulation</span><span class="p">:</span> <span class="nb">bool</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#waldoctl.Robot.has_physics_simulation" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Whether this backend's dry run can simulate as well as plan.</p>
+<p>A planning dry run answers where the controller would tell the
+arm to go. A simulating one drives the same commands through the
+backend's control loop against a physics plant and reports what
+the arm did — servo lag, gravity sag, and objects that move
+because something pushed them.</p>
+<p>False means the host shows the planned trajectory and nothing
+else, which is how it behaved before any backend could do this.
+A backend that returns True must also expose <code>simulate</code> on its
+dry-run client (see <code>SimulatedDryRunResult</code>).</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -7760,10 +7857,17 @@ tool, or a workspace keep-out shape.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Apply workspace keep-out shapes to this process's local checker.</p>
-<p>Local-only twin of <code>RobotClient.set_shapes</code> (which updates the
-<em>backend's</em> checkers) — feeds client-side preview / editing-pose
-collision queries. No-op on backends without collision checking.</p>
+        <p>Apply shapes to this process's in-process collision world, for
+preview and editing-pose queries.</p>
+<p>The installation layer is not settable here: it is the robot's
+boot-time environment, and a backend whose in-process world is its
+runtime's own applies it from the config the runtime boots from.  A
+host holding an installation <em>proposal</em> — not in that config yet, so
+enforced nowhere else — passes it here with the program layer.</p>
+<p>This does not touch the backend — <code>RobotClient.set_shapes</code> does
+that.  A backend whose in-process world is its runtime's own engine
+answers exactly as the runtime will; one that mirrors it separately
+answers as well as the mirror.  No-op without collision checking.</p>
 
 
     </div>
@@ -8641,6 +8745,69 @@ disabled until <code>reset()</code>.</p>
 <div class="doc doc-object doc-function">
 
 
+<h3 id="waldoctl.RobotClient.set_status_rate" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">set_status_rate</span><span class="p">(</span><span class="n">hz</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.set_status_rate" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Set the rate the controller broadcasts status at.</p>
+<p>Raising it costs bandwidth and consumer CPU continuously, so it is
+a knob for a debugging or tuning session rather than a permanent
+setting. A rate the controller cannot divide its control loop into
+is rejected rather than snapped to a neighbour — a silently
+different rate than the one asked for makes any capture taken at it
+wrong in a way nothing reports.</p>
+<p>Category: Configuration</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rbt.set_status_rate(125)</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="waldoctl.RobotClient.status_rate" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">status_rate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">StatusRate</span> <span class="o">|</span> <span class="kc">None</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#waldoctl.RobotClient.status_rate" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Current broadcast rate and the control rate it divides; <code>None</code>
+when unreachable.</p>
+<p>Category: Query</p>
+
+
+<details class="example" open>
+  <summary>Example</summary>
+  <p>rate = rbt.status_rate()</p>
+</details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="waldoctl.RobotClient.simulator" class="doc doc-heading">
             <code class="highlight language-python"><span class="n">simulator</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span></code>
 
@@ -8809,6 +8976,12 @@ command having been sent.</p>
 motion is blocked against them; an empty list clears all program-layer
 shapes.  Installation-layer shapes (declared in the backend's robot
 config) are unaffected — programs inherit them and cannot remove them.</p>
+<p>A shape carrying <code>physics</code> (see <code>waldoctl.Physical</code>) also enters
+the simulator's contact world — static when <code>mass</code> is None, a free
+body otherwise.  A visual-only marker (<code>collision=False</code>) cannot
+declare <code>physics</code>; the backend rejects the whole list.  Backends
+without a physics simulator reject any shape declaring it rather than
+silently ignoring the declaration.</p>
 <p>The change also invalidates committed motion: the backend re-guards
 the currently-streaming trajectory's remaining path and every queued
 trajectory before it starts, halting with a collision error rather
@@ -9331,6 +9504,13 @@ Call with (0, 0, 0) to reset. Changing tools resets the offset.</p>
     <div class="doc doc-contents ">
 
         <p>Query current TCP offset in mm [x, y, z].</p>
+<p>Returns exactly three values, and <strong>raises</strong> when the controller
+does not answer. An implementation must not return a zero vector for
+an unreachable controller: <code>[0, 0, 0]</code> is a legitimate offset — a
+tool deliberately cleared — so a caller that receives it as a
+not-answered sentinel cannot tell "the offset is zero" from "there
+is no controller", and a host that adopts the readback will quietly
+erase the offset the user set.</p>
 <p>Category: Configuration</p>
 
 
@@ -10766,7 +10946,7 @@ joint state.</p>
 
 
 <h2 id="waldoctl.DryRunResultData" class="doc doc-heading">
-              <code class="highlight language-python"><span class="n">waldoctl</span><span class="o">.</span><span class="n">DryRunResultData</span><span class="p">(</span><span class="n">tcp_poses</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">end_joints_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">duration</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">error</span><span class="p">:</span> <span class="nb">object</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">valid</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">bool_</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">joint_trajectory_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span></code>
+              <code class="highlight language-python"><span class="n">waldoctl</span><span class="o">.</span><span class="n">DryRunResultData</span><span class="p">(</span><span class="n">tcp_poses</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">end_joints_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">duration</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">error</span><span class="p">:</span> <span class="nb">object</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">valid</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">bool_</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">joint_trajectory_rad</span><span class="p">:</span> <span class="n">NDArray</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">object_tracks</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">ObjectTrack</span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span></code>
 
   <span class="doc doc-labels">
       <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
@@ -11405,13 +11585,17 @@ through the error query/standing error.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Per-drive analog readings, for watching a joint approach a limit
-before it faults: <code>temperatures_c</code> and <code>currents_ma</code> (one entry per
-actuator, arm joints first) and <code>bus_voltage_v</code> (the lowest supply a
-drive reports, where sag under load shows first). A list is empty when
-the backend has no such sensor at all; <code>NaN</code> inside one means that
-drive has not answered yet. Faults themselves are NOT here — they
-surface through <code>warnings</code> and the standing error.</p>
+        <p>Per-drive readings and faults, for watching a joint approach a limit
+and for seeing which drive tripped: <code>temperatures_c</code> and
+<code>currents_ma</code> (one entry per actuator, arm joints first),
+<code>bus_voltage_v</code> (the lowest supply a drive reports, where sag under
+load shows first), and <code>faults</code> — a sequence of active fault labels
+per drive in the backend's own vocabulary. A list is empty when the
+backend reports nothing of that kind at all; <code>NaN</code> inside a reading
+means that drive has not answered yet, and an empty label sequence (a
+list on one backend, a tuple on another) means a healthy drive. A
+backend may report faults without analog registers or the reverse, so
+test the member you need rather than assuming they arrive together.</p>
 
     </div>
 
