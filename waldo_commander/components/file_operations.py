@@ -93,7 +93,11 @@ class FileOperationsMixin:
         """Save tab content to server."""
         try:
             name = tab.filename or "program.py"
-            target = self.PROGRAM_DIR / name
+            target = (
+                Path(tab.file_path)
+                if tab.file_path and Path(tab.file_path).name == name
+                else self.PROGRAM_DIR / name
+            )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(tab.source, encoding="utf-8")
             tab.file_path = str(target)

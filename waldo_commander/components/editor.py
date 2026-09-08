@@ -1151,6 +1151,23 @@ class EditorPanel(FileOperationsMixin):
                     .mark("editor-restart-btn")
                 )
 
+                from waldo_commander.components.portable_projects import (
+                    show_portable_projects,
+                )
+
+                projects_btn = (
+                    ui.button(
+                        icon="inventory_2",
+                        on_click=lambda: show_portable_projects(
+                            self.PROGRAM_DIR, self.load_program
+                        ),
+                    )
+                    .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
+                    .tooltip("Portable projects")
+                    .mark("editor-projects-btn")
+                )
+
                 commands_btn = (
                     ui.button(icon="library_add")
                     .props("flat dense color=white")
@@ -1165,6 +1182,7 @@ class EditorPanel(FileOperationsMixin):
                     save_btn,
                     records_btn,
                     restart_btn,
+                    projects_btn,
                     commands_btn,
                 ]
 

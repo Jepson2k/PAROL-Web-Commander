@@ -664,14 +664,46 @@ async def test_commander_runs_on_the_par6_runtime(
         assert await client.set_shapes(list(original_world.program)) == 1
 
         from waldo_commander.services.path_visualizer import PathVisualizer
+        from waldo_commander.services.portable_projects import (
+            export_project,
+            import_project,
+        )
+        from waldoctl.setup import SetupSnapshot, Parameter
+        import json
 
         await waldoctl.commander.scene.refresh_from_backend()
         visualizer = PathVisualizer()
         physics_source = (
             "from par6 import RobotClient\n"
+            "from helpers import pause_duration\n"
+            "from waldo_commander.project import project_file\n"
+            "from waldo_commander.setup import load_setup\n"
+            "from waldo_commander.demonstrations import load_demonstration\n"
+            "setup = load_setup('bench')\n"
+            "assert load_demonstration(project_file('recordings/capture.json')).backend == 'par6'\n"
             "with RobotClient() as rbt:\n"
-            "    rbt.delay(0.2)\n"
+            "    index = rbt.delay(pause_duration(setup))\n"
+            "    assert rbt.wait_command(index, timeout=3)\n"
         )
+        project = import_project(
+            export_project(
+                {
+                    "programs/main.py": physics_source.encode(),
+                    "programs/helpers.py": b"def pause_duration(setup): return setup.parameters['pause'].value\n",
+                    "setups/bench.json": json.dumps(
+                        SetupSnapshot(
+                            parameters={"pause": Parameter(0.2, "s")}
+                        ).to_dict()
+                    ).encode(),
+                    "recordings/capture.json": recording_path.read_bytes(),
+                }
+            ),
+            tmp_path / "projects",
+        )
+        editor = ui_state.editor_panel
+        assert editor is not None
+        with user.client:
+            await editor.load_program(str(project / "programs/main.py"))
         try:
             assert await visualizer.update_path_visualization(physics_source) is None
             program = waldoctl.commander.programs.active
@@ -682,6 +714,13 @@ async def test_commander_runs_on_the_par6_runtime(
             assert ticks is not None, "the editor must produce a physics record"
             assert ticks.rows > 1 and ticks.duration_s >= 0.2
             assert str(ticks.stop) == "completed"
+            assert await script_exec.start()
+            async with asyncio.timeout(20):
+                while script_exec.script_handle is not None:
+                    await asyncio.sleep(0.05)
+            assert script_exec.last_exit_code == 0, "\n".join(
+                entry.text for entry in program.log.entries
+            )
         finally:
             visualizer.cancel_physics()
 
