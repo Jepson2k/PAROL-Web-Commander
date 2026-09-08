@@ -867,7 +867,9 @@ def _build_left_panels(panels_wrap: ui.element) -> dict:
                         ui.button(icon="close", on_click=close_top_panels).props(
                             "flat round dense color=white"
                         )
-                    ui_state.gripper_page = GripperPage(client)
+                    ui_state.gripper_page = GripperPage(
+                        client, is_open=lambda: top_panels.value == "gripper"
+                    )
                     ui_state.gripper_page.build()
 
             ui_state._build_gripper_content = _build_gripper_content
