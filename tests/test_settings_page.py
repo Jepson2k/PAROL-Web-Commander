@@ -211,20 +211,29 @@ async def test_tcp_offset_inputs_appear_for_tools(user: User) -> None:
     tool_select = user.find(marker="select-tool")
     select_el = next(iter(tool_select.elements))
 
+    # Selecting a tool rebuilds the offset row, and "TCP Offset" is on
+    # screen either way — so it says nothing about which build is showing.
+    # Poll the property under test instead of sleeping a fixed slice and
+    # hoping the rebuild beat it (it does not, on a slow runner).
+    def offset_props() -> dict:
+        return next(iter(user.find(marker="tcp-offset-x").elements)).props
+
     # PNEUMATIC — offset inputs should appear with X/Y/Z fields
     select_el.set_value("PNEUMATIC")
-    await asyncio.sleep(0.1)
     await user.should_see("TCP Offset")
-    fitted = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" not in fitted.props, "a fitted tool's offset is editable"
+    await poll_until(
+        offset_props,
+        lambda p: "disable" not in p,
+        what="a fitted tool's offset becoming editable",
+    )
 
     # NONE — offset inputs should still be visible, and refuse edits: there
     # is no tool to offset from.
     select_el.set_value("NONE")
-    await asyncio.sleep(0.1)
-    bare = next(iter(user.find(marker="tcp-offset-x").elements))
-    assert "disable" in bare.props, (
-        "with no tool fitted the offset must not be editable"
+    await poll_until(
+        offset_props,
+        lambda p: "disable" in p,
+        what="the offset refusing edits with no tool fitted",
     )
 
 
