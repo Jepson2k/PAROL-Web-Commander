@@ -30,7 +30,31 @@ from waldoctl.shapes import (
 
 # The documented per-shape split: these four are ShapeBase's common fields,
 # everything else on a subclass is a coal dimension param (shapes.params()).
-_COMMON = ("name", "pose", "collision", "margin")
+try:  # waldoctl >= 0.13
+    from waldoctl import param_names as _waldoctl_param_names
+except ImportError:  # pragma: no cover - the pinned 0.12 has no such export
+    _waldoctl_param_names = None
+
+#: Fallback for waldoctl < 0.13, which exports no `param_names`. `physics`
+#: is listed because it is a COMMON field there, not a dimension.
+_COMMON = ("name", "pose", "collision", "margin", "physics")
+
+
+def _shape_param_names(cls: type) -> tuple[str, ...]:
+    """A shape's dimension fields, in coal constructor order.
+
+    waldoctl owns this list, and says why in its own docstring: editors
+    enumerate geometry through it "so a new common field cannot masquerade
+    as a dimension anywhere". Re-deriving it here is what let exactly that
+    happen -- `physics` arrived as a common field and the local list did not
+    know, so the editor tried to render a `Physical` as a millimetre
+    dimension and died on the shape dialog.
+    """
+    if _waldoctl_param_names is not None:
+        return tuple(_waldoctl_param_names(cls))
+    return tuple(f.name for f in fields(cls) if f.name not in _COMMON)
+
+
 _KINDS: dict[str, type] = {
     c.__name__.lower(): c for c in (Box, Sphere, Cylinder, Capsule, Cone, Ellipsoid)
 }
@@ -154,7 +178,7 @@ class ShapeEditingMixin:
             kind = shape.kind
         assert kind is not None
         cls = _KINDS[kind]
-        param_names = [f.name for f in fields(cls) if f.name not in _COMMON]
+        param_names = list(_shape_param_names(cls))
 
         if editing:
             pose = shape.pose
