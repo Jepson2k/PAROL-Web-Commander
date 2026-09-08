@@ -216,30 +216,33 @@ jobs:
           workspaces: par6
           key: par6-e2e
 
-      # Same paths/key as par6's own ci.yml (its ffi and e2e jobs), prefixed
-      # with the checkout dir. env.sh is deliberately not cached: setup.sh
-      # rewrites it every run with this workspace's absolute paths.
-      - name: cache pinocchio toolchain
-        uses: actions/cache@v4
+      # par6 provisions its C++ closure (pinocchio, coal, mujoco, toppra)
+      # through pixi from a committed lock — there is no `scripts/ffi/setup.sh`
+      # and no `.ffi/env.sh` any more. This job used to run those, and only
+      # kept working because branch-matching pinned it to a par6 old enough
+      # to still have them.
+      - uses: prefix-dev/setup-pixi@v0.8.1
         with:
-          path: |
-            par6/.ffi/bin
-            par6/.ffi/env
-            par6/.ffi/shim
-          key: ffi-toolchain-${{ runner.os }}-${{ hashFiles('par6/scripts/ffi/setup.sh', 'par6/cpp/**') }}
+          pixi-version: v0.79.0
+          manifest-path: par6/pixi.toml
+          cache: true
 
-      - name: build shim (scripts/ffi/setup.sh)
-        working-directory: par6
-        run: scripts/ffi/setup.sh
+      # The prefix the shim's rpath names, exported for the steps below:
+      # they run WC's Python, not pixi's, so they cannot simply run inside
+      # `pixi run` — they need its libraries without its interpreter.
+      - name: resolve the pixi prefix
+        run: |
+          PREFIX="$(pixi run --manifest-path par6/pixi.toml printenv CONDA_PREFIX)"
+          : "${PREFIX:?pixi did not report a CONDA_PREFIX}"
+          echo "CONDA_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          echo "MUJOCO_DYNAMIC_LINK_DIR=$PREFIX/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       # Release, not debug: the sim runs in wall-clock time and an
       # unoptimized RT loop misses its deadlines. Kinematics is not a
       # feature any more — par6d links the FFI shim unconditionally.
       - name: build par6d
-        working-directory: par6
-        run: |
-          source .ffi/env.sh
-          cargo build -p par6d --release
+        run: pixi run --manifest-path par6/pixi.toml build-daemon
 
       - name: Install dependencies
         run: |
@@ -283,20 +286,16 @@ jobs:
           # env must be live for the build (and no build isolation, so the
           # toolchain above is the one that compiles it).
           pip install "maturin>=1.7,<2" patchelf
-          source par6/.ffi/env.sh
           pip install --force-reinstall --no-deps --no-build-isolation ./par6/python
 
       # WALDO_PAR6_E2E=1 makes a missing backend or binary a FAILURE inside
       # the test, not a skip — this job must never go green without the e2e
-      # actually running. env.sh is sourced (not hand-copied) because par6d
-      # embeds no rpath: the spawned runtime inherits LD_LIBRARY_PATH for
-      # the shim and its conda-env dependencies.
+      # actually running. The spawned runtime inherits LD_LIBRARY_PATH from
+      # the prefix resolved above, for the shim and its conda dependencies.
       - name: Run the par6 e2e test
         env:
           PYTHONUNBUFFERED: '1'
           PYTHONUTF8: '1'
           WALDO_PAR6_E2E: '1'
           PAR6D_BIN: ${{ github.workspace }}/par6/target/release/par6d
-        run: |
-          source par6/.ffi/env.sh
-          pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py
+        run: pytest -vv --tb=long --log-cli-level=DEBUG tests/test_par6_backend.py
