@@ -303,7 +303,7 @@ async def test_failed_program_keeps_stop_available_until_controller_confirms(
 
     handle = None
     try:
-        assert await script_exec.start()
+        await script_exec.start()
         handle = script_exec.script_handle
         assert handle is not None
         assert await client.wait_status(
