@@ -113,12 +113,17 @@ if __name__ == '__main__':
     await user.should_see("Controller ready", retries=50)
     assert not marker.exists()
     user.find(marker="restart-physical-confirmation").click()
+    from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
+
+    control_lease.seize(MCP, "restart-review", "Review MCP")
     user.find(marker="restart-start").click()
     async with asyncio.timeout(25):
         while not marker.exists():
             await asyncio.sleep(0.05)
     await finished()
     assert script_exec.last_exit_code == 0
+    assert control_lease.held_by(BROWSER, ui_state.active_client_id)
+    await user.should_see("You've taken control from the AI")
     assert marker.read_text() == "sync:1\n"
     assert (await client.angles())[0] == pytest.approx(before[0] + 3, abs=0.1)
     events = load_record(script_exec.last_record)

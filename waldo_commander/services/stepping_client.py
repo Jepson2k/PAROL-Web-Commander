@@ -14,7 +14,6 @@ import inspect
 import json
 import os
 import logging
-import shutil
 import tempfile
 import threading
 import time
@@ -57,16 +56,18 @@ def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
 
 
 def _atomic_write(path: Path, data: dict) -> None:
-    """Write data to file atomically using temp file + move."""
-    temp_path = path.with_suffix(".tmp")
+    # Event payloads can contain opted-in recording values. mkstemp makes
+    # them private from creation, before either process sees the new file.
+    descriptor, name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=path.parent
+    )
+    temp_path = Path(name)
     try:
-        temp_path.write_text(json.dumps(data, indent=2))
-        shutil.move(str(temp_path), str(path))
-    except Exception:
-        # Remove the temp file so a failed move leaves no partial artifact.
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _read_control(control_file: Path) -> dict:
@@ -302,8 +303,15 @@ class SteppingClientWrapper:
         return self._wrapped.run_skill(execute)
 
     def _wait_completed(self, index: int) -> None:
-        if not self.wait_command(index, timeout=None):
-            raise TimeoutError(f"Command {index} completion was not confirmed")
+        try:
+            if not self.wait_command(index, timeout=None):
+                raise TimeoutError(f"Command {index} completion was not confirmed")
+        except Exception:
+            if self._wrapped.stop() <= 0:
+                raise RuntimeError(
+                    "Command failed and controller stop was not confirmed"
+                )
+            raise
 
     def _check_health(self) -> None:
         if self._wrapped.status() is None:
@@ -522,8 +530,16 @@ class AsyncSteppingClientWrapper:
         self._blend_waits: list[tuple[int, CompletionBudget]] = []
 
     async def _wait_completed(self, index: int) -> None:
-        if not await self.wait_command(index, timeout=None):
-            raise TimeoutError(f"Command {index} completion was not confirmed")
+        try:
+            if not await self.wait_command(index, timeout=None):
+                raise TimeoutError(f"Command {index} completion was not confirmed")
+        except Exception:
+            async with asyncio.timeout(3.0):
+                if await self._wrapped.stop() <= 0:
+                    raise RuntimeError(
+                        "Command failed and controller stop was not confirmed"
+                    )
+            raise
 
     async def _check_health(self) -> None:
         if await self._wrapped.status() is None:

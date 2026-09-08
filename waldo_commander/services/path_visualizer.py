@@ -770,7 +770,7 @@ class PathVisualizer:
         # Current robot joint angles seed the simulation's initial position.
         initial_joints_rad: np.ndarray | None = None
         if len(waldoctl.commander.status.joints.angles) >= robot.joints.count:
-            initial_joints_rad = waldoctl.commander.status.joints.angles.rad
+            initial_joints_rad = waldoctl.commander.status.joints.angles.rad.copy()
             logger.debug(
                 "Using current robot joints as initial: %s deg",
                 waldoctl.commander.status.joints.angles.deg,
