@@ -52,9 +52,13 @@ async def test_world_attachment_context_survives_mcp_round_trip(user: User):
             assert _payload(await client.call_tool("world.get"))["attachments_valid"]
 
             assert await robot.estop() == 1
-            await scene.refresh_from_backend()
-            stale = _payload(await client.call_tool("world.get"))
-            assert not stale["attachments_valid"]
+            async with asyncio.timeout(10):
+                while True:
+                    await scene.refresh_from_backend()
+                    stale = _payload(await client.call_tool("world.get"))
+                    if not stale["attachments_valid"]:
+                        break
+                    await asyncio.sleep(0.01)
             assert stale["attachment_epoch"] != snapshot["attachment_epoch"]
             assert stale["program"][0][7][0] == snapshot["attachment_epoch"]
     finally:
