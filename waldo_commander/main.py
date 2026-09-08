@@ -125,6 +125,22 @@ class _PageState:
 _page_state: _PageState | None = None
 
 
+def _state_name(value: object) -> str:
+    """The name of a status enum that waldoctl documents as "enum/str".
+
+    `link_health["state"]` and homing's `(state, phase)` pairs are declared
+    as a backend enum OR a plain string, so `.name` is wrong on half the
+    contract. It also ran on the status tick inside the per-tick handler,
+    which catches and logs at DEBUG -- so a string-reporting backend spun
+    the loop at full rate, and everything after the raise (homing included)
+    was skipped for as long as it stayed connected.
+    """
+    if value is None:
+        return ""
+    name = getattr(value, "name", None)
+    return name if isinstance(name, str) else str(value)
+
+
 def _client_alive(pc: Client) -> bool:
     """Registry membership is the authoritative liveness check (delete()
     removes from Client.instances before setting the deleted flag);
@@ -2016,11 +2032,16 @@ async def _status_consumer() -> None:
                             dh.bus_voltage_v = volts
                         # ``faults`` is newer than the pinned waldoctl; on a
                         # release without it the tab degrades to no fault
-                        # reporting rather than failing the whole tick.
+                        # reporting rather than failing the whole tick. The
+                        # type checker resolves ``DriveHealth`` against that
+                        # pin, where the attribute does not exist yet, so the
+                        # access is spelled dynamically to match the guard
+                        # above. Both go back to a plain attribute once the
+                        # pin moves to the release that carries it.
                         if hasattr(dh, "faults"):
                             faults = [tuple(f) for f in drives.get("faults", ())]
-                            if dh.faults != faults:
-                                dh.faults = faults
+                            if getattr(dh, "faults", None) != faults:
+                                setattr(dh, "faults", faults)  # noqa: B010
 
                     loop = getattr(status, "loop_health", None)
                     if loop:
@@ -2037,7 +2058,7 @@ async def _status_consumer() -> None:
                     link = getattr(status, "link_health", None)
                     if link:
                         lh = st.link_health
-                        link_state = link["state"].name
+                        link_state = _state_name(link.get("state"))
                         if lh.state != link_state:
                             lh.state = link_state
                         if lh.restarts != link.get("restarts", 0):
@@ -2062,7 +2083,7 @@ async def _status_consumer() -> None:
                             hm.active = homing_key[0]
                             hm.sequence_step = homing_key[1]
                             hm.joints = [
-                                (state.name, phase.name)
+                                (_state_name(state), _state_name(phase))
                                 for state, phase in homing_key[2]
                             ]
 
