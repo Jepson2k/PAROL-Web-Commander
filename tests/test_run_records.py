@@ -1,6 +1,8 @@
 """Opted-in records follow real managed programs and remain bounded."""
 
 import json
+import os
+from pathlib import Path
 import asyncio
 import hashlib
 from uuid import uuid4
@@ -250,3 +252,35 @@ if os.environ.get("WALDO_STEP_SESSION"):
         if is_any_program_running():
             await script_exec.stop()
         await waldoctl.commander.client.resume()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file permission requirement")
+def test_recording_ipc_is_private_before_and_after_replacement(tmp_path, monkeypatch):
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setenv("WALDO_RECORD_VALUES", "1")
+    controller = GUIStepController(uuid4().hex)
+    for name in ("rename", "replace"):
+        original = getattr(os, name)
+
+        def private_replace(source, destination, *args, _original=original, **kwargs):
+            assert Path(source).stat().st_mode & 0o077 == 0, (
+                "IPC temporary file exposes recorded values"
+            )
+            return _original(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, private_replace)
+    try:
+        controller.initialize()
+        io = StepIO(controller.session_id)
+        io.emit_event("command_started", "move_j", arguments={"label": "private-value"})
+        events = controller.poll_events()
+        assert events[-1]["arguments"]["label"] == "private-value"
+        assert io._event_file.stat().st_mode & 0o077 == 0
+        io._event_file.chmod(0o644)
+        io.emit_event("command_completed", "move_j", result="private-result")
+        assert io._event_file.stat().st_mode & 0o077 == 0
+        assert controller.poll_events()[-1]["result"] == "private-result"
+    finally:
+        controller.cleanup()

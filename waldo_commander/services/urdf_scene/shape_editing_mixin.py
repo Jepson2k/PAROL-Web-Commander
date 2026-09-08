@@ -22,6 +22,8 @@ import waldoctl
 from nicegui import ui
 
 from waldo_commander.services.urdf_scene.config import DRAFT_PREFIX
+from waldo_commander.services.control_lease import require_browser_control
+from waldo_commander.state import ui_state
 from waldoctl.shapes import (
     SHAPE_PREFIX,
     Box,
@@ -508,6 +510,8 @@ class ShapeEditingMixin:
                         ),
                     )
                     client = waldoctl.commander.client
+                    if not require_browser_control(ui_state.active_client_id):
+                        return
                     if detach:
                         result = await detach_object.async_call(
                             client, name=name, world_pose=pose
