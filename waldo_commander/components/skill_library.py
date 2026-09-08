@@ -15,6 +15,7 @@ from waldoctl.setup import Pose, SetupSnapshot
 from waldoctl.camera import CameraCalibration
 from waldoctl.tools import ToolType
 from waldoctl.signals import DigitalSignal
+from waldoctl.recordings import Demonstration
 
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
 from waldo_commander.setup import SetupStore
@@ -237,6 +238,13 @@ class SkillLibraryPanel(Panel):
                             "Camera source: Commander's active camera. Preview requires an ImageFixture supplied in Python."
                         ).classes("text-caption").mark("skill-camera-source")
                         readers[name] = CommanderCameraSource
+                    elif annotation is Demonstration:
+                        ui.label(
+                            "Select and save an uninterrupted span in the Demonstrations panel, then use its Insert replay call button. In Python, pass load_demonstration(path)."
+                        ).classes("text-caption")
+                        insert_button.disable()
+                        run_button.disable()
+                        return
                     elif annotation == LocalizationLimits | None:
                         readers[name] = lambda: None
                         ui.label(
