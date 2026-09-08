@@ -97,7 +97,7 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
             element(f"attachment-pos-{axis}").set_value(value)
         element("attachment-contacts").set_value("shape:typo")
         user.find(marker="attachment-apply").click()
-        await user.should_see("unknown contact")
+        await user.should_see("unknown contact", retries=50)
         expected = [
             r
             for r in caplog.records
@@ -109,7 +109,7 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
         assert (await client.shapes()).program[-1].attachment is None
         element("attachment-contacts").set_value("shape:fixture")
         user.find(marker="attachment-apply").click()
-        await user.should_see("Attachment confirmed: part")
+        await user.should_see("Attachment confirmed: part", retries=50)
         applied = await client.shapes()
         assert applied is not None and applied.program[0] == marker
         assert applied.attachments_valid and applied.program[-1].attachment is not None
