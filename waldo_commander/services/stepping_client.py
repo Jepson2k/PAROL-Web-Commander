@@ -309,8 +309,7 @@ class SteppingClientWrapper:
             ):
                 budget.confirmed_index = command_index
                 return True
-            if self._wrapped.status() is None:
-                raise ConnectionError("Controller unavailable while waiting for a step")
+            self._check_health()
         return False
 
     def finalize(self) -> None:
@@ -502,8 +501,7 @@ class AsyncSteppingClientWrapper:
             ):
                 budget.confirmed_index = command_index
                 return True
-            if await self._wrapped.status() is None:
-                raise ConnectionError("Controller unavailable while waiting for a step")
+            await self._check_health()
         return False
 
     async def finalize(self) -> None:
