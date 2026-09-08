@@ -52,7 +52,7 @@ def test_speed_menu_shows_a_paused_live_program(screen, tmp_path):
             ui_state.active_textarea.value = (
                 "from parol6 import RobotClient\n\n"
                 "with RobotClient() as rbt:\n"
-                f"    rbt.move_j({target!r}, duration=4, timeout=6)\n"
+                f"    rbt.move_j({target!r}, duration=30, timeout=60)\n"
                 "    print('Motion completed')\n"
             )
             await script_exec.start()
@@ -61,6 +61,9 @@ def test_speed_menu_shows_a_paused_live_program(screen, tmp_path):
     async def selected_and_paused():
         state = await waldoctl.commander.client.execution_speed()
         return state.paused and state.resume_scale == 0.5
+
+    async def paused():
+        return (await waldoctl.commander.client.execution_speed()).paused
 
     async def cleanup():
         with Client.instances[ui_state.active_client_id]:
@@ -73,11 +76,15 @@ def test_speed_menu_shows_a_paused_live_program(screen, tmp_path):
     try:
         drive(launch())
         element("editor-play-btn").click()
+        WebDriverWait(screen.selenium, 5).until(lambda _: drive(paused()))
+        assert run_in_app(is_any_program_running)
         element("editor-speed").click()
         WebDriverWait(screen.selenium, 5).until(
             lambda _: element("editor-speed-half").is_displayed()
         )
-        assert not element("editor-speed-double").is_displayed()
+        WebDriverWait(screen.selenium, 5).until(
+            lambda _: not element("editor-speed-double").is_displayed()
+        )
         element("editor-speed-half").click()
         WebDriverWait(screen.selenium, 5).until(lambda _: drive(selected_and_paused()))
         ActionChains(screen.selenium).move_to_element(
