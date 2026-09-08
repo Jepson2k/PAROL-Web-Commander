@@ -10,6 +10,7 @@ Cross-platform compatible (Windows, macOS, Linux).
 """
 
 import asyncio
+import inspect
 import json
 import os
 import shutil
@@ -17,12 +18,13 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Coroutine
 from typing import TypeVar, cast
 
 from waldoctl.client import RobotClient
 
 from .path_preview_client import MOTION_METHODS
+from .completion_budget import CompletionBudget, current_budget
 
 R = TypeVar("R")
 
@@ -31,6 +33,24 @@ R = TypeVar("R")
 STEPPABLE_METHODS = frozenset(MOTION_METHODS) | frozenset(
     {"home", "tool_action", "delay"}
 )
+
+_EXECUTION_CONTROLS = frozenset(
+    {"pause", "resume", "stop", "estop", "execution_speed", "set_execution_speed"}
+)
+
+
+def _nonblocking(method: Callable, kwargs: dict) -> tuple[dict, float | None]:
+    parameters = inspect.signature(method).parameters
+    timeout = kwargs.get("timeout")
+    if timeout is None and "timeout" in parameters:
+        default = parameters["timeout"].default
+        if isinstance(default, (int, float)):
+            timeout = default
+    if "wait" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    ):
+        kwargs = {**kwargs, "wait": False}
+    return kwargs, timeout
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -73,8 +93,33 @@ class StepIO:
         self._temp_dir = Path(tempfile.gettempdir())
         self._control_file = self._temp_dir / f".parol_control_{session_id}"
         self._event_file = self._temp_dir / f".parol_events_{session_id}"
+        self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
         self._step_count = 0
         self._last_step_acked = 0
+
+    def active_time(self) -> float:
+        control = _read_control(self._control_file)
+        now = time.monotonic()
+        paused = control.get("pause_elapsed", 0.0)
+        started = control.get("pause_started")
+        if started is not None:
+            paused += max(0.0, now - started)
+        return now - paused
+
+    def hold_requested(self) -> bool:
+        return _read_control(self._control_file).get("pause_started") is not None
+
+    def wait_until_resumed(self, check: Callable[[], None]) -> None:
+        while self.hold_requested():
+            check()
+            time.sleep(0.05)
+
+    async def wait_until_resumed_async(
+        self, check: Callable[[], Awaitable[None]]
+    ) -> None:
+        while self.hold_requested():
+            await check()
+            await asyncio.sleep(0.05)
 
     @classmethod
     def from_env(cls) -> "StepIO | None":
@@ -131,26 +176,52 @@ class StepIO:
         if not control.get("paused", True):
             return True
         step_signal = control.get("step_signal", 0)
-        if step_signal > control.get("step_acked", 0):
+        if step_signal > _read_control(self._ack_file).get("step_acked", 0):
             self._ack_step(control, step_signal)
             return True
         return False
 
-    def wait_for_step_or_play(self, poll_interval: float = 0.05) -> None:
+    def wait_for_step_or_play(
+        self, poll_interval: float = 0.05, *, check: Callable[[], None] | None = None
+    ) -> None:
         """Block until the GUI signals step or play. No timeout: paused
         means paused until the operator says otherwise."""
-        while not self._step_released():
-            time.sleep(poll_interval)
+        self._set_waiting(True)
+        try:
+            while not self._step_released():
+                if check is not None:
+                    check()
+                time.sleep(poll_interval)
+        finally:
+            self._set_waiting(False)
 
-    async def wait_for_step_or_play_async(self, poll_interval: float = 0.05) -> None:
+    async def wait_for_step_or_play_async(
+        self,
+        poll_interval: float = 0.05,
+        *,
+        check: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         """Async twin of ``wait_for_step_or_play`` for the async wrapper."""
-        while not self._step_released():
-            await asyncio.sleep(poll_interval)
+        self._set_waiting(True)
+        try:
+            while not self._step_released():
+                if check is not None:
+                    await check()
+                await asyncio.sleep(poll_interval)
+        finally:
+            self._set_waiting(False)
 
     def _ack_step(self, control: dict, step_signal: int) -> None:
-        """Acknowledge a step by incrementing step_acked."""
-        control["step_acked"] = step_signal
-        _atomic_write(self._control_file, control)
+        """Only the GUI writes control; a child acknowledgement cannot undo Pause."""
+        self._last_step_acked = step_signal
+        self._set_waiting(False)
+
+    def _set_waiting(self, waiting: bool) -> None:
+        if not self._control_file.exists():
+            return
+        _atomic_write(
+            self._ack_file, {"step_acked": self._last_step_acked, "waiting": waiting}
+        )
 
     def increment_step_count(self) -> None:
         """Increment the internal step counter."""
@@ -163,25 +234,16 @@ _STEPPABLE_TOOL_METHODS = frozenset({"set_position", "open", "close", "calibrate
 class _SteppingToolProxy:
     """Proxy that wraps a sync tool's action methods with stepping behavior."""
 
-    def __init__(self, sync_tool: Any, step_io: StepIO) -> None:
+    def __init__(self, sync_tool: Any, owner: "SteppingClientWrapper") -> None:
         self._tool = sync_tool
-        self._step_io = step_io
+        self._owner = owner
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._tool, name)
         if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
             return attr
 
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            self._step_io.emit_event("start", "tool_action")
-            result = attr(*args, **kwargs)
-            self._step_io.emit_event("complete", "tool_action")
-            self._step_io.increment_step_count()
-            if self._step_io.check_should_pause():
-                self._step_io.wait_for_step_or_play()
-            return result
-
-        return wrapper
+        return self._owner._wrap_motion_method("tool_action", attr)
 
 
 class SteppingClientWrapper:
@@ -209,6 +271,7 @@ class SteppingClientWrapper:
         self._step_io = step_io
         self._in_blend = False
         self._last_blend_index: int = -1
+        self._blend_waits: list[tuple[int, CompletionBudget]] = []
 
     def run_skill(self, invoke: Callable[[RobotClient], Coroutine[Any, Any, R]]) -> R:
         """Keep native motion stepping when a sync program calls an async skill."""
@@ -223,20 +286,55 @@ class SteppingClientWrapper:
         return self._wrapped.run_skill(execute)
 
     def _wait_completed(self, index: int) -> None:
-        # A wait window expiring says nothing about command completion.
-        while not self._wrapped.wait_command(index):
-            if self._wrapped.status() is None:
-                raise ConnectionError("Controller unavailable while waiting for a step")
+        try:
+            if not self.wait_command(index, timeout=None):
+                raise TimeoutError(f"Command {index} completion was not confirmed")
+        except Exception:
+            if self._wrapped.stop() <= 0:
+                raise RuntimeError(
+                    "Command failed and controller stop was not confirmed"
+                )
+            raise
+
+    def _check_health(self) -> None:
+        if self._wrapped.status() is None:
+            raise ConnectionError("Controller unavailable during managed pause")
+        if self._wrapped.wait_status(lambda status: not status.enabled, timeout=0.01):
+            raise RuntimeError("Controller was disabled during managed pause")
+        error = self._wrapped.error()
+        if error is not None:
+            if isinstance(error, BaseException):
+                raise error
+            raise RuntimeError(f"Controller fault during managed pause: {error}")
+
+    def wait_command(self, command_index: int, timeout: float | None = 10.0) -> bool:
+        budget = current_budget.get() or CompletionBudget(timeout)
+        budget.bind(self._wrapped, self._step_io.active_time)
+        while budget.remaining > 0:
+            if self._wrapped.wait_command(
+                command_index, timeout=min(0.1, budget.remaining)
+            ):
+                budget.confirmed_index = command_index
+                return True
+            self._check_health()
+        return False
 
     def finalize(self) -> None:
         """Barrier for a pending blend group: wait it out, emit completion,
         clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
-        if self._last_blend_index >= 0:
-            self._wait_completed(self._last_blend_index)
-        self._in_blend = False
-        self._last_blend_index = -1
+        try:
+            for index, budget in self._blend_waits:
+                token = current_budget.set(budget)
+                try:
+                    self._wait_completed(index)
+                finally:
+                    current_budget.reset(token)
+        finally:
+            self._in_blend = False
+            self._last_blend_index = -1
+            self._blend_waits.clear()
         self._step_io.emit_event("complete", "blend_group")
         self._step_io.increment_step_count()
 
@@ -246,13 +344,13 @@ class SteppingClientWrapper:
             return
         self.finalize()
         if self._step_io.check_should_pause():
-            self._step_io.wait_for_step_or_play()
+            self._step_io.wait_for_step_or_play(check=self._check_health)
 
     @property
     def tool(self):
         """Return the sync tool with stepping behavior on action methods."""
         self._flush_blend()
-        return _SteppingToolProxy(self._wrapped.tool, self._step_io)
+        return _SteppingToolProxy(self._wrapped.tool, self)
 
     def __enter__(self) -> "SteppingClientWrapper":
         self._wrapped.__enter__()
@@ -264,6 +362,7 @@ class SteppingClientWrapper:
         else:
             self._in_blend = False
             self._last_blend_index = -1
+            self._blend_waits.clear()
         return self._wrapped.__exit__(*args)
 
     def __getattr__(self, name: str) -> Any:
@@ -276,13 +375,27 @@ class SteppingClientWrapper:
         if name in STEPPABLE_METHODS and callable(attr):
             return self._wrap_motion_method(name, attr)
 
-        self._flush_blend()
+        if name not in _EXECUTION_CONTROLS:
+            self._flush_blend()
         return attr
 
     def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
         """Create a wrapper function for a motion method."""
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            kwargs, timeout = _nonblocking(method, kwargs)
+            if name == "tool_action" and timeout is None:
+                timeout = 10.0
+            budget = current_budget.get() or CompletionBudget(timeout)
+            budget.bind(self._wrapped, self._step_io.active_time)
+            token = current_budget.set(budget)
+            try:
+                self._step_io.wait_until_resumed(self._check_health)
+                return execute(*args, **kwargs)
+            finally:
+                current_budget.reset(token)
+
+        def execute(*args: Any, **kwargs: Any) -> Any:
             is_blended = _is_blended(kwargs)
 
             if is_blended and self._step_io.check_should_pause():
@@ -298,7 +411,7 @@ class SteppingClientWrapper:
                 if isinstance(result, int) and result >= 0:
                     self._wait_completed(result)
                 if self._step_io.check_should_pause():
-                    self._step_io.wait_for_step_or_play()
+                    self._step_io.wait_for_step_or_play(check=self._check_health)
                 return result
 
             if is_blended:
@@ -310,6 +423,9 @@ class SteppingClientWrapper:
                 result = method(*args, **kwargs)
                 if isinstance(result, int) and result >= 0:
                     self._last_blend_index = result
+                    budget = current_budget.get()
+                    assert budget is not None
+                    self._blend_waits.append((result, budget))
                 return result
 
             # Non-blended command — flush any pending blend group first
@@ -326,7 +442,7 @@ class SteppingClientWrapper:
             self._step_io.increment_step_count()
 
             if self._step_io.check_should_pause():
-                self._step_io.wait_for_step_or_play()
+                self._step_io.wait_for_step_or_play(check=self._check_health)
 
             return result
 
@@ -346,18 +462,7 @@ class _AsyncSteppingToolProxy:
         if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
             return attr
 
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            await self._owner._flush_blend()
-            step_io = self._owner._step_io
-            step_io.emit_event("start", "tool_action")
-            result = await attr(*args, **kwargs)
-            step_io.emit_event("complete", "tool_action")
-            step_io.increment_step_count()
-            if step_io.check_should_pause():
-                await step_io.wait_for_step_or_play_async()
-            return result
-
-        return wrapper
+        return self._owner._wrap_motion_method("tool_action", attr)
 
 
 class AsyncSteppingClientWrapper:
@@ -373,21 +478,63 @@ class AsyncSteppingClientWrapper:
         self._step_io = step_io
         self._in_blend = False
         self._last_blend_index: int = -1
+        self._blend_waits: list[tuple[int, CompletionBudget]] = []
 
     async def _wait_completed(self, index: int) -> None:
-        while not await self._wrapped.wait_command(index):
-            if await self._wrapped.status() is None:
-                raise ConnectionError("Controller unavailable while waiting for a step")
+        try:
+            if not await self.wait_command(index, timeout=None):
+                raise TimeoutError(f"Command {index} completion was not confirmed")
+        except Exception:
+            async with asyncio.timeout(3.0):
+                if await self._wrapped.stop() <= 0:
+                    raise RuntimeError(
+                        "Command failed and controller stop was not confirmed"
+                    )
+            raise
+
+    async def _check_health(self) -> None:
+        if await self._wrapped.status() is None:
+            raise ConnectionError("Controller unavailable during managed pause")
+        if await self._wrapped.wait_status(
+            lambda status: not status.enabled, timeout=0.01
+        ):
+            raise RuntimeError("Controller was disabled during managed pause")
+        error = await self._wrapped.error()
+        if error is not None:
+            if isinstance(error, BaseException):
+                raise error
+            raise RuntimeError(f"Controller fault during managed pause: {error}")
+
+    async def wait_command(
+        self, command_index: int, timeout: float | None = 10.0
+    ) -> bool:
+        budget = current_budget.get() or CompletionBudget(timeout)
+        budget.bind(self._wrapped, self._step_io.active_time)
+        while budget.remaining > 0:
+            if await self._wrapped.wait_command(
+                command_index, timeout=min(0.1, budget.remaining)
+            ):
+                budget.confirmed_index = command_index
+                return True
+            await self._check_health()
+        return False
 
     async def finalize(self) -> None:
         """Barrier for a pending blend group: wait it out, emit completion,
         clear. No pause gate — callers add one where stepping applies."""
         if not self._in_blend:
             return
-        if self._last_blend_index >= 0:
-            await self._wait_completed(self._last_blend_index)
-        self._in_blend = False
-        self._last_blend_index = -1
+        try:
+            for index, budget in self._blend_waits:
+                token = current_budget.set(budget)
+                try:
+                    await self._wait_completed(index)
+                finally:
+                    current_budget.reset(token)
+        finally:
+            self._in_blend = False
+            self._last_blend_index = -1
+            self._blend_waits.clear()
         self._step_io.emit_event("complete", "blend_group")
         self._step_io.increment_step_count()
 
@@ -396,7 +543,7 @@ class AsyncSteppingClientWrapper:
             return
         await self.finalize()
         if self._step_io.check_should_pause():
-            await self._step_io.wait_for_step_or_play_async()
+            await self._step_io.wait_for_step_or_play_async(check=self._check_health)
 
     @property
     def tool(self):
@@ -413,6 +560,7 @@ class AsyncSteppingClientWrapper:
         else:
             self._in_blend = False
             self._last_blend_index = -1
+            self._blend_waits.clear()
         return await self._wrapped.__aexit__(exc_type, exc, tb)
 
     def __getattr__(self, name: str) -> Any:
@@ -424,7 +572,8 @@ class AsyncSteppingClientWrapper:
         if asyncio.iscoroutinefunction(attr):
 
             async def passthrough(*args: Any, **kwargs: Any) -> Any:
-                await self._flush_blend()
+                if name not in _EXECUTION_CONTROLS:
+                    await self._flush_blend()
                 return await attr(*args, **kwargs)
 
             return passthrough
@@ -433,6 +582,19 @@ class AsyncSteppingClientWrapper:
 
     def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            kwargs, timeout = _nonblocking(method, kwargs)
+            if name == "tool_action" and timeout is None:
+                timeout = 10.0
+            budget = current_budget.get() or CompletionBudget(timeout)
+            budget.bind(self._wrapped, self._step_io.active_time)
+            token = current_budget.set(budget)
+            try:
+                await self._step_io.wait_until_resumed_async(self._check_health)
+                return await execute(*args, **kwargs)
+            finally:
+                current_budget.reset(token)
+
+        async def execute(*args: Any, **kwargs: Any) -> Any:
             is_blended = _is_blended(kwargs)
 
             if is_blended and self._step_io.check_should_pause():
@@ -445,7 +607,9 @@ class AsyncSteppingClientWrapper:
                 if isinstance(result, int) and result >= 0:
                     await self._wait_completed(result)
                 if self._step_io.check_should_pause():
-                    await self._step_io.wait_for_step_or_play_async()
+                    await self._step_io.wait_for_step_or_play_async(
+                        check=self._check_health
+                    )
                 return result
 
             if is_blended:
@@ -455,6 +619,9 @@ class AsyncSteppingClientWrapper:
                 result = await method(*args, **kwargs)
                 if isinstance(result, int) and result >= 0:
                     self._last_blend_index = result
+                    budget = current_budget.get()
+                    assert budget is not None
+                    self._blend_waits.append((result, budget))
                 return result
 
             await self.finalize()
@@ -467,7 +634,9 @@ class AsyncSteppingClientWrapper:
             self._step_io.increment_step_count()
 
             if self._step_io.check_should_pause():
-                await self._step_io.wait_for_step_or_play_async()
+                await self._step_io.wait_for_step_or_play_async(
+                    check=self._check_health
+                )
 
             return result
 
@@ -485,6 +654,7 @@ class GUIStepController:
         self._temp_dir = Path(tempfile.gettempdir())
         self._control_file = self._temp_dir / f".parol_control_{session_id}"
         self._event_file = self._temp_dir / f".parol_events_{session_id}"
+        self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
         self._last_event_count = 0
 
     def initialize(self) -> None:
@@ -495,13 +665,27 @@ class GUIStepController:
                 "paused": True,
                 "step_signal": 0,
                 "step_acked": 0,
+                "pause_elapsed": 0.0,
+                "pause_started": None,
             },
         )
         _atomic_write(self._event_file, {"events": []})
+        _atomic_write(self._ack_file, {"step_acked": 0, "waiting": False})
+
+    def waiting_for_step(self) -> bool:
+        control = _read_control(self._control_file)
+        ack = _read_control(self._ack_file)
+        return bool(
+            control.get("paused", True)
+            and control.get("pause_started") is None
+            and ack.get("waiting", False)
+            and control.get("step_signal", 0) <= ack.get("step_acked", 0)
+        )
 
     def signal_step(self) -> None:
         """Signal the script to execute one command then pause."""
         control = _read_control(self._control_file)
+        self._resume_clock(control)
         control["paused"] = True
         control["step_signal"] = control.get("step_signal", 0) + 1
         _atomic_write(self._control_file, control)
@@ -509,14 +693,26 @@ class GUIStepController:
     def signal_play(self) -> None:
         """Signal the script to continue without pausing (play mode)."""
         control = _read_control(self._control_file)
+        self._resume_clock(control)
         control["paused"] = False
         _atomic_write(self._control_file, control)
 
     def signal_pause(self) -> None:
-        """Signal the script to pause after the current command."""
+        """Hold instrumented calls and suspend their completion budgets."""
         control = _read_control(self._control_file)
         control["paused"] = True
+        if control.get("pause_started") is None:
+            control["pause_started"] = time.monotonic()
         _atomic_write(self._control_file, control)
+
+    @staticmethod
+    def _resume_clock(control: dict) -> None:
+        started = control.get("pause_started")
+        if started is not None:
+            control["pause_elapsed"] = control.get("pause_elapsed", 0.0) + max(
+                0.0, time.monotonic() - started
+            )
+            control["pause_started"] = None
 
     def poll_events(self) -> list[dict]:
         """
@@ -553,3 +749,4 @@ class GUIStepController:
                 self._event_file.unlink()
         except OSError:
             pass
+        self._ack_file.unlink(missing_ok=True)
