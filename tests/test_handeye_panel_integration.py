@@ -28,6 +28,7 @@ from parol6.protocol.wire import StatusResultStruct
 from scipy.spatial.transform import Rotation
 from waldoctl.setup import Frame, SetupSnapshot
 from waldo_commander.setup import SetupStore, export_snapshot
+from waldo_commander.camera import CameraUnavailable
 
 from tests.helpers.charuco_render import board_center, render_board_view
 from tests.helpers.wait import wait_for_app_ready
@@ -353,8 +354,29 @@ async def test_handeye_panel_workflow(
             SetupStore(tmp_path).save(
                 "bench", saved.with_frame("stand", Frame((101, 50, 0, 0, 0, 30)))
             )
+            # A capture gap must not mask a changed setup once frames resume.
+            _FrameBackend.holder["jpeg"] = b""
+
+            def frame_is_stale() -> bool:
+                try:
+                    camera_service.snapshot()
+                except CameraUnavailable:
+                    return True
+                return False
+
+            await _wait_for(
+                frame_is_stale, message="camera did not observe the capture gap"
+            )
             user.find(marker="camera-load").click()
-            await user.should_see("Camera reference frame changed", retries=50)
+            await asyncio.sleep(0)
+            _FrameBackend.holder["jpeg"] = frame
+            try:
+                await user.should_see("Camera reference frame changed", retries=50)
+            except AssertionError as error:
+                error.add_note(
+                    f"Calibration check reported: {panel._data_editor.message.text}"
+                )
+                raise
 
         # Without a detectable board the capture path stays gated.
         blank = _blank_jpeg()

@@ -102,7 +102,7 @@ class CameraCalibrationData:
             self.reference.set_value(
                 calibration.pose.frame if calibration.mount == "fixed" else "WRF"
             )
-            observation = camera_service.snapshot()
+            observation = await camera_service.next_snapshot()
             frame = handeye.decode_jpeg(observation.jpeg)
             if frame is None:
                 raise CameraUnavailable("Camera image cannot be decoded")
