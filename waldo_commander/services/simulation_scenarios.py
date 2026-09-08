@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass, field
+from importlib import import_module
 from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
@@ -115,9 +116,7 @@ def _run_case_worker(args: tuple[dict[str, Any]]) -> dict[str, Any]:
         raise ValueError(
             f"Backend {case.backend!r} does not support simulation scenarios"
         )
-    from par6.client.dry_run_client import DryRunRobotClient
-
-    client = DryRunRobotClient()
+    client = import_module("par6.client.dry_run_client").DryRunRobotClient()
     if client is None or "simulation.scenarios" not in client.skill_capabilities:
         raise ValueError(
             f"Backend {case.backend!r} does not support simulation scenarios"
