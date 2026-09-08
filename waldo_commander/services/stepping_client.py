@@ -302,8 +302,15 @@ class SteppingClientWrapper:
         return self._wrapped.run_skill(execute)
 
     def _wait_completed(self, index: int) -> None:
-        if not self.wait_command(index, timeout=None):
-            raise TimeoutError(f"Command {index} completion was not confirmed")
+        try:
+            if not self.wait_command(index, timeout=None):
+                raise TimeoutError(f"Command {index} completion was not confirmed")
+        except Exception:
+            if self._wrapped.stop() <= 0:
+                raise RuntimeError(
+                    "Command failed and controller stop was not confirmed"
+                )
+            raise
 
     def _check_health(self) -> None:
         if self._wrapped.status() is None:
@@ -522,8 +529,16 @@ class AsyncSteppingClientWrapper:
         self._blend_waits: list[tuple[int, CompletionBudget]] = []
 
     async def _wait_completed(self, index: int) -> None:
-        if not await self.wait_command(index, timeout=None):
-            raise TimeoutError(f"Command {index} completion was not confirmed")
+        try:
+            if not await self.wait_command(index, timeout=None):
+                raise TimeoutError(f"Command {index} completion was not confirmed")
+        except Exception:
+            async with asyncio.timeout(3.0):
+                if await self._wrapped.stop() <= 0:
+                    raise RuntimeError(
+                        "Command failed and controller stop was not confirmed"
+                    )
+            raise
 
     async def _check_health(self) -> None:
         if await self._wrapped.status() is None:
