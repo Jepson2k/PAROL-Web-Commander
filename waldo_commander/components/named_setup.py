@@ -11,6 +11,7 @@ from waldoctl.setup import Frame, Parameter, Pose, PoseValues, SetupSnapshot
 
 from waldo_commander.setup import SetupStore, export_snapshot
 from waldo_commander.components.tcp_calibration import TcpCalibrationEditor
+from waldo_commander.components.device_signals import DeviceSignalEditor
 from waldo_commander.services.python_source import insert_prelude
 
 
@@ -46,6 +47,7 @@ class NamedSetupPanel(Panel):
             parameter_existing.set_options(list(snapshot.parameters), value=None)
             summary.refresh()
             tcp_editor.refresh()
+            signal_editor.refresh()
 
         def set_snapshot(updated: SetupSnapshot) -> None:
             nonlocal snapshot
@@ -150,6 +152,7 @@ class NamedSetupPanel(Panel):
                 poses_tab = ui.tab("Poses")
                 params_tab = ui.tab("Parameters")
                 tcp_tab = ui.tab("TCP")
+                signals_tab = ui.tab("Signals")
 
             def coordinates(prefix: str) -> list[ui.number]:
                 with ui.grid(columns=3).classes("w-full"):
@@ -404,6 +407,10 @@ class NamedSetupPanel(Panel):
 
                 with ui.tab_panel(tcp_tab).classes("p-0"):
                     tcp_editor = TcpCalibrationEditor(
+                        commander, lambda: snapshot, set_snapshot
+                    )
+                with ui.tab_panel(signals_tab).classes("p-0"):
+                    signal_editor = DeviceSignalEditor(
                         commander, lambda: snapshot, set_snapshot
                     )
 

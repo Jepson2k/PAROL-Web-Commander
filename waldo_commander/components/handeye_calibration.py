@@ -894,6 +894,12 @@ class HandEyeCalibrationPanel(Panel):
                 if state == waldoctl.ActionState.EXECUTING:
                     started = True
                 elif started and state == waldoctl.ActionState.IDLE:
+                    # Completion may have arrived after the preceding poll's
+                    # deadline. Confirm it before interpreting idle as a Stop.
+                    if await commander.client.wait_command(
+                        index, timeout=AUTO_WAIT_SLICE_S
+                    ):
+                        return index
                     logger.info("Auto-calibration halted: the move was cancelled")
                     self._auto_cancel = True
                     return -1
