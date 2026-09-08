@@ -13,8 +13,10 @@ import asyncio
 import inspect
 import json
 import os
+import logging
 import shutil
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -25,6 +27,7 @@ from waldoctl.client import RobotClient
 
 from .path_preview_client import MOTION_METHODS
 from .completion_budget import CompletionBudget, current_budget
+from .command_records import recorded_method
 
 R = TypeVar("R")
 
@@ -96,6 +99,8 @@ class StepIO:
         self._ack_file = self._temp_dir / f".parol_ack_{session_id}"
         self._step_count = 0
         self._last_step_acked = 0
+        self.capture_values = os.environ.get("WALDO_RECORD_VALUES") == "1"
+        self._event_lock = threading.Lock()
 
     def active_time(self) -> float:
         control = _read_control(self._control_file)
@@ -149,17 +154,26 @@ class StepIO:
             method: Name of the motion method
             **extra: Additional event data
         """
-        events = self._read_events()
-        events.append(
-            {
-                "event": event_type,
-                "method": method,
-                "step": self._step_count,
-                "ts": time.time(),
-                **extra,
-            }
-        )
-        _atomic_write(self._event_file, {"events": events})
+        with self._event_lock:
+            events = self._read_events()
+            sequence = events[-1].get("sequence", len(events)) + 1 if events else 1
+            events.append(
+                {
+                    "event": event_type,
+                    "method": method,
+                    "step": self._step_count,
+                    "ts": time.time(),
+                    "mono_ns": time.monotonic_ns(),
+                    "active_s": self.active_time(),
+                    "sequence": sequence,
+                    **extra,
+                }
+            )
+            try:
+                _atomic_write(self._event_file, {"events": events[-256:]})
+            except OSError:
+                # Diagnostics cannot change whether a command executes.
+                logging.getLogger(__name__).exception("Could not record command event")
 
     def check_should_pause(self) -> bool:
         """Check if the script should pause (paused flag is true)."""
@@ -243,7 +257,9 @@ class _SteppingToolProxy:
         if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
             return attr
 
-        return self._owner._wrap_motion_method("tool_action", attr)
+        return self._owner._wrap_motion_method(
+            "tool_action", attr, record_name=f"tool.{name}"
+        )
 
 
 class SteppingClientWrapper:
@@ -301,6 +317,29 @@ class SteppingClientWrapper:
             raise RuntimeError(f"Controller fault during managed pause: {error}")
 
     def wait_command(self, command_index: int, timeout: float | None = 10.0) -> bool:
+        try:
+            result = self._wait_command_active(command_index, timeout)
+        except BaseException as error:
+            if self._step_io.capture_values:
+                self._step_io.emit_event(
+                    "command_wait_failed",
+                    "wait_command",
+                    index=command_index,
+                    error_type=type(error).__name__,
+                    message=str(error)[:512],
+                )
+            raise
+        if self._step_io.capture_values:
+            self._step_io.emit_event(
+                "command_completed" if result else "command_unconfirmed",
+                "wait_command",
+                index=command_index,
+            )
+        return result
+
+    def _wait_command_active(
+        self, command_index: int, timeout: float | None = 10.0
+    ) -> bool:
         budget = current_budget.get() or CompletionBudget(timeout)
         budget.bind(self._wrapped, self._step_io.active_time)
         while budget.remaining > 0:
@@ -370,10 +409,17 @@ class SteppingClientWrapper:
 
         if name not in _EXECUTION_CONTROLS:
             self._flush_blend()
-        return attr
+        return (
+            recorded_method(self._step_io, name, attr)
+            if callable(attr) and not name.startswith("_")
+            else attr
+        )
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, record_name: str | None = None
+    ) -> Callable:
         """Create a wrapper function for a motion method."""
+        method = recorded_method(self._step_io, record_name or name, method)
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             kwargs, timeout = _nonblocking(method, kwargs)
@@ -455,7 +501,9 @@ class _AsyncSteppingToolProxy:
         if not callable(attr) or name not in _STEPPABLE_TOOL_METHODS:
             return attr
 
-        return self._owner._wrap_motion_method("tool_action", attr)
+        return self._owner._wrap_motion_method(
+            "tool_action", attr, record_name=f"tool.{name}"
+        )
 
 
 class AsyncSteppingClientWrapper:
@@ -491,6 +539,29 @@ class AsyncSteppingClientWrapper:
             raise RuntimeError(f"Controller fault during managed pause: {error}")
 
     async def wait_command(
+        self, command_index: int, timeout: float | None = 10.0
+    ) -> bool:
+        try:
+            result = await self._wait_command_active(command_index, timeout)
+        except BaseException as error:
+            if self._step_io.capture_values:
+                self._step_io.emit_event(
+                    "command_wait_failed",
+                    "wait_command",
+                    index=command_index,
+                    error_type=type(error).__name__,
+                    message=str(error)[:512],
+                )
+            raise
+        if self._step_io.capture_values:
+            self._step_io.emit_event(
+                "command_completed" if result else "command_unconfirmed",
+                "wait_command",
+                index=command_index,
+            )
+        return result
+
+    async def _wait_command_active(
         self, command_index: int, timeout: float | None = 10.0
     ) -> bool:
         budget = current_budget.get() or CompletionBudget(timeout)
@@ -559,13 +630,17 @@ class AsyncSteppingClientWrapper:
             async def passthrough(*args: Any, **kwargs: Any) -> Any:
                 if name not in _EXECUTION_CONTROLS:
                     await self._flush_blend()
-                return await attr(*args, **kwargs)
+                return await recorded_method(self._step_io, name, attr)(*args, **kwargs)
 
             return passthrough
 
         return attr
 
-    def _wrap_motion_method(self, name: str, method: Callable) -> Callable:
+    def _wrap_motion_method(
+        self, name: str, method: Callable, *, record_name: str | None = None
+    ) -> Callable:
+        method = recorded_method(self._step_io, record_name or name, method)
+
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             kwargs, timeout = _nonblocking(method, kwargs)
             if name == "tool_action" and timeout is None:
@@ -707,8 +782,14 @@ class GUIStepController:
         try:
             data = json.loads(self._event_file.read_text())
             events = data.get("events", [])
-            new_events = events[self._last_event_count :]
-            self._last_event_count = len(events)
+            new_events = [
+                e for e in events if e.get("sequence", 0) > self._last_event_count
+            ]
+            if new_events:
+                missed = new_events[0]["sequence"] - self._last_event_count - 1
+                self._last_event_count = new_events[-1]["sequence"]
+                if missed:
+                    new_events.insert(0, {"event": "events_lost", "count": missed})
             return new_events
         except (json.JSONDecodeError, OSError):
             return []
@@ -718,7 +799,10 @@ class GUIStepController:
         try:
             data = json.loads(self._event_file.read_text())
             events = data.get("events", [])
-            return sum(1 for e in events if e.get("event") == "complete")
+            return max(
+                (e.get("step", 0) + int(e.get("event") == "complete") for e in events),
+                default=0,
+            )
         except (json.JSONDecodeError, OSError):
             return 0
 

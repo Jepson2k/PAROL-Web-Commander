@@ -211,18 +211,12 @@ class TestGUIStepController:
         controller = GUIStepController("test_poll")
         controller.initialize()
 
-        # Write some events to event file
+        from waldo_commander.services.stepping_client import StepIO
+
+        step_io = StepIO(controller.session_id)
         event_file = tmp_path / ".parol_events_test_poll"
-        event_file.write_text(
-            json.dumps(
-                {
-                    "events": [
-                        {"event": "start", "method": "move_j", "step": 0},
-                        {"event": "complete", "method": "move_j", "step": 0},
-                    ]
-                }
-            )
-        )
+        step_io.emit_event("start", "move_j")
+        step_io.emit_event("complete", "move_j")
 
         events = controller.poll_events()
         assert len(events) == 2

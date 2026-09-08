@@ -33,6 +33,7 @@ from waldo_commander.services.script_runner import (
     stop_script,
 )
 from waldo_commander.services.stepping_client import GUIStepController
+from waldo_commander.services.run_records import RunRecord
 from waldo_commander.services.programs import is_any_program_running
 import waldoctl
 from waldoctl import LogEntry
@@ -64,6 +65,9 @@ class ScriptExecutionController:
         # before any run) — lets execution.wait_active report success/crash.
         self.last_exit_code: int | None = None
         self._execution_control_lock = asyncio.Lock()
+        self.record_runs = False
+        self.active_record: RunRecord | None = None
+        self.last_record: Path | None = None
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher bound to this page.
@@ -185,9 +189,22 @@ class ScriptExecutionController:
             self._script_tab_id = launching_tab.id if launching_tab else None
             if launching_tab is not None:
                 launching_tab.log.clear()
+                launching_tab.execution.is_running = True
             log_panel.clear()
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
+            script_config["env"]["WALDO_RECORD_VALUES"] = "0"
+            if self.record_runs:
+                try:
+                    self.active_record = RunRecord(
+                        content, ui_state.active_robot.backend_package
+                    )
+                    self.last_record = self.active_record.path
+                    script_config["env"]["WALDO_RECORD_VALUES"] = "1"
+                    self.active_record.start_status(waldoctl.commander.client)
+                    await self.active_record.capture_context(waldoctl.commander.client)
+                except OSError as error:
+                    ui.notify(f"Run recording unavailable: {error}", color="warning")
 
             ui_client = self._ui_client or context.client
 
@@ -252,6 +269,7 @@ class ScriptExecutionController:
                         "Failed to stop leaked subprocess after start error: %s",
                         stop_err,
                     )
+            self._finish_record("start_failed")
             self._reset_state()
 
     async def stop(self) -> None:
@@ -260,10 +278,11 @@ class ScriptExecutionController:
             ui.notify("No script running", color="warning")
             return
 
+        outcome = "stop_unconfirmed"
         try:
             handle = self.script_handle
             self.script_handle = None
-            self.cleanup_stepping()
+            self._cancel_watcher()
             if handle:
                 await stop_script(handle)
             # The process can no longer enqueue commands. Keep the run marked
@@ -273,13 +292,25 @@ class ScriptExecutionController:
                     raise TimeoutError(
                         "Program exited, but controller stop was not confirmed"
                     )
+            try:
+                self._consume_script_events(self._ui_client or context.client)
+            except Exception:
+                logger.warning(
+                    "Terminal events unavailable after controller stop", exc_info=True
+                )
+                if self.active_record:
+                    self.active_record.append(
+                        {"event": "events_lost", "reason": "terminal read failed"}
+                    )
             ui.notify("Script stopped", color="warning")
             logger.info("Script stopped by user")
+            outcome = "stopped"
         except Exception as e:
             ui.notify(f"Error stopping script: {e}", color="negative")
             logger.error("Error stopping script: %s", e)
             raise
         finally:
+            self._finish_record(outcome)
             self._reset_state()
 
     # ---- Public step-controller actions (called from playback UI handlers) ----
@@ -292,6 +323,8 @@ class ScriptExecutionController:
                     if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
                         raise TimeoutError("Controller resume was not confirmed")
                 self._step_controller.signal_play()
+                if self.active_record:
+                    self.active_record.append({"event": "resume"})
 
     async def signal_pause(self) -> None:
         """Pause a running script subprocess (no-op if no script is stepping)."""
@@ -303,6 +336,8 @@ class ScriptExecutionController:
                         raise TimeoutError(
                             "Script held, but controller pause was not confirmed"
                         )
+                if self.active_record:
+                    self.active_record.append({"event": "pause"})
 
     async def signal_step(self) -> None:
         """Step a paused script forward by one command (no-op if not stepping)."""
@@ -312,6 +347,8 @@ class ScriptExecutionController:
                     if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
                         raise TimeoutError("Controller resume was not confirmed")
                 self._step_controller.signal_step()
+                if self.active_record:
+                    self.active_record.append({"event": "step"})
 
     # ---- Internals ----
 
@@ -320,6 +357,8 @@ class ScriptExecutionController:
             return
         events = self._step_controller.poll_events()
         for event in events:
+            if self.active_record:
+                self.active_record.append(event)
             event_type = event.get("event")
             method = event.get("method", "")
             step = event.get("step", 0)
@@ -406,6 +445,7 @@ class ScriptExecutionController:
                 # events before cleanup deletes the IPC file and tab identity.
                 self._consume_script_events(ui_client)
                 with ui_client:
+                    self._finish_record("completed" if rc == 0 else "failed", rc)
                     self._reset_state()
                     logger.info("Script %s finished with code %s", filename, rc)
         except Exception as e:
@@ -414,9 +454,15 @@ class ScriptExecutionController:
                 if self.script_handle is handle:
                     self._reset_state()
 
+    def _finish_record(self, outcome: str, exit_code: int | None = None) -> None:
+        if self.active_record is not None:
+            self.active_record.finish(outcome, exit_code)
+            self.active_record = None
+
     def _reset_state(self) -> None:
         """Reset all script-related state after a script finishes or errors."""
         self.script_handle = None
+        self._finish_record("interrupted")
         running_tab = self._launching_program()
         if running_tab is not None:
             running_tab.execution.is_running = False
