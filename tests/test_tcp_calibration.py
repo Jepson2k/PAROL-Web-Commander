@@ -20,6 +20,7 @@ from tests.helpers.wait import (
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
 from waldo_commander.setup import SetupStore
 from waldo_commander.state import ui_state
+from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 
 
 @pytest.mark.integration
@@ -102,10 +103,13 @@ async def test_pivot_orientation_saved_setup_and_confirmed_application(
             "saving applied robot configuration"
         )
 
+        control_lease.seize(MCP, "tcp-review", "Review MCP")
         user.find(marker="tcp-calibration-apply").click()
         await user.should_see(
             "Controller confirmed the displayed TCP transform.", retries=50
         )
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
+        await user.should_see("You've taken control from the AI")
         assert await client.tcp_transform() == pytest.approx(saved.values)
         actual = await client.pose()
         assert actual is not None

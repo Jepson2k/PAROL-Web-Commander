@@ -148,7 +148,8 @@ async def test_managed_completion_preserves_remaining_budget_during_pause(user: 
         with pytest.raises(TimeoutError):
             await managed.move_j(target, duration=2, wait=False, timeout=0.2)
         assert time.monotonic() - began < 1.5
-        await client.stop()
+        assert await client.queue() == []
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
 
         # A blend's final barrier must retain each queued command's budget.
         wrapper = cast(AsyncSteppingClientWrapper, managed)
@@ -157,7 +158,26 @@ async def test_managed_completion_preserves_remaining_budget_during_pause(user: 
         with pytest.raises(TimeoutError):
             await wrapper.finalize()
         assert time.monotonic() - began < 1.5
-        await client.stop()
+        assert await client.queue() == []
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+
+        from parol6 import RobotClient
+        from waldo_commander.constants import config
+        from waldo_commander.services.stepping_client import SteppingClientWrapper
+
+        def sync_timeout():
+            with RobotClient(
+                host=config.controller_host, port=config.controller_port
+            ) as sync_client:
+                wrapped = SteppingClientWrapper(
+                    sync_client, StepIO(controller.session_id)
+                )
+                with pytest.raises(TimeoutError):
+                    wrapped.move_j(target, duration=2, timeout=0.2)
+
+        await asyncio.to_thread(sync_timeout)
+        assert await client.queue() == []
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
 
         # A skill invoked while already paused must bind its budget before
         # waiting at the dispatch gate. Dwell avoids profile-transition timing.
@@ -247,3 +267,72 @@ async def test_step_watcher_failure_stops_the_program_and_native_queue(
             await stop_script(handle)
         await waldoctl.commander.client.stop()
         script_exec._reset_state()
+
+
+@pytest.mark.integration
+async def test_failed_program_keeps_stop_available_until_controller_confirms(
+    user: User, tmp_path, monkeypatch, caplog
+):
+    from waldo_commander.components.script_execution import script_exec
+    from waldo_commander.services.programs import is_any_program_running
+    from waldo_commander.state import ui_state
+
+    await user.open("/")
+    await wait_for_app_ready()
+    await enable_sim(user)
+    await ensure_robot_ready_for_motion()
+    client = waldoctl.commander.client
+    start = await client.angles()
+    assert start is not None
+    target = list(start)
+    target[0] += 8
+    release = tmp_path / "fail-program"
+    assert ui_state.active_textarea is not None
+    ui_state.active_textarea.value = (
+        "import os, time\nfrom pathlib import Path\nfrom parol6 import RobotClient\n"
+        "with RobotClient() as rbt:\n"
+        f"    rbt.move_j({target!r}, duration=6, r=1, timeout=15)\n"
+        "    if os.environ.get('WALDO_STEP_SESSION'):\n"
+        f"        while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+        "        raise RuntimeError('test program failed with queued motion')\n"
+    )
+    real_stop = client.stop
+
+    async def unavailable_stop():
+        raise ConnectionError("test stop acknowledgement unavailable")
+
+    handle = None
+    try:
+        await script_exec.start()
+        handle = script_exec.script_handle
+        assert handle is not None
+        assert await client.wait_status(
+            lambda s: s.angles[0] > start[0] + 0.2, timeout=10
+        )
+        monkeypatch.setattr(client, "stop", unavailable_stop)
+        release.touch()
+        async with asyncio.timeout(5):
+            while script_exec.last_exit_code is None:
+                await asyncio.sleep(0.01)
+        assert is_any_program_running(), "failed stop discarded execution tracking"
+        await user.should_see("Controller stop is unconfirmed", retries=50)
+        assert script_exec.script_handle is handle
+        monkeypatch.setattr(client, "stop", real_stop)
+        await script_exec.stop()
+        assert not is_any_program_running()
+        assert await client.queue() == []
+        assert await client.wait_status(lambda s: not s.action_current, timeout=3)
+        expected = [
+            r
+            for r in caplog.get_records("call")
+            if "test stop acknowledgement unavailable" in r.getMessage()
+        ]
+        assert expected
+        records = caplog.get_records("call")
+        records[:] = [r for r in records if r not in expected]
+    finally:
+        release.touch()
+        monkeypatch.setattr(client, "stop", real_stop)
+        if is_any_program_running():
+            await script_exec.stop()
+        await client.stop()
