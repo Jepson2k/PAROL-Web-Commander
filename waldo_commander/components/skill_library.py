@@ -12,11 +12,14 @@ from typing import Any, ClassVar, get_args, get_origin, get_type_hints, Literal
 from nicegui import ui
 from waldoctl import Commander, Panel, PanelSlot
 from waldoctl.setup import Pose, SetupSnapshot
+from waldoctl.camera import CameraCalibration
 from waldoctl.tools import ToolType
 from waldoctl.signals import DigitalSignal
 
 from waldo_commander.services.skill_library import SkillEntry, call_source, library
 from waldo_commander.setup import SetupStore
+from waldo_commander.camera_sources import CommanderCameraSource, FrameSource
+from waldo_commander.vision import LocalizationLimits
 
 
 class SkillLibraryPanel(Panel):
@@ -229,7 +232,22 @@ class SkillLibraryPanel(Panel):
                         if parameter.default is not inspect.Parameter.empty
                         else None
                     )
-                    if annotation in (Pose, SetupSnapshot, DigitalSignal):
+                    if annotation is FrameSource:
+                        ui.label(
+                            "Camera source: Commander's active camera. Preview requires an ImageFixture supplied in Python."
+                        ).classes("text-caption").mark("skill-camera-source")
+                        readers[name] = CommanderCameraSource
+                    elif annotation == LocalizationLimits | None:
+                        readers[name] = lambda: None
+                        ui.label(
+                            "Uses default detection limits; customize LocalizationLimits in Python."
+                        ).classes("text-caption")
+                    elif annotation in (
+                        Pose,
+                        SetupSnapshot,
+                        DigitalSignal,
+                        CameraCalibration,
+                    ):
                         store = SetupStore()
                         names = store.names()
                         setup = (
@@ -249,7 +267,11 @@ class SkillLibraryPanel(Panel):
                             )
                             setup.on_value_change(refresh_source)
                         else:
-                            resource = "pose" if annotation is Pose else "signal"
+                            resource = {
+                                Pose: "pose",
+                                DigitalSignal: "signal",
+                                CameraCalibration: "camera",
+                            }[annotation]
                             pose = (
                                 ui.select([], label=f"{name}: {resource}")
                                 .props("dense")
@@ -268,6 +290,8 @@ class SkillLibraryPanel(Panel):
                                     options = list(
                                         snapshot.poses
                                         if kind is Pose
+                                        else snapshot.cameras
+                                        if kind is CameraCalibration
                                         else snapshot.signals
                                     )
                                     pose_widget.set_options(
@@ -287,6 +311,8 @@ class SkillLibraryPanel(Panel):
                                     p.value
                                 )
                                 if kind is Pose
+                                else selected_store.load(s.value).cameras[p.value]
+                                if kind is CameraCalibration
                                 else selected_store.load(s.value).signals[p.value]
                             )
                             set_poses()
