@@ -18,6 +18,7 @@ from tests.helpers.wait import (
 )
 from waldo_commander.services.path_visualizer import _run_simulation_isolated
 from waldo_commander.skills import attach_object, detach_object
+from waldo_commander.services.control_lease import BROWSER, MCP, control_lease
 
 
 @pytest.mark.integration
@@ -110,9 +111,12 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
         assert len(expected) == 1
         caplog.records.remove(expected[0])
         assert (await client.shapes()).program[-1].attachment is None
+        control_lease.seize(MCP, "attach-review", "Review MCP")
         element("attachment-contacts").set_value("shape:fixture")
         user.find(marker="attachment-apply").click()
         await user.should_see("Attachment confirmed: part", retries=50)
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
+        await user.should_see("You've taken control from the AI")
         applied = await client.shapes()
         assert applied is not None and applied.program[0] == marker
         assert applied.attachments_valid and applied.program[-1].attachment is not None
@@ -140,10 +144,12 @@ async def test_attachment_controls_confirm_model_and_require_reconciliation(
                 await asyncio.sleep(0)
         with scene.scene:
             scene._show_attachment_dialog("part", detach=True)
+        control_lease.seize(MCP, "detach-review", "Review MCP")
         for axis in ("x", "y", "z"):
             element(f"attachment-pos-{axis}").set_value(1000)
         user.find(marker="attachment-apply").click()
         await user.should_see("Detached: part", retries=50)
+        assert control_lease.held_by(BROWSER, ui_state.active_client_id)
         world = await client.shapes()
         assert world is not None and world.program[0] == marker
         assert world.program[-1].attachment is None
