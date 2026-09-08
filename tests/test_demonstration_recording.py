@@ -89,10 +89,27 @@ async def test_observed_motion_records_cadence_gaps_and_controller_loss(
         selected = recording.select(1, 3)
         assert selected.samples[0].observed_ns == recording.samples[1].observed_ns
 
+        # Real status streams can drop publications under CI load. Select a
+        # measured continuous span; never erase gaps or synthesize timestamps.
+        boundaries = [
+            0,
+            *(gap.sample_index for gap in recording.gaps),
+            len(recording.samples),
+        ]
+        begin, end = max(
+            zip(boundaries, boundaries[1:]), key=lambda span: span[1] - span[0]
+        )
+        recording = recording.select(begin, end)
+        recording.require_continuous()
+        save_demonstration(path, recording)
+        first_joints = list(recording.samples[0].joints_deg)
+        mismatched = first_joints.copy()
+        mismatched[0] += 3
+        index = await client.move_j(mismatched, duration=0.8)
+        assert await client.wait_command(index, timeout=10)
         with pytest.raises(SkillError, match="Start joint"):
             await replay_demonstration.async_call(client, recording)
-        assert await client.angles() == pytest.approx(target, abs=0.5)
-        first_joints = list(recording.samples[0].joints_deg)
+        assert await client.angles() == pytest.approx(mismatched, abs=0.5)
         index = await client.move_j(first_joints, speed=0.5)
         assert await client.wait_command(index, timeout=10)
         with pytest.raises(SkillError, match="new controller session"):
