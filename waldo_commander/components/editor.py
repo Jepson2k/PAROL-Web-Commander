@@ -1139,6 +1139,18 @@ class EditorPanel(FileOperationsMixin):
                 )
                 records_btn.mark("editor-records-btn")
 
+                from waldo_commander.components.supervised_restart import (
+                    show_supervised_restart,
+                )
+
+                restart_btn = (
+                    ui.button(icon="restart_alt", on_click=show_supervised_restart)
+                    .props("flat dense color=white")
+                    .classes("editor-toolbar-btn")
+                    .tooltip("Supervised restart")
+                    .mark("editor-restart-btn")
+                )
+
                 commands_btn = (
                     ui.button(icon="library_add")
                     .props("flat dense color=white")
@@ -1148,7 +1160,13 @@ class EditorPanel(FileOperationsMixin):
                 commands_btn.mark("editor-commands-btn")
                 with commands_btn:
                     self._build_command_menu()
-                self._toolbar_btns = [open_btn, save_btn, records_btn, commands_btn]
+                self._toolbar_btns = [
+                    open_btn,
+                    save_btn,
+                    records_btn,
+                    restart_btn,
+                    commands_btn,
+                ]
 
                 if close_callback:
                     ui.button(icon="close", on_click=close_callback).props(

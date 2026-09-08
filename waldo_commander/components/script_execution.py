@@ -21,6 +21,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
+from dataclasses import asdict
 
 from nicegui import Client, context, ui
 
@@ -34,6 +35,12 @@ from waldo_commander.services.script_runner import (
 )
 from waldo_commander.services.stepping_client import GUIStepController
 from waldo_commander.services.run_records import RunRecord
+from waldo_commander.services.supervised_restart import (
+    RestartState,
+    discover_entries,
+    fresh_state,
+    source_digest,
+)
 from waldo_commander.services.programs import is_any_program_running
 import waldoctl
 from waldoctl import LogEntry
@@ -68,6 +75,10 @@ class ScriptExecutionController:
         self.record_runs = False
         self.active_record: RunRecord | None = None
         self.last_record: Path | None = None
+        self.last_run_source_digest: str | None = None
+        self.last_outcome: str | None = None
+        self._launch_task: asyncio.Task | None = None
+        self._cancel_launch_from_stop = False
 
     def cleanup(self) -> None:
         """Per-page cleanup — cancel the event watcher bound to this page.
@@ -151,7 +162,14 @@ class ScriptExecutionController:
         else:
             await self.start()
 
-    async def start(self, paused: bool = False) -> None:
+    async def start(
+        self,
+        paused: bool = False,
+        *,
+        restart_entry: str | None = None,
+        restart_reference: RestartState | None = None,
+        reviewed_source_digest: str | None = None,
+    ) -> bool:
         """Start the current editor content as a Python subprocess.
 
         With ``paused``, the stepping control file is left in its initial
@@ -161,9 +179,11 @@ class ScriptExecutionController:
         """
         if is_any_program_running():
             ui.notify("Script already running", color="warning")
-            return
+            return False
 
         self.last_exit_code = None
+        self._launch_task = asyncio.current_task()
+        self._cancel_launch_from_stop = False
         try:
             filename_input = ui_state.active_filename_input
             filename = (
@@ -174,6 +194,18 @@ class ScriptExecutionController:
 
             textarea = ui_state.active_textarea
             content = textarea.value if textarea else ""
+            if restart_entry is not None:
+                if (
+                    restart_reference is None
+                    or source_digest(content) != reviewed_source_digest
+                ):
+                    raise ValueError(
+                        "Review this program and the physical setup before restarting"
+                    )
+                if restart_entry not in {
+                    entry.name for entry in discover_entries(content)
+                }:
+                    raise ValueError("The selected restart entry is no longer declared")
             assert self._program_dir is not None, "program_dir not set"
             runtime_dir = self._program_dir / ".runtime"
             script_path = runtime_dir / filename
@@ -194,6 +226,9 @@ class ScriptExecutionController:
 
             script_config = create_default_config(str(script_path), str(REPO_ROOT))
             script_config["env"]["WALDO_RECORD_VALUES"] = "0"
+            script_config["env"]["WALDO_RESTART_ENTRY"] = restart_entry or ""
+            self.last_run_source_digest = source_digest(content)
+            self.last_outcome = "running"
             if self.record_runs:
                 try:
                     self.active_record = RunRecord(
@@ -220,6 +255,19 @@ class ScriptExecutionController:
 
             if launching_tab is not None:
                 launching_tab.execution.is_running = True
+            if restart_entry is not None:
+                current = await fresh_state(waldoctl.commander.client)
+                current.require_ready()
+                assert restart_reference is not None
+                current.require_same_setup(restart_reference)
+                if self.active_record:
+                    self.active_record.append(
+                        {
+                            "event": "restart_selected",
+                            "entry": restart_entry,
+                            "snapshot": asdict(current),
+                        }
+                    )
             if "execution.speed" in waldoctl.commander.client.skill_capabilities:
                 if await waldoctl.commander.client.resume(timeout=3.0) <= 0:
                     raise TimeoutError("Controller resume was not confirmed")
@@ -254,10 +302,23 @@ class ScriptExecutionController:
 
             ui.notify(f"Started script: {filename}", color="positive")
             logger.info("Started script: %s", filename)
+            return True
 
+        except asyncio.CancelledError:
+            if self.script_handle is not None:
+                await stop_script(self.script_handle)
+                self.script_handle = None
+            if self._cancel_launch_from_stop:
+                return False
+            self._finish_record("interrupted")
+            self._reset_state()
+            raise
         except Exception as e:
             ui.notify(f"Failed to start script: {e}", color="negative")
-            logger.error("Failed to start script: %s", e)
+            if restart_entry is not None and isinstance(e, ValueError):
+                logger.warning("Restart refused: %s", e)
+            else:
+                logger.error("Failed to start script: %s", e)
             # Reap the subprocess if run_script succeeded before the exception
             # — otherwise the process group outlives the failed start.
             leaked_handle = self.script_handle
@@ -271,15 +332,24 @@ class ScriptExecutionController:
                     )
             self._finish_record("start_failed")
             self._reset_state()
+            return False
+        finally:
+            self._launch_task = None
 
     async def stop(self) -> None:
         """Terminate the program, then cancel its native motion and queue."""
-        if not is_any_program_running() or not self.script_handle:
+        if not is_any_program_running() or (
+            self.script_handle is None and self._launch_task is None
+        ):
             ui.notify("No script running", color="warning")
             return
 
         outcome = "stop_unconfirmed"
         try:
+            if self._launch_task is not None:
+                self._cancel_launch_from_stop = True
+                self._launch_task.cancel()
+                await asyncio.gather(self._launch_task, return_exceptions=True)
             handle = self.script_handle
             self.script_handle = None
             self._cancel_watcher()
@@ -310,6 +380,7 @@ class ScriptExecutionController:
             logger.error("Error stopping script: %s", e)
             raise
         finally:
+            self._cancel_launch_from_stop = False
             self._finish_record(outcome)
             self._reset_state()
 
@@ -455,6 +526,8 @@ class ScriptExecutionController:
                     self._reset_state()
 
     def _finish_record(self, outcome: str, exit_code: int | None = None) -> None:
+        if self.last_outcome == "running":
+            self.last_outcome = outcome
         if self.active_record is not None:
             self.active_record.finish(outcome, exit_code)
             self.active_record = None
