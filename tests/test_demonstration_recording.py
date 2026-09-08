@@ -190,23 +190,43 @@ async def test_gripper_recording_replays_through_managed_pause_and_fault(user: U
     assert await client.wait_status(
         lambda s: s.tool_status.key == "PNEUMATIC", timeout=3
     )
-    index = await client.tool.open()
-    assert await client.wait_command(index, timeout=5)
-    assert await client.wait_status(
-        lambda s: s.tool_status.positions[0] == 0, timeout=3
-    )
-    started = asyncio.Event()
-    capture = asyncio.create_task(
-        record_demonstration(
-            client, duration_s=1, on_sample=lambda sample: started.set()
+    # Choose an observed, uninterrupted open-to-close span. A dropped
+    # publication remains a gap; acquire another transition if needed.
+    recording = None
+    for _ in range(3):
+        index = await client.tool.open()
+        assert await client.wait_command(index, timeout=5)
+        assert await client.wait_status(
+            lambda s: s.tool_status.positions[0] == 0, timeout=3
         )
-    )
-    await asyncio.wait_for(started.wait(), 5)
-    index = await client.tool.close()
-    assert await client.wait_command(index, timeout=5)
-    recording = await capture
-    assert recording.samples[0].tool.positions[0] == 0
-    assert recording.samples[-1].tool.positions[0] == 1
+        started = asyncio.Event()
+        capture = asyncio.create_task(
+            record_demonstration(
+                client, duration_s=1, on_sample=lambda sample: started.set()
+            )
+        )
+        await asyncio.wait_for(started.wait(), 5)
+        index = await client.tool.close()
+        assert await client.wait_command(index, timeout=5)
+        observed = await capture
+        boundaries = [
+            0,
+            *(gap.sample_index for gap in observed.gaps),
+            len(observed.samples),
+        ]
+        for begin, end in zip(boundaries, boundaries[1:]):
+            span = observed.select(begin, end)
+            if (
+                len(span.samples) >= 2
+                and span.samples[0].tool.positions[0] == 0
+                and span.samples[-1].tool.positions[0] == 1
+            ):
+                recording = span
+                break
+        if recording is not None:
+            break
+    assert recording is not None, "No continuous gripper transition was observed"
+    recording.require_continuous()
 
     controller = GUIStepController(uuid4().hex)
     controller.initialize()
@@ -225,7 +245,12 @@ async def test_gripper_recording_replays_through_managed_pause_and_fault(user: U
                 timeout=2,
             )
         )
-        assert await client.wait_status(lambda s: bool(s.action_current), timeout=5)
+        if not await client.wait_status(lambda s: bool(s.action_current), timeout=5):
+            if task.done():
+                await (
+                    task
+                )  # Surface a replay refusal instead of hiding it as missing status.
+            pytest.fail("Replay did not publish an active command before the pause")
         controller.signal_pause()
         assert await client.pause() == 1
         await asyncio.sleep(2.5)
@@ -240,7 +265,12 @@ async def test_gripper_recording_replays_through_managed_pause_and_fault(user: U
         )
 
         task = asyncio.create_task(replay_demonstration.async_call(managed, recording))
-        assert await client.wait_status(lambda s: bool(s.action_current), timeout=5)
+        if not await client.wait_status(lambda s: bool(s.action_current), timeout=5):
+            if task.done():
+                await (
+                    task
+                )  # Surface a replay refusal instead of hiding it as missing status.
+            pytest.fail("Replay did not publish an active command before the pause")
         controller.signal_pause()
         assert await client.pause() == 1
         await client.estop()
