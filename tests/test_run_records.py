@@ -156,11 +156,17 @@ if os.environ.get("WALDO_STEP_SESSION"):
     await user.should_see("Export debugging data")
     user.find("Close").click()
     assert script_exec.record_runs
+    program = waldoctl.commander.programs.active
+    assert program is not None
     await script_exec.start()
     async with asyncio.timeout(40):
         while is_any_program_running():
             await asyncio.sleep(0.05)
     assert script_exec.last_exit_code == 1
+    stderr = "\n".join(
+        entry.text for entry in program.log.entries if entry.stream == "stderr"
+    )
+    assert "RuntimeError: error-secret-123" in stderr, stderr
     path = script_exec.last_record
     assert path is not None
     events = load_record(path)
