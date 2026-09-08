@@ -2007,7 +2007,22 @@ async def _status_consumer() -> None:
                                 # The log keeps the whole error, not a
                                 # summary line: the remedy is the half that
                                 # says what to do about the condition.
-                                err = waldoctl.RobotError.from_wire(e)
+                                #
+                                # `from_wire` unpacks exactly six, so an
+                                # entry that is not a 6-tuple raises here --
+                                # on the status tick, inside the per-tick
+                                # handler that logs at DEBUG. One malformed
+                                # warning would take the rest of the tick
+                                # with it, every tick, for as long as the
+                                # condition stood. Skip that entry instead:
+                                # the other warnings still reach the log.
+                                try:
+                                    err = waldoctl.RobotError.from_wire(e)
+                                except (TypeError, ValueError):
+                                    logger.warning(
+                                        "dropping a malformed warning entry: %r", e
+                                    )
+                                    continue
                                 robot_events.add(
                                     code=err.code,
                                     title=err.title,

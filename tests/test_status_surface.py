@@ -95,3 +95,26 @@ async def test_a_link_state_that_is_not_an_enum_does_not_stop_the_tick(
         timeout_s=8.0,
         what="link health surviving a missing state key",
     )
+
+
+@pytest.mark.integration
+async def test_a_malformed_warning_does_not_take_the_tick_with_it(
+    user: User,
+) -> None:
+    """``RobotError.from_wire`` unpacks exactly six elements, so an entry
+    that is not a 6-tuple raises -- on the status tick, inside the per-tick
+    handler that logs at DEBUG. One bad entry would take the rest of that
+    tick with it every tick, for as long as the condition stood.
+    """
+    await user.open("/")
+    await wait_for_app_ready()
+
+    shared = waldoctl.commander.client._shared_status
+    shared.warnings = [(-1, 59, "truncated"), DEGRADED]
+
+    # The well-formed one still arrives, which it cannot do if the bad entry
+    # ahead of it aborted the tick.
+    await user.should_see(
+        kind=Notification, content="Control loop degraded", retries=50
+    )
+    shared.warnings = []
