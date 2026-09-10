@@ -1,0 +1,262 @@
+{
+  "code_commit": "81541fc2dcdf59e275f86819b6658052a752644c",
+  "passed": 51,
+  "method": "Latest applicable result for each test across sequential targeted runs; failures were fixed and affected sequences rerun.",
+  "tests": [
+    {
+      "test": "tests.test_camera_calibration_screen::test_fixed_camera_calibration_layout",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_demonstration_recording::test_gripper_recording_replays_through_managed_pause_and_fault",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_demonstration_recording::test_observed_motion_records_cadence_gaps_and_controller_loss",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_demonstration_recording_screen::test_recording_chart_displays_actual_motion",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_device_signals::test_preview_uses_explicit_signal_values_and_preserves_timeout_branches",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_device_signals::test_saved_named_output_readback_wait_cancellation_and_disconnection",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_device_signals_screen::test_named_signal_controls_remain_readable",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_diagnostics::test_drive_faults_appear_without_analog_readings",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_diagnostics::test_only_the_sections_this_backend_can_fill_are_shown",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_diagnostics::test_the_event_log_announces_itself_and_keeps_the_whole_error",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_gui_layout_screen::test_compact_layout_par6",
+      "passed": true,
+      "report": "waldo-gui-native-layout.xml"
+    },
+    {
+      "test": "tests.test_gui_layout_screen::test_compact_layout_parol6",
+      "passed": true,
+      "report": "waldo-gui-parol6-layout.xml"
+    },
+    {
+      "test": "tests.test_io_and_gripper::test_control_panel_tool_quick_actions",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_io_and_gripper::test_gripper_panel_layout_elements",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_io_and_gripper::test_io_tab_high_low_buttons_send_commands",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_io_automation::test_automation_settings_round_trip_storage",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_io_automation::test_cycle_start_input_runs_active_program",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_io_automation::test_home_output_tracks_home_pose",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_named_setup::test_named_storage_and_export_remain_independent_snapshots",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_named_setup::test_teach_saved_fixture_preview_and_execute_same_named_pose",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_par6_backend::test_commander_runs_on_the_par6_runtime",
+      "passed": true,
+      "report": "waldo-gui-native-e2e.xml"
+    },
+    {
+      "test": "tests.test_par6_backend::test_native_managed_timeout_cancels_the_accepted_move[False]",
+      "passed": true,
+      "report": "waldo-gui-native-e2e.xml"
+    },
+    {
+      "test": "tests.test_par6_backend::test_native_managed_timeout_cancels_the_accepted_move[True]",
+      "passed": true,
+      "report": "waldo-gui-native-e2e.xml"
+    },
+    {
+      "test": "tests.test_portable_projects::test_dependency_report_does_not_claim_extras_are_verified",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_portable_projects::test_export_reserves_space_for_its_manifest",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_portable_projects::test_imported_program_uses_its_own_data_in_preview_execution_and_save",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_portable_projects::test_selected_archive_round_trip_rejects_unsafe_files_before_writing",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_portable_projects_screen::test_browser_exports_selected_data_and_imports_without_starting_a_program",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_run_records::test_event_backlog_is_bounded_and_reports_gaps_without_losing_latest_step",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_run_records::test_export_removes_personal_values_and_journal_recovers_a_partial_tail",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_run_records::test_managed_records_capture_nested_calls_results_status_and_stop",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_run_records::test_recording_ipc_is_private_before_and_after_replacement",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_run_records_screen::test_run_record_browser_shows_events_and_local_values",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_serial_port_select_exists",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_settings_tab_accessible",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_show_route_toggle_changes_state",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_tcp_offset_inputs_appear_for_tools",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_tcp_offset_reaches_the_controller_and_survives_a_tool_change",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_theme_selection_exists",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_tool_selection_changes_tool",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_variant_selector_appears_for_tools_with_variants",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_settings_page::test_workspace_envelope_mode_changes",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_setup_drafts::test_save_pending_fields_and_reject_partial_save",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_skill_library::test_skill_panel_inserts_fixed_calls_records_once_and_runs_via_mcp",
+      "passed": true,
+      "report": "waldo-gui-functional-recheck.xml"
+    },
+    {
+      "test": "tests.test_skill_library::test_starter_skills_plan_fixed_setup_alignment_and_gripper_actions",
+      "passed": true,
+      "report": "waldo-gui-functional-recheck.xml"
+    },
+    {
+      "test": "tests.test_skill_library_screen::test_skill_library_form_keeps_actions_visible",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_supervised_restart::test_entries_execute_in_fresh_globals_and_do_not_run_the_main_sequence",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_supervised_restart::test_supervised_restart_selects_a_fresh_entry_and_refuses_changed_state",
+      "passed": true,
+      "report": "waldo-gui-functional-initial.xml"
+    },
+    {
+      "test": "tests.test_supervised_restart_screen::test_browser_reviews_stopped_run_and_selects_an_entry",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    },
+    {
+      "test": "tests.test_tcp_calibration::test_pivot_orientation_saved_setup_and_confirmed_application",
+      "passed": true,
+      "report": "waldo-gui-functional-recheck.xml"
+    },
+    {
+      "test": "tests.test_tcp_calibration_screen::test_saved_tcp_calibration_is_readable_with_hardware_scene",
+      "passed": true,
+      "report": "waldo-gui-browser-workflows.xml"
+    }
+  ]
+}
